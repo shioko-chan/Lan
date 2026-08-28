@@ -1,0 +1,3 @@
+size(items) = length(items)
+
+{numbers: size([1, 2]), texts: size(["a", "b"])}

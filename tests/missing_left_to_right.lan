@@ -1,0 +1,17 @@
+maybe_number(present) =
+  if present:
+    10
+  else:
+    missing
+
+maybe_text(present) =
+  if present:
+    "Lan"
+  else:
+    missing
+
+number_result(present) = maybe_number(present)? + 3 * 3
+
+text_result(present) = maybe_text(present)? == "Lan"
+
+{number_missing: number_result(false), number_value: number_result(true), text_missing: text_result(false), text_value: text_result(true)}

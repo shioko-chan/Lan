@@ -1,0 +1,7 @@
+choose(flag, first, second) =
+  if flag:
+    first
+  else:
+    second
+
+choose(not false, 42, 0)

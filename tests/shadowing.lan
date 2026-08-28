@@ -1,0 +1,10 @@
+shadow() =
+  value = 1
+  value = value + 1
+  if true:
+    value = value * 10
+    value
+  else:
+    value
+
+shadow()

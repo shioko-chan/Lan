@@ -1,0 +1,7 @@
+maybe_list(flag) =
+  if flag:
+    [1, 2]
+  else:
+    missing
+
+length(maybe_list(false)?) ?? 0

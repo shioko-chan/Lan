@@ -1,0 +1,5 @@
+bad() =
+  person = {name: "小明"}
+  person.name + 1
+
+bad()

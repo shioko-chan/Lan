@@ -1,0 +1,3 @@
+greeting(name, punctuation = "!") = "你好，" + name + punctuation
+
+[greeting("小明"), greeting("小红", "？")]

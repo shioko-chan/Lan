@@ -1,0 +1,7 @@
+maybe_boolean(flag) =
+  if flag:
+    true
+  else:
+    missing
+
+maybe_boolean(false) ?? false

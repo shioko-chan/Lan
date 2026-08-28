@@ -1,0 +1,7 @@
+choose(flag) =
+  if flag:
+    1
+   else:
+    0
+
+choose(true)

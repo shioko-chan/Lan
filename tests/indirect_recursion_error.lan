@@ -1,0 +1,7 @@
+first(value) = second(value)
+
+second(value) = third(value)
+
+third(value) = first(value)
+
+first(1)

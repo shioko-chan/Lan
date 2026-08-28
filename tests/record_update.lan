@@ -1,0 +1,10 @@
+update() =
+  person = {name: "小明", age: 20}
+  old = person
+  person.age = person.age + 1
+  person.city = "悉尼"
+  field = "name"
+  person.(field) = "小兰"
+  [old, person]
+
+update()

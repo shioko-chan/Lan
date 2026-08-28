@@ -1,0 +1,12 @@
+adult(age) = age >= 18
+
+greeting(name) = "你好，" + name
+
+message(name, age) =
+  hello = greeting(name)
+  if adult(age):
+    hello + "，你已经成年"
+  else:
+    hello + "，你还未成年"
+
+message("小明", 20)

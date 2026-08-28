@@ -1,0 +1,3 @@
+identity(value) = value
+
+[identity(1), identity(missing)]

@@ -1,0 +1,9 @@
+birthday(person) =
+  before = person
+  person.age = person.age + 1
+  person.city = "悉尼"
+  key = "name"
+  person.(key) = "小兰"
+  [before, person]
+
+birthday({name: "小明", age: 20})

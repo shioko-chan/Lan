@@ -1,0 +1,6 @@
+show() =
+  person = {name: "小明", age: 20}
+  field = "name"
+  {age: person.age + 1, name: person.(field), absent: person.unknown ?? "没有"}
+
+show()

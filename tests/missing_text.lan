@@ -1,0 +1,7 @@
+maybe_text(flag) =
+  if flag:
+    "available"
+  else:
+    missing
+
+maybe_text(false) ?? "fallback"

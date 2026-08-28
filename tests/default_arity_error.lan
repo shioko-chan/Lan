@@ -1,0 +1,3 @@
+calculate(required, optional = 2) = required * optional
+
+calculate()

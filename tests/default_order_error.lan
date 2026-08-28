@@ -1,0 +1,3 @@
+invalid(first = 1, second) = first + second
+
+invalid(1, 2)

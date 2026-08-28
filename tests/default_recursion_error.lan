@@ -1,0 +1,5 @@
+first(value = second()) = value
+
+second(value = first()) = value
+
+first()

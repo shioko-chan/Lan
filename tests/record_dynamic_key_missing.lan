@@ -1,0 +1,6 @@
+bad() =
+  person = {name: "小明"}
+  key = missing
+  person.(key)
+
+bad()

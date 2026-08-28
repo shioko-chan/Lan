@@ -1,0 +1,7 @@
+choose(flag) =
+  if flag:
+    []
+  else:
+    ["text"]
+
+choose(false)

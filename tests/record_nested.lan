@@ -1,0 +1,7 @@
+nested() =
+  root = {}
+  child = {value: 3}
+  root.child = child
+  {value: root.child.value, fallback: root.unknown ?? {}}
+
+nested()

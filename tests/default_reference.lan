@@ -1,0 +1,3 @@
+end_from(start, end = start + 10) = end
+
+end_from(5)
