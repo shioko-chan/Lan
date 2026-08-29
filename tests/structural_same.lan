@@ -1,0 +1,17 @@
+{matrix = [[1, 2], [3, 4]];
+row = [1, 2];
+raw = {name: ["A", "B"], score: [10, missing]};
+checked = table(raw);
+{
+  numbers: same(10, 10),
+  different_types: same(10, "10"),
+  missing_values: same(missing, missing),
+  one_missing: same(missing, 0),
+  lists: same([1, missing, 3], [1, missing, 3]),
+  list_length: same([1, 2], [1, 2, 3]),
+  nested: same(matrix, [[1, 2], [3, 4]]),
+  different_shape: same(matrix, row),
+  records: same({a: 1, b: {x: missing}}, {b: {x: missing}, a: 1}),
+  record_keys: same({a: 1}, {b: 1}),
+  table_record: same(checked, raw)
+}}

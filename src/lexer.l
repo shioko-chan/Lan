@@ -6,6 +6,7 @@
 #include "parser.hpp"
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <string>
 #include <vector>
 
@@ -14,6 +15,65 @@
 
 static std::vector<int> indentation{0};
 static int pendingDedents = 0;
+static int braceDepth = 0;
+static bool canBeginStream = false;
+static int rawIndentDepth = 0;
+static std::vector<int> layoutDepths;
+static int lastSourceToken = 0;
+static bool ifAwaitingLayout = false;
+
+struct BufferedToken {
+  int token;
+  YYSTYPE value;
+};
+
+static std::deque<BufferedToken> bufferedTokens;
+
+static int contextualStreamToken(const char* name) {
+  if (std::strcmp(name, "sum") == 0) return SUM;
+  if (std::strcmp(name, "average") == 0) return AVERAGE;
+  if (std::strcmp(name, "min") == 0) return MIN;
+  if (std::strcmp(name, "max") == 0) return MAX;
+  if (std::strcmp(name, "count") == 0) return COUNT;
+  if (std::strcmp(name, "length") == 0) return LENGTH;
+  if (std::strcmp(name, "row_count") == 0) return ROW_COUNT;
+  if (std::strcmp(name, "first") == 0) return FIRST;
+  if (std::strcmp(name, "last") == 0) return LAST;
+  if (std::strcmp(name, "fill_missing") == 0) return FILL_MISSING;
+  if (std::strcmp(name, "where") == 0) return WHERE;
+  if (std::strcmp(name, "select_columns") == 0) return SELECT_COLUMNS;
+  if (std::strcmp(name, "take") == 0) return TAKE;
+  if (std::strcmp(name, "drop") == 0) return DROP;
+  if (std::strcmp(name, "sort_by") == 0) return SORT_BY;
+  if (std::strcmp(name, "add") == 0) return ADD;
+  if (std::strcmp(name, "replace") == 0) return REPLACE;
+  return 0;
+}
+
+static void rememberToken(int token) {
+  switch (token) {
+    case NUMBER:
+    case TEXT:
+    case IDENTIFIER:
+    case TRUE:
+    case FALSE:
+    case MISSING:
+    case INDEX:
+    case ')':
+    case ']':
+    case '}':
+    case '?':
+    case LENGTH:
+    case ROW_COUNT:
+    case FIRST:
+    case LAST:
+    case VIRTUAL_CLOSE:
+      canBeginStream = true;
+      return;
+    default:
+      canBeginStream = false;
+  }
+}
 
 static int applyIndentation(int width) {
   if (width > indentation.back()) {
@@ -75,6 +135,7 @@ ID [A-Za-z_\200-\377][A-Za-z0-9_\200-\377]*
 <INITIAL>"true"     return TRUE;
 <INITIAL>"false"    return FALSE;
 <INITIAL>"missing"  return MISSING;
+<INITIAL>"with"     return WITH;
 <INITIAL>"and"      return AND;
 <INITIAL>"or"       return OR;
 <INITIAL>"not"      return NOT;
@@ -88,6 +149,14 @@ ID [A-Za-z_\200-\377][A-Za-z0-9_\200-\377]*
 <INITIAL>{ID}/[ ]*"("[^\n]*")"[ ]*"="[^=] {
   yylval.text = strdup(yytext);
   return FUNCTION_NAME;
+}
+<INITIAL>{ID}/[ ]*"(" {
+  yylval.text = strdup(yytext);
+  return CALL_IDENTIFIER;
+}
+<INITIAL>"."{DIGIT}+ {
+  yylval.number = std::strtod(yytext + 1, nullptr);
+  return INDEX;
 }
 <INITIAL>{DIGIT}+("."{DIGIT}+)? {
   yylval.number = std::strtod(yytext, nullptr);
@@ -103,7 +172,13 @@ ID [A-Za-z_\200-\377][A-Za-z0-9_\200-\377]*
 }
 <INITIAL>("#"|"//")[^\n]* ;
 <INITIAL>[ \t\r]+           ;
+<INITIAL>"{" { ++braceDepth; return '{'; }
+<INITIAL>"}" { if (braceDepth > 0) --braceDepth; return '}'; }
 <INITIAL>\n {
+  if (braceDepth > 0) {
+    BEGIN(INITIAL);
+    continue;
+  }
   BEGIN(INDENT_SCAN);
   return NEWLINE;
 }
@@ -119,9 +194,106 @@ ID [A-Za-z_\200-\377][A-Za-z0-9_\200-\377]*
 %%
 
 int yylex(void) {
-  if (pendingDedents > 0) {
-    --pendingDedents;
-    return DEDENT;
+  auto nextRawToken = []() {
+    if (pendingDedents > 0) {
+      --pendingDedents;
+      return DEDENT;
+    }
+    return yylex_impl();
+  };
+
+  auto bufferCurrent = [](int token) {
+    BufferedToken buffered{};
+    buffered.token = token;
+    buffered.value = yylval;
+    bufferedTokens.push_back(buffered);
+  };
+
+  while (bufferedTokens.empty()) {
+    int token = nextRawToken();
+
+    if (token == NEWLINE) {
+      bool opensLayout = lastSourceToken == '=' || lastSourceToken == ELSE ||
+                         ifAwaitingLayout;
+      ifAwaitingLayout = false;
+
+      int next = nextRawToken();
+      while (next == INDENT || next == DEDENT) {
+        rawIndentDepth += next == INDENT ? 1 : -1;
+        next = nextRawToken();
+      }
+      if (next == BAD_INDENT) return BAD_INDENT;
+
+      YYSTYPE nextValue = yylval;
+      std::deque<BufferedToken> lineTokens;
+      if (opensLayout) {
+        int enclosing = layoutDepths.empty() ? 0 : layoutDepths.back();
+        if (rawIndentDepth <= enclosing || next == 0) return BAD_INDENT;
+        layoutDepths.push_back(rawIndentDepth);
+        lineTokens.push_back({VIRTUAL_OPEN, {}});
+      } else {
+        while (!layoutDepths.empty() && rawIndentDepth < layoutDepths.back()) {
+          layoutDepths.pop_back();
+          lineTokens.push_back({VIRTUAL_CLOSE, {}});
+        }
+        if (next != ELSE) {
+          if (!layoutDepths.empty() && rawIndentDepth == layoutDepths.back() &&
+              next != 0)
+            lineTokens.push_back({VIRTUAL_SEMICOLON, {}});
+          else if (layoutDepths.empty())
+            lineTokens.push_back({NEWLINE, {}});
+        }
+      }
+      if (next != 0) lineTokens.push_back({next, nextValue});
+      else {
+        while (!layoutDepths.empty()) {
+          layoutDepths.pop_back();
+          lineTokens.push_back({VIRTUAL_CLOSE, {}});
+        }
+        lineTokens.push_back({0, {}});
+      }
+      bufferedTokens.insert(bufferedTokens.end(), lineTokens.begin(), lineTokens.end());
+      continue;
+    }
+
+    if (token == INDENT || token == DEDENT) {
+      rawIndentDepth += token == INDENT ? 1 : -1;
+      while (!layoutDepths.empty() && rawIndentDepth < layoutDepths.back()) {
+        layoutDepths.pop_back();
+        bufferedTokens.push_back({VIRTUAL_CLOSE, {}});
+      }
+      continue;
+    }
+
+    if (token == 0) {
+      while (!layoutDepths.empty()) {
+        layoutDepths.pop_back();
+        bufferedTokens.push_back({VIRTUAL_CLOSE, {}});
+      }
+      bufferedTokens.push_back({0, {}});
+      continue;
+    }
+
+    bufferCurrent(token);
   }
-  return yylex_impl();
+
+  BufferedToken buffered = bufferedTokens.front();
+  bufferedTokens.pop_front();
+  int token = buffered.token;
+  yylval = buffered.value;
+
+  if (token == IDENTIFIER && canBeginStream) {
+    int contextual = contextualStreamToken(yylval.text);
+    if (contextual) {
+      free(yylval.text);
+      token = contextual;
+    }
+  }
+  if (token == IF) ifAwaitingLayout = true;
+  if (token == '{' && ifAwaitingLayout) ifAwaitingLayout = false;
+  if (token != VIRTUAL_OPEN && token != VIRTUAL_SEMICOLON &&
+      token != VIRTUAL_CLOSE && token != 0)
+    lastSourceToken = token;
+  rememberToken(token);
+  return token;
 }

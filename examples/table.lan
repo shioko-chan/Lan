@@ -1,0 +1,5 @@
+report() =
+  people = table({name: ["小明", "小兰", "小红"], age: [20, 17, missing], score: [80, 90, missing]})
+  {rows: row_count(people), age_total: sum(people, "age"), age_min: min(people, "age"), age_max: max(people, "age"), scored: count(people, "score"), score_average: average(people, "score") ?? 0}
+
+report()

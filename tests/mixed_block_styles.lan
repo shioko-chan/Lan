@@ -1,0 +1,10 @@
+choose(flag) =
+  if flag {
+    value = 20;
+    value + 1
+  }
+  else {
+    0
+  }
+
+choose(true)

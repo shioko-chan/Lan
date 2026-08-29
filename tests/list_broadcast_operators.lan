@@ -1,0 +1,13 @@
+{flags = [true, false, missing];
+{
+  and_true: flags and true,
+  and_false: flags and false,
+  or_true: flags or true,
+  or_false: flags or false,
+  negated: not flags,
+  numbers: -[1, missing, -2],
+  default_scalar: [1, missing, 3] ?? 0,
+  default_column: [missing, 2, missing] ?? [1, missing, 3],
+  text_scalar: ["A", missing, "C"] + "!",
+  text_columns: ["A", "B", "C"] + ["1", "2"]
+}}

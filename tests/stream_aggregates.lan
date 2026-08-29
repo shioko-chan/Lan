@@ -1,0 +1,14 @@
+{people = table({score: [10, missing, 20], count: [1, 2, 3]});
+{
+  list_sum: [10, missing, 20] sum,
+  list_average: [10, missing, 20] average,
+  list_min: [10, missing, 20] min,
+  list_max: [10, missing, 20] max,
+  list_count: ["A", missing, "B"] count,
+  table_sum: people sum "score",
+  table_average: people average "score",
+  table_min: people min "score",
+  table_max: people max "score",
+  table_count: people count "score",
+  aggregate_named_field: people.count
+}}

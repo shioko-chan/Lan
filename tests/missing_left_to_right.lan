@@ -1,13 +1,13 @@
 maybe_number(present) =
-  if present:
+  if present
     10
-  else:
+  else
     missing
 
 maybe_text(present) =
-  if present:
+  if present
     "Lan"
-  else:
+  else
     missing
 
 number_result(present) = maybe_number(present)? + 3 * 3

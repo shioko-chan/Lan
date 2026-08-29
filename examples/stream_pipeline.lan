@@ -1,0 +1,38 @@
+{people = table({
+  name: ["小明", "小兰", "小杰", "小芳", "小雨", "小夏"],
+  age: [20, 17, 31, missing, 25, 40],
+  score: [80, missing, 58, 92, 75, missing],
+  active: [true, true, true, false, true, true]
+});
+
+clean_scores = people.score fill_missing 0;
+scored = people replace score: clean_scores;
+
+enriched = scored
+  add adult: scored.age >= 18
+  add passed: scored.score >= 60;
+
+adult_flags = enriched.adult ?? false;
+eligible_mask = enriched.active and adult_flags and enriched.passed;
+eligible = enriched where eligible_mask;
+
+ranked = eligible
+  add label: eligible.name + "（入选）"
+  add order: -eligible.score;
+
+top = ranked
+  sort_by "order"
+  take 3
+  select_columns ["name", "age", "score", "label"];
+
+{
+  result: top,
+  summary: {
+    rows: top row_count,
+    score_count: top count "score",
+    score_sum: top sum "score",
+    score_average: top average "score",
+    score_min: top min "score",
+    score_max: top max "score"
+  }
+}}

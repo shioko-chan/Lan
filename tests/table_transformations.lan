@@ -1,0 +1,22 @@
+{people = table({
+  name: ["B", "A", "C", "D"],
+  age: [20, 17, 20, 30],
+  score: [80, missing, 90, 70]
+});
+raised = people.score + 5;
+filled = fill_missing(raised, 0);
+adults = where(people, people.age >= 18);
+extended = people add adjusted: filled;
+selected = select_columns(extended, ["name", "adjusted"]);
+{
+  arithmetic: filled,
+  list_arithmetic: people.age * [2, 2, 2, 2],
+  scalar_left: 100 - people.score,
+  comparison: people.age == 20,
+  text_comparison: people.name == "A",
+  adults: adults,
+  selected: selected,
+  first_two: take(people, 2),
+  after_two: drop(people, 2),
+  sorted: sort_by(people, "age")
+}}

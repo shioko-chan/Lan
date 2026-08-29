@@ -1,7 +1,7 @@
 maybe(flag, value) =
-  if flag:
+  if flag
     value
-  else:
+  else
     missing
 
 (maybe(false, 42)? + 1) ?? 0

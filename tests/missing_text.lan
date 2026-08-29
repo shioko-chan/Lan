@@ -1,7 +1,7 @@
 maybe_text(flag) =
-  if flag:
+  if flag
     "available"
-  else:
+  else
     missing
 
 maybe_text(false) ?? "fallback"

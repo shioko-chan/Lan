@@ -264,6 +264,526 @@ static int compare_entries(const void* left, const void* right) {
   return strcmp(a->key, b->key);
 }
 
+typedef struct { uint64_t length; LanValue* elements; } LanList;
+
+static int32_t same_value(LanValue left, LanValue right);
+
+static int32_t same_list(LanList* left, LanList* right) {
+  if (left == right) return 1;
+  if (!left || !right || left->length != right->length) return 0;
+  for (uint64_t i = 0; i < left->length; ++i)
+    if (!same_value(left->elements[i], right->elements[i])) return 0;
+  return 1;
+}
+
+static int32_t same_record(LanRecordNode* left, LanRecordNode* right) {
+  if (left == right) return 1;
+  uint32_t count = entry_count(left);
+  if (count != entry_count(right)) return 0;
+  LanEntry* entries = count ? malloc(count * sizeof(*entries)) : NULL;
+  if (count && !entries) abort();
+  uint32_t index = 0;
+  if (count) collect_entries(left, entries, &index);
+  for (uint32_t i = 0; i < count; ++i) {
+    LanValue other;
+    if (!lan_record_lookup(right, entries[i].key, &other) ||
+        !same_value(entries[i].value, other)) {
+      free(entries);
+      return 0;
+    }
+  }
+  free(entries);
+  return 1;
+}
+
+static int32_t same_value(LanValue left, LanValue right) {
+  if (left.tag != right.tag) return 0;
+  if (left.tag == LAN_MISSING) return 1;
+  if (left.tag == LAN_NUMBER || left.tag == LAN_BOOLEAN)
+    return left.number == right.number;
+  if (left.tag == LAN_TEXT)
+    return left.pointer == right.pointer ||
+           (left.pointer && right.pointer && strcmp(left.pointer, right.pointer) == 0);
+  if (left.tag == LAN_LIST) return same_list(left.pointer, right.pointer);
+  if (left.tag == LAN_RECORD) return same_record(left.pointer, right.pointer);
+  return 0;
+}
+
+int32_t lan_value_same(int32_t left_tag, double left_number, void* left_pointer,
+                       int32_t right_tag, double right_number, void* right_pointer) {
+  return same_value((LanValue){left_tag, left_number, left_pointer},
+                    (LanValue){right_tag, right_number, right_pointer});
+}
+
+static LanList* make_list(uint64_t length) {
+  LanList* list = malloc(sizeof(*list));
+  if (!list) abort();
+  list->length = length;
+  list->elements = length ? calloc(length, sizeof(*list->elements)) : NULL;
+  if (length && !list->elements) abort();
+  return list;
+}
+
+static void store_list_value(LanList* list, uint64_t index, LanValue value) {
+  list->elements[index] = value;
+  retain_value(value);
+}
+
+int32_t lan_list_lookup(void* list_pointer, double index, LanValue* output) {
+  LanList* list = list_pointer;
+  if (!list || index < 0 || index > 9007199254740992.0) return 0;
+  uint64_t integer = (uint64_t)index;
+  if ((double)integer != index || integer >= list->length) return 0;
+  *output = list->elements[integer];
+  return 1;
+}
+
+static int32_t validate_table_node(LanRecordNode* node, uint64_t* rows,
+                                   int32_t* has_column) {
+  if (!node) return 1;
+  if (node->kind == LAN_BRANCH) {
+    for (uint32_t i = 0; i < node->count; ++i)
+      if (!validate_table_node(node->children[i], rows, has_column)) return 0;
+    return 1;
+  }
+  uint32_t count = node->kind == LAN_LEAF ? 1 : node->count;
+  for (uint32_t i = 0; i < count; ++i) {
+    LanValue value = node->kind == LAN_LEAF ? node->value : node->entries[i].value;
+    if (value.tag != LAN_LIST || !value.pointer) return 0;
+    uint64_t length = ((LanList*)value.pointer)->length;
+    if (*has_column && length != *rows) return 0;
+    *rows = length;
+    *has_column = 1;
+  }
+  return 1;
+}
+
+int32_t lan_table_validate(void* record, uint64_t* rows) {
+  int32_t has_column = 0;
+  *rows = 0;
+  return validate_table_node(record, rows, &has_column);
+}
+
+uint64_t lan_table_row_count(void* record) {
+  uint64_t rows = 0;
+  int32_t ignored = 0;
+  validate_table_node(record, &rows, &ignored);
+  return rows;
+}
+
+/* operation: 0 sum, 1 average, 2 minimum, 3 maximum, 4 present count.
+   Returns -3 for a non-number numeric aggregate, 0 when no number exists,
+   and 1 on success. */
+static int32_t aggregate_list(LanList* list, int32_t operation, double* output) {
+  double result = 0.0;
+  uint64_t present = 0;
+  for (uint64_t i = 0; i < list->length; ++i) {
+    LanValue value = list->elements[i];
+    if (value.tag == LAN_MISSING) continue;
+    if (operation == 4) {
+      ++present;
+      continue;
+    }
+    if (value.tag != LAN_NUMBER) return -3;
+    if (present == 0) result = value.number;
+    else if (operation == 0 || operation == 1) result += value.number;
+    else if (operation == 2 && value.number < result) result = value.number;
+    else if (operation == 3 && value.number > result) result = value.number;
+    ++present;
+  }
+  if (operation == 4) {
+    *output = (double)present;
+    return 1;
+  }
+  if (present == 0) {
+    *output = 0.0;
+    return operation == 0 ? 1 : 0;
+  }
+  if (operation == 1) result /= (double)present;
+  *output = result;
+  return 1;
+}
+
+int32_t lan_list_aggregate(void* list, int32_t operation, double* output) {
+  if (!list) return -2;
+  return aggregate_list(list, operation, output);
+}
+
+int32_t lan_table_aggregate(void* record, const char* key, int32_t operation,
+                            double* output) {
+  LanValue column;
+  if (!lan_record_lookup(record, key, &column)) return -1;
+  if (column.tag != LAN_LIST || !column.pointer) return -2;
+  return aggregate_list(column.pointer, operation, output);
+}
+
+static LanValue scalar_binary(LanValue a, LanValue b, int32_t operation,
+                              int32_t* status) {
+  if (operation == 12) {
+    if (a.tag != LAN_MISSING && b.tag != LAN_MISSING && a.tag != b.tag)
+      *status = -3;
+    return a.tag == LAN_MISSING ? b : a;
+  }
+  if (operation == 10 || operation == 11) {
+    if ((a.tag != LAN_MISSING && a.tag != LAN_BOOLEAN) ||
+        (b.tag != LAN_MISSING && b.tag != LAN_BOOLEAN)) {
+      *status = -3;
+      return (LanValue){LAN_MISSING, 0, NULL};
+    }
+    int a_decides = a.tag == LAN_BOOLEAN &&
+        (operation == 10 ? a.number == 0 : a.number != 0);
+    int b_decides = b.tag == LAN_BOOLEAN &&
+        (operation == 10 ? b.number == 0 : b.number != 0);
+    if (a_decides || b_decides)
+      return (LanValue){LAN_BOOLEAN, operation == 10 ? 0 : 1, NULL};
+    if (a.tag == LAN_MISSING || b.tag == LAN_MISSING)
+      return (LanValue){LAN_MISSING, 0, NULL};
+    return (LanValue){LAN_BOOLEAN, operation == 10 ? 1 : 0, NULL};
+  }
+  if (a.tag == LAN_MISSING || b.tag == LAN_MISSING)
+    return (LanValue){LAN_MISSING, 0, NULL};
+  LanValue value = {LAN_NUMBER, 0, NULL};
+  if (operation <= 3) {
+    if (operation == 0 && a.tag == LAN_TEXT && b.tag == LAN_TEXT) {
+      size_t left = strlen(a.pointer);
+      size_t right = strlen(b.pointer);
+      char* joined = malloc(left + right + 1);
+      if (!joined) abort();
+      memcpy(joined, a.pointer, left);
+      memcpy(joined + left, b.pointer, right + 1);
+      return (LanValue){LAN_TEXT, 0, joined};
+    }
+    if (a.tag != LAN_NUMBER || b.tag != LAN_NUMBER) {
+      *status = -3;
+      return (LanValue){LAN_MISSING, 0, NULL};
+    }
+    value.number = operation == 0 ? a.number + b.number
+                 : operation == 1 ? a.number - b.number
+                 : operation == 2 ? a.number * b.number : a.number / b.number;
+    return value;
+  }
+  if (a.tag != b.tag) {
+    *status = -3;
+    return (LanValue){LAN_MISSING, 0, NULL};
+  }
+  int equal = 0;
+  if (a.tag == LAN_NUMBER || a.tag == LAN_BOOLEAN) equal = a.number == b.number;
+  else if (a.tag == LAN_TEXT) equal = strcmp(a.pointer, b.pointer) == 0;
+  else {
+    *status = -3;
+    return (LanValue){LAN_MISSING, 0, NULL};
+  }
+  value.tag = LAN_BOOLEAN;
+  if (operation == 4 || operation == 5)
+    value.number = operation == 4 ? equal : !equal;
+  else if (a.tag != LAN_NUMBER) *status = -3;
+  else value.number = operation == 6 ? a.number < b.number
+                    : operation == 7 ? a.number > b.number
+                    : operation == 8 ? a.number <= b.number : a.number >= b.number;
+  return value;
+}
+
+static LanValue recursive_binary(LanValue a, uint32_t a_rank,
+                                 LanValue b, uint32_t b_rank,
+                                 int32_t operation, int32_t* status) {
+  if (*status) return (LanValue){LAN_MISSING, 0, NULL};
+  if (a_rank == 0 && b_rank == 0) return scalar_binary(a, b, operation, status);
+
+  if (a_rank == b_rank && operation == 12) {
+    if (a.tag == LAN_MISSING) return b;
+    if (b.tag == LAN_MISSING) return a;
+  }
+
+  if (a_rank > b_rank) {
+    if (a.tag == LAN_MISSING) return a;
+    if (a.tag != LAN_LIST || !a.pointer) {
+      *status = -3; return (LanValue){LAN_MISSING, 0, NULL};
+    }
+    LanList* source = a.pointer;
+    LanList* result = make_list(source->length);
+    for (uint64_t i = 0; i < source->length; ++i)
+      store_list_value(result, i, recursive_binary(
+          source->elements[i], a_rank - 1, b, b_rank, operation, status));
+    return (LanValue){LAN_LIST, 0, result};
+  }
+  if (b_rank > a_rank) {
+    if (b.tag == LAN_MISSING) return b;
+    if (b.tag != LAN_LIST || !b.pointer) {
+      *status = -3; return (LanValue){LAN_MISSING, 0, NULL};
+    }
+    LanList* source = b.pointer;
+    LanList* result = make_list(source->length);
+    for (uint64_t i = 0; i < source->length; ++i)
+      store_list_value(result, i, recursive_binary(
+          a, a_rank, source->elements[i], b_rank - 1, operation, status));
+    return (LanValue){LAN_LIST, 0, result};
+  }
+
+  /* Equal non-zero ranks. A missing sub-list adopts the other operand's
+     shape, except for ?? which was handled above. */
+  if (a.tag == LAN_MISSING && b.tag != LAN_MISSING) {
+    if (b.tag != LAN_LIST || !b.pointer) {
+      *status = -3; return (LanValue){LAN_MISSING, 0, NULL};
+    }
+    LanList* source = b.pointer;
+    LanList* result = make_list(source->length);
+    for (uint64_t i = 0; i < source->length; ++i)
+      store_list_value(result, i, recursive_binary(
+          a, a_rank - 1, source->elements[i], b_rank - 1, operation, status));
+    return (LanValue){LAN_LIST, 0, result};
+  }
+  if (b.tag == LAN_MISSING && a.tag != LAN_MISSING) {
+    if (a.tag != LAN_LIST || !a.pointer) {
+      *status = -3; return (LanValue){LAN_MISSING, 0, NULL};
+    }
+    LanList* source = a.pointer;
+    LanList* result = make_list(source->length);
+    for (uint64_t i = 0; i < source->length; ++i)
+      store_list_value(result, i, recursive_binary(
+          source->elements[i], a_rank - 1, b, b_rank - 1, operation, status));
+    return (LanValue){LAN_LIST, 0, result};
+  }
+  if (a.tag == LAN_MISSING || b.tag == LAN_MISSING)
+    return (LanValue){LAN_MISSING, 0, NULL};
+  if (a.tag != LAN_LIST || b.tag != LAN_LIST || !a.pointer || !b.pointer) {
+    *status = -3; return (LanValue){LAN_MISSING, 0, NULL};
+  }
+  LanList* left = a.pointer;
+  LanList* right = b.pointer;
+  uint64_t length = left->length < right->length ? left->length : right->length;
+  LanList* result = make_list(length);
+  for (uint64_t i = 0; i < length; ++i)
+    store_list_value(result, i, recursive_binary(
+        left->elements[i], a_rank - 1, right->elements[i], b_rank - 1,
+        operation, status));
+  return (LanValue){LAN_LIST, 0, result};
+}
+
+void* lan_list_binary(int32_t a_tag, double a_number, void* a_pointer,
+                      uint32_t a_rank, int32_t b_tag, double b_number,
+                      void* b_pointer, uint32_t b_rank,
+                      int32_t operation, int32_t* status) {
+  *status = 0;
+  LanValue result = recursive_binary(
+      (LanValue){a_tag, a_number, a_pointer}, a_rank,
+      (LanValue){b_tag, b_number, b_pointer}, b_rank, operation, status);
+  if (*status || result.tag != LAN_LIST) return NULL;
+  return result.pointer;
+}
+
+static LanValue recursive_unary(LanValue value, uint32_t rank,
+                                int32_t operation, int32_t* status) {
+  if (value.tag == LAN_MISSING) return value;
+  if (rank == 0) {
+    if ((operation == 0 && value.tag != LAN_NUMBER) ||
+        (operation == 1 && value.tag != LAN_BOOLEAN)) {
+      *status = -2; return (LanValue){LAN_MISSING, 0, NULL};
+    }
+    value.number = operation == 0 ? -value.number : value.number == 0;
+    return value;
+  }
+  if (value.tag != LAN_LIST || !value.pointer) {
+    *status = -2; return (LanValue){LAN_MISSING, 0, NULL};
+  }
+  LanList* source = value.pointer;
+  LanList* result = make_list(source->length);
+  for (uint64_t i = 0; i < source->length; ++i)
+    store_list_value(result, i, recursive_unary(
+        source->elements[i], rank - 1, operation, status));
+  return (LanValue){LAN_LIST, 0, result};
+}
+
+void* lan_list_unary(void* list_pointer, uint32_t rank,
+                     int32_t operation, int32_t* status) {
+  *status = 0;
+  LanValue result = recursive_unary(
+      (LanValue){LAN_LIST, 0, list_pointer}, rank, operation, status);
+  return *status ? NULL : result.pointer;
+}
+
+void* lan_list_fill_missing(void* list_pointer, int32_t tag, double number,
+                            void* pointer, int32_t* status) {
+  LanList* list = list_pointer;
+  *status = 0;
+  if (!list || tag == LAN_MISSING) { *status = -1; return NULL; }
+  LanValue replacement = {tag, number, pointer};
+  LanList* result = make_list(list->length);
+  int32_t observed = tag;
+  for (uint64_t i = 0; i < list->length; ++i) {
+    LanValue value = list->elements[i].tag == LAN_MISSING
+        ? replacement : list->elements[i];
+    if (value.tag != LAN_MISSING && observed != value.tag) {
+      *status = -2; return NULL;
+    }
+    store_list_value(result, i, value);
+  }
+  return result;
+}
+
+static LanList* slice_list(LanList* source, uint64_t start, uint64_t length) {
+  LanList* result = make_list(length);
+  for (uint64_t i = 0; i < length; ++i)
+    store_list_value(result, i, source->elements[start + i]);
+  return result;
+}
+
+static LanList* filter_list(LanList* source, LanList* mask, uint64_t kept) {
+  LanList* result = make_list(kept);
+  uint64_t output = 0;
+  for (uint64_t i = 0; i < source->length; ++i)
+    if (mask->elements[i].tag == LAN_BOOLEAN && mask->elements[i].number != 0)
+      store_list_value(result, output++, source->elements[i]);
+  return result;
+}
+
+static LanList* permute_list(LanList* source, const uint64_t* order) {
+  LanList* result = make_list(source->length);
+  for (uint64_t i = 0; i < source->length; ++i)
+    store_list_value(result, i, source->elements[order[i]]);
+  return result;
+}
+
+static void* table_map_lists(void* record, uint64_t start, uint64_t length,
+                             LanList* mask, uint64_t kept,
+                             const uint64_t* order) {
+  LanRecordNode* root = record;
+  uint32_t count = entry_count(root);
+  LanEntry* entries = count ? malloc(count * sizeof(*entries)) : NULL;
+  uint32_t index = 0;
+  if (count) collect_entries(root, entries, &index);
+  void* result = lan_record_empty();
+  for (uint32_t i = 0; i < count; ++i) {
+    LanList* source = entries[i].value.pointer;
+    LanList* column = mask ? filter_list(source, mask, kept)
+                    : order ? permute_list(source, order)
+                            : slice_list(source, start, length);
+    void* updated = lan_record_assoc(result, entries[i].key, LAN_LIST, 0, column);
+    lan_record_release(result);
+    result = updated;
+  }
+  free(entries);
+  return result;
+}
+
+void* lan_table_where(void* record, void* mask_pointer, int32_t* status) {
+  LanList* mask = mask_pointer;
+  uint64_t rows = lan_table_row_count(record);
+  *status = 0;
+  if (!mask || mask->length != rows) { *status = -1; return NULL; }
+  uint64_t kept = 0;
+  for (uint64_t i = 0; i < rows; ++i) {
+    LanValue value = mask->elements[i];
+    if (value.tag != LAN_MISSING && value.tag != LAN_BOOLEAN) {
+      *status = -2; return NULL;
+    }
+    if (value.tag == LAN_BOOLEAN && value.number != 0) ++kept;
+  }
+  return table_map_lists(record, 0, 0, mask, kept, NULL);
+}
+
+void* lan_table_update_column(void* record, const char* key, void* list_pointer,
+                              int32_t replace, int32_t* status) {
+  LanList* list = list_pointer;
+  uint64_t rows = 0;
+  int32_t has_column = 0;
+  LanValue existing;
+  *status = 0;
+  if (!list || !validate_table_node(record, &rows, &has_column) ||
+      (has_column && list->length != rows)) {
+    *status = -1; return NULL;
+  }
+  int32_t exists = lan_record_lookup(record, key, &existing);
+  if ((!replace && exists) || (replace && !exists)) {
+    *status = -2; return NULL;
+  }
+  return lan_record_assoc(record, key, LAN_LIST, 0, list);
+}
+
+void* lan_table_select_columns(void* record, void* names_pointer, int32_t* status) {
+  LanList* names = names_pointer;
+  *status = 0;
+  if (!names || names->length == 0) { *status = -1; return NULL; }
+  void* result = lan_record_empty();
+  for (uint64_t i = 0; i < names->length; ++i) {
+    LanValue name = names->elements[i];
+    LanValue column;
+    if (name.tag != LAN_TEXT || !lan_record_lookup(record, name.pointer, &column)) {
+      *status = -2; return NULL;
+    }
+    void* updated = lan_record_assoc(result, name.pointer, column.tag,
+                                     column.number, column.pointer);
+    lan_record_release(result);
+    result = updated;
+  }
+  return result;
+}
+
+void* lan_table_slice(void* record, double amount, int32_t drop, int32_t* status) {
+  uint64_t rows = lan_table_row_count(record);
+  *status = 0;
+  /* Every integer through 2^53 is represented exactly by Number. Larger row
+     counts are not constructible by this runtime and are rejected explicitly. */
+  if (amount < 0 || amount > 9007199254740992.0 ||
+      amount != (double)(uint64_t)amount) {
+    *status = -1; return NULL;
+  }
+  uint64_t count = (uint64_t)amount;
+  if (count > rows) count = rows;
+  uint64_t start = drop ? count : 0;
+  uint64_t length = drop ? rows - count : count;
+  return table_map_lists(record, start, length, NULL, 0, NULL);
+}
+
+typedef struct { uint64_t index; LanValue value; } LanSortItem;
+
+static int compare_sort_items(const void* left, const void* right) {
+  const LanSortItem* a = left;
+  const LanSortItem* b = right;
+  int compared = 0;
+  if (a->value.tag == LAN_MISSING || b->value.tag == LAN_MISSING) {
+    if (a->value.tag != b->value.tag) compared = a->value.tag == LAN_MISSING ? 1 : -1;
+  } else if (a->value.tag == LAN_NUMBER || a->value.tag == LAN_BOOLEAN) {
+    compared = a->value.number < b->value.number ? -1
+             : a->value.number > b->value.number ? 1 : 0;
+  } else if (a->value.tag == LAN_TEXT) {
+    compared = strcmp(a->value.pointer, b->value.pointer);
+  }
+  if (compared) return compared;
+  return a->index < b->index ? -1 : a->index > b->index;
+}
+
+void* lan_table_sort_by(void* record, const char* key, int32_t* status) {
+  LanValue column;
+  *status = 0;
+  if (!lan_record_lookup(record, key, &column) || column.tag != LAN_LIST) {
+    *status = -1; return NULL;
+  }
+  LanList* list = column.pointer;
+  LanSortItem* items = list->length ? malloc(list->length * sizeof(*items)) : NULL;
+  uint64_t* order = list->length ? malloc(list->length * sizeof(*order)) : NULL;
+  if (list->length && (!items || !order)) abort();
+  int32_t observed = LAN_MISSING;
+  for (uint64_t i = 0; i < list->length; ++i) {
+    LanValue value = list->elements[i];
+    if (value.tag != LAN_MISSING) {
+      if (value.tag != LAN_NUMBER && value.tag != LAN_BOOLEAN && value.tag != LAN_TEXT) {
+        *status = -2; free(items); free(order); return NULL;
+      }
+      if (observed != LAN_MISSING && observed != value.tag) {
+        *status = -2; free(items); free(order); return NULL;
+      }
+      observed = value.tag;
+    }
+    items[i] = (LanSortItem){i, value};
+  }
+  qsort(items, list->length, sizeof(*items), compare_sort_items);
+  for (uint64_t i = 0; i < list->length; ++i) order[i] = items[i].index;
+  void* result = table_map_lists(record, 0, 0, NULL, 0, order);
+  free(items);
+  free(order);
+  return result;
+}
+
 static void print_value(LanValue value);
 
 void lan_record_print(void* record) {
@@ -282,8 +802,6 @@ void lan_record_print(void* record) {
   printf("}");
   free(entries);
 }
-
-typedef struct { uint64_t length; LanValue* elements; } LanList;
 
 static void print_value(LanValue value) {
   if (value.tag == LAN_MISSING) printf("missing");

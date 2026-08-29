@@ -1,0 +1,7 @@
+person() = {age: 20}
+
+bad() =
+  person().age = 21
+  0
+
+bad()

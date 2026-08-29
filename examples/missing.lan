@@ -1,7 +1,7 @@
 lookup(found) =
-  if found:
+  if found
     "数据"
-  else:
+  else
     missing
 
 lookup(false) ?? "没有找到"

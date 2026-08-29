@@ -1,7 +1,7 @@
 maybe(present) =
-  if present:
+  if present
     10
-  else:
+  else
     missing
 
 (maybe(false)? + 1) ?? 7

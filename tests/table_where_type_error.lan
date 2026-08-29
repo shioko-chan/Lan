@@ -1,0 +1,2 @@
+{people = table({name: ["A", "B"]});
+where(people, [1, 0])}

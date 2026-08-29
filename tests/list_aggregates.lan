@@ -1,0 +1,11 @@
+{
+  sum: sum([10, missing, 20]),
+  average: average([10, missing, 20]),
+  min: min([10, missing, 20]),
+  max: max([10, missing, 20]),
+  count: count(["A", missing, "B"]),
+  empty_sum: sum([]),
+  empty_count: count([]),
+  empty_average: average([]) ?? -1,
+  all_missing_min: min([missing]) ?? -1
+}

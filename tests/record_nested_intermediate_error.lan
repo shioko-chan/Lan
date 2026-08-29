@@ -1,0 +1,6 @@
+bad() =
+  person = {address: 1}
+  person.address.city = "Sydney"
+  person
+
+bad()

@@ -34,6 +34,7 @@ const char* typeName(Type type) {
     case Type::Text: return "文字";
     case Type::List: return "列表";
     case Type::Record: return "Record";
+    case Type::Table: return "Table";
     case Type::Dynamic: return "动态值";
     case Type::Unknown: return "尚未确定的类型";
   }
@@ -61,7 +62,18 @@ class Inference {
  public:
   explicit Inference(const Program& program) {
     for (const auto& function : program.functions) {
-      if (function->name == "main" || function->name == "length")
+      if (function->name == "main" || function->name == "length" ||
+          function->name == "table" || function->name == "row_count" ||
+          function->name == "sum" || function->name == "average" ||
+          function->name == "min" || function->name == "max" ||
+          function->name == "count" || function->name == "fill_missing" ||
+          function->name == "where" || function->name == "add_column" ||
+          function->name == "replace_column" ||
+          function->name == "add" || function->name == "replace" ||
+          function->name == "select_columns" || function->name == "take" ||
+          function->name == "drop" || function->name == "sort_by" ||
+          function->name == "same" || function->name == "first" ||
+          function->name == "last")
         fail("“" + function->name + "”由语言保留，请换一个函数名");
       if (functions_.count(function->name))
         fail("函数“" + function->name + "”定义了不止一次");
@@ -101,6 +113,19 @@ class Inference {
     scopes_.emplace_back();
     infer(*program.result);
 
+    for (const auto& access : dynamicAccesses_) {
+      Type objectType = resolved(access.object);
+      Type keyType = resolved(access.key);
+      if (objectType == Type::List || keyType == Type::Number) {
+        bind(access.key, Type::Number, "List 下标");
+        int element = listElement(access.object, "下标读取左侧");
+        unify(access.result, element, "List 下标读取结果");
+      } else {
+        recordLikeVariables_.push_back(access.object);
+        bind(access.key, Type::Text, "动态字段名");
+      }
+    }
+
     for (int variable : plusVariables_) {
       Type type = resolved(variable);
       if (type == Type::Unknown) bind(variable, Type::Number, "加法");
@@ -109,12 +134,23 @@ class Inference {
              std::string(typeName(type)));
     }
     for (int variable : equalityVariables_) {
-      if (resolved(variable) == Type::List || resolved(variable) == Type::Record)
-        fail("列表和 Record 暂时不能使用 == 或 != 整体比较");
+      if (resolved(variable) == Type::List || resolved(variable) == Type::Record ||
+          resolved(variable) == Type::Table)
+        fail("列表、Record 和 Table 暂时不能使用 == 或 != 整体比较");
+    }
+    for (int variable : recordLikeVariables_) {
+      Type type = resolved(variable);
+      if (type == Type::Unknown) bind(variable, Type::Record, "字段访问左侧");
+      else if (type != Type::Record && type != Type::Table)
+        fail("字段访问左侧需要 Record 或 Table，但这里得到的是" +
+             std::string(typeName(type)));
     }
     for (const auto& [expression, variable] : expressions_)
       if (dynamic_cast<const FieldExpr*>(expression) && resolved(variable) == Type::Unknown)
         bind(variable, Type::Dynamic, "动态字段");
+    for (int element : tableColumnElements_)
+      if (resolved(element) == Type::Unknown)
+        bind(element, Type::Dynamic, "Table 的动态列元素");
     for (auto& node : nodes_) {
       int root = find(node.parent);
       if (nodes_[root].type == Type::Unknown) nodes_[root].type = Type::Number;
@@ -126,6 +162,10 @@ class Inference {
 
   Type listElementType(const ListExpr& expr) {
     return resolved(listElement(expressions_.at(&expr), "列表"));
+  }
+
+  unsigned expressionListRank(const Expr& expr) {
+    return listRank(expressions_.at(&expr));
   }
 
   std::vector<Type> parameterTypes(const Function& function) {
@@ -149,6 +189,10 @@ class Inference {
     return resultPresences_.at(function.name);
   }
 
+  bool isVectorOperation(const BinaryExpr& expression) const {
+    return vectorOperations_.count(&expression) != 0;
+  }
+
  private:
   std::vector<TypeNode> nodes_;
   std::unordered_map<const Expr*, int> expressions_;
@@ -157,6 +201,15 @@ class Inference {
   std::vector<std::unordered_map<std::string, int>> scopes_;
   std::vector<int> plusVariables_;
   std::vector<int> equalityVariables_;
+  std::vector<int> recordLikeVariables_;
+  struct DynamicAccess {
+    int object;
+    int key;
+    int result;
+  };
+  std::vector<DynamicAccess> dynamicAccesses_;
+  std::vector<int> tableColumnElements_;
+  std::unordered_set<const BinaryExpr*> vectorOperations_;
   std::unordered_map<const Expr*, Presence> presences_;
   std::unordered_map<std::string, std::vector<Presence>> parameterPresences_;
   std::unordered_map<std::string, Presence> resultPresences_;
@@ -169,7 +222,10 @@ class Inference {
     if (auto* list = dynamic_cast<const ListExpr*>(&expr)) {
       for (const auto& element : list->elements) collectCalls(*element, calls);
     } else if (auto* record = dynamic_cast<const RecordExpr*>(&expr)) {
-      for (const auto& field : record->fields) collectCalls(*field.value, calls);
+      for (const auto& field : record->fields) {
+        if (field.key) collectCalls(*field.key, calls);
+        collectCalls(*field.value, calls);
+      }
     } else if (auto* unary = dynamic_cast<const UnaryExpr*>(&expr)) {
       collectCalls(*unary->operand, calls);
     } else if (auto* question = dynamic_cast<const PropagateExpr*>(&expr)) {
@@ -181,6 +237,11 @@ class Inference {
       collectCalls(*update->value, calls);
       collectCalls(*update->record, calls);
       if (update->key) collectCalls(*update->key, calls);
+    } else if (auto* update = dynamic_cast<const NestedRecordUpdateExpr*>(&expr)) {
+      collectCalls(*update->record, calls);
+      for (const auto& part : update->path)
+        if (part.key) collectCalls(*part.key, calls);
+      collectCalls(*update->value, calls);
     } else if (auto* binary = dynamic_cast<const BinaryExpr*>(&expr)) {
       collectCalls(*binary->lhs, calls);
       collectCalls(*binary->rhs, calls);
@@ -235,6 +296,41 @@ class Inference {
     throw std::runtime_error(message);
   }
 
+  std::vector<int> argumentSlots(const CallExpr& call,
+                                 const Function& definition) const {
+    std::vector<int> slots(definition.params.size(), -1);
+    bool sawNamed = false;
+    std::size_t nextPositional = 0;
+    for (std::size_t source = 0; source < call.args.size(); ++source) {
+      const std::string& name = call.argNames[source];
+      std::size_t slot = 0;
+      if (name.empty()) {
+        if (sawNamed)
+          fail("函数“" + call.callee + "”的位置参数必须放在命名参数之前");
+        slot = nextPositional++;
+        if (slot >= definition.params.size())
+          fail("函数“" + call.callee + "”收到的参数太多了");
+      } else {
+        sawNamed = true;
+        auto found = std::find_if(
+            definition.params.begin(), definition.params.end(),
+            [&](const Parameter& parameter) { return parameter.name == name; });
+        if (found == definition.params.end())
+          fail("函数“" + call.callee + "”没有名为“" + name + "”的参数");
+        slot = static_cast<std::size_t>(found - definition.params.begin());
+      }
+      if (slots[slot] >= 0)
+        fail("函数“" + call.callee + "”的参数“" +
+             definition.params[slot].name + "”被传入了不止一次");
+      slots[slot] = static_cast<int>(source);
+    }
+    for (std::size_t slot = 0; slot < slots.size(); ++slot)
+      if (slots[slot] < 0 && !definition.params[slot].defaultValue)
+        fail("调用函数“" + call.callee + "”时缺少必填参数“" +
+             definition.params[slot].name + "”");
+    return slots;
+  }
+
   int newVariable() {
     int id = static_cast<int>(nodes_.size());
     nodes_.push_back({id, Type::Unknown, -1});
@@ -263,6 +359,29 @@ class Inference {
     if (nodes_[root].listElement < 0)
       nodes_[root].listElement = newVariable();
     return nodes_[root].listElement;
+  }
+
+  unsigned listRank(int variable) {
+    unsigned rank = 0;
+    while (resolved(variable) == Type::List) {
+      variable = listElement(variable, "嵌套 List");
+      ++rank;
+    }
+    return rank;
+  }
+
+  int listLeaf(int variable, const std::string& contextName) {
+    while (resolved(variable) == Type::List)
+      variable = listElement(variable, contextName);
+    return variable;
+  }
+
+  int makeResultShape(int source, int result, const std::string& contextName) {
+    while (resolved(source) == Type::List) {
+      source = listElement(source, contextName);
+      result = listElement(result, contextName);
+    }
+    return result;
   }
 
   void unify(int lhs, int rhs, const std::string& contextName) {
@@ -313,8 +432,9 @@ class Inference {
     if (auto* record = dynamic_cast<const RecordExpr*>(&expr)) {
       std::unordered_set<std::string> names;
       for (const auto& field : record->fields) {
-        if (!names.insert(field.name).second)
+        if (!field.key && !names.insert(field.name).second)
           fail("Record 字段“" + field.name + "”重复了");
+        if (field.key) bind(infer(*field.key), Type::Text, "动态字段名");
         infer(*field.value);
       }
       bind(result, Type::Record, "Record");
@@ -328,6 +448,8 @@ class Inference {
           return result;
         }
       }
+      if (variable->name == "$lan_stream_receiver")
+        fail("“.字段”只能写在流式步骤的参数中");
       fail("找不到名称“" + variable->name + "”，请检查拼写或先给它一个值");
     }
     if (auto* let = dynamic_cast<const LetExpr*>(&expr)) {
@@ -351,8 +473,15 @@ class Inference {
     if (auto* unary = dynamic_cast<const UnaryExpr*>(&expr)) {
       int operand = infer(*unary->operand);
       Type required = unary->op == '!' ? Type::Boolean : Type::Number;
-      bind(operand, required, std::string("符号“") + unary->op + "”");
-      bind(result, required, "单项计算");
+      if (resolved(operand) == Type::List) {
+        bind(listLeaf(operand, "一元整列运算"), required,
+             std::string("符号“") + unary->op + "”的列元素");
+        bind(makeResultShape(operand, result, "一元整列运算结果"), required,
+             "一元整列运算结果");
+      } else {
+        bind(operand, required, std::string("符号“") + unary->op + "”");
+        bind(result, required, "单项计算");
+      }
       return result;
     }
     if (auto* question = dynamic_cast<const PropagateExpr*>(&expr)) {
@@ -360,9 +489,16 @@ class Inference {
       return result;
     }
     if (auto* field = dynamic_cast<const FieldExpr*>(&expr)) {
-      int record = infer(*field->record);
-      bind(record, Type::Record, "字段访问左侧");
-      if (field->key) bind(infer(*field->key), Type::Text, "动态字段名");
+      int object = infer(*field->record);
+      if (field->key) {
+        dynamicAccesses_.push_back({object, infer(*field->key), result});
+      } else {
+        recordLikeVariables_.push_back(object);
+        if (resolved(object) == Type::Table) {
+          int element = listElement(result, "Table 的列");
+          tableColumnElements_.push_back(element);
+        }
+      }
       return result;
     }
     if (auto* update = dynamic_cast<const RecordUpdateExpr*>(&expr)) {
@@ -373,10 +509,50 @@ class Inference {
       bind(result, Type::Record, "字段更新结果");
       return result;
     }
+    if (auto* update = dynamic_cast<const NestedRecordUpdateExpr*>(&expr)) {
+      bind(infer(*update->record), Type::Record, "嵌套字段更新左侧");
+      for (const auto& part : update->path)
+        if (part.key) bind(infer(*part.key), Type::Text, "动态字段名");
+      infer(*update->value);
+      bind(result, Type::Record, "嵌套字段更新结果");
+      return result;
+    }
     if (auto* binary = dynamic_cast<const BinaryExpr*>(&expr)) {
       int lhs = infer(*binary->lhs);
       int rhs = infer(*binary->rhs);
       const auto& op = binary->op;
+      bool leftList = resolved(lhs) == Type::List;
+      bool rightList = resolved(rhs) == Type::List;
+      bool vectorOperation = leftList || rightList;
+      if (op == "??" && !leftList) vectorOperation = false;
+      if (vectorOperation) {
+        vectorOperations_.insert(binary);
+        int leftElement = listLeaf(lhs, "整列运算左侧");
+        int rightElement = listLeaf(rhs, "整列运算右侧");
+        int shape = listRank(lhs) >= listRank(rhs) ? lhs : rhs;
+        int resultElement = makeResultShape(shape, result, "整列运算结果");
+        if (op == "+" || op == "??") {
+          unify(leftElement, rightElement, "整列运算");
+          unify(resultElement, leftElement, "整列运算结果");
+          if (op == "+") plusVariables_.push_back(resultElement);
+        } else if (op == "and" || op == "or") {
+          bind(leftElement, Type::Boolean, "整列逻辑运算左侧");
+          bind(rightElement, Type::Boolean, "整列逻辑运算右侧");
+          bind(resultElement, Type::Boolean, "整列逻辑运算结果");
+        } else if (op == "==" || op == "!=") {
+          unify(leftElement, rightElement, "整列比较");
+          equalityVariables_.push_back(leftElement);
+          bind(resultElement, Type::Boolean, "整列比较结果");
+        } else {
+          bind(leftElement, Type::Number, "整列运算左侧");
+          bind(rightElement, Type::Number, "整列运算右侧");
+          bind(resultElement,
+               (op == "<" || op == ">" || op == "<=" || op == ">=")
+                   ? Type::Boolean : Type::Number,
+               "整列运算结果");
+        }
+        return result;
+      }
       if (op == "??") {
         unify(lhs, rhs, "“??”两边");
         unify(result, lhs, "默认值的结果");
@@ -404,6 +580,45 @@ class Inference {
       return result;
     }
     if (auto* call = dynamic_cast<const CallExpr*>(&expr)) {
+      bool hasNamed = std::any_of(call->argNames.begin(), call->argNames.end(),
+                                  [](const std::string& name) { return !name.empty(); });
+      if (hasNamed && !functions_.count(call->callee))
+        fail("内置函数“" + call->callee + "”暂不接受命名参数");
+      if (call->callee == "table") {
+        if (call->args.size() != 1)
+          fail("table 需要 1 个 Record，但这里给了 " +
+               std::to_string(call->args.size()) + " 个值");
+        bind(infer(*call->args[0]), Type::Record, "table 的输入");
+        bind(result, Type::Table, "table 的结果");
+        return result;
+      }
+      if (call->callee == "row_count") {
+        if (call->args.size() != 1)
+          fail("row_count 需要 1 个 Table，但这里给了 " +
+               std::to_string(call->args.size()) + " 个值");
+        bind(infer(*call->args[0]), Type::Table, "row_count 的输入");
+        bind(result, Type::Number, "row_count 的结果");
+        return result;
+      }
+      if (call->callee == "sum" || call->callee == "average" ||
+          call->callee == "min" || call->callee == "max" ||
+          call->callee == "count") {
+        if (call->args.size() != 1 && call->args.size() != 2)
+          fail("函数“" + call->callee + "”需要一个 List，或者一个 Table 和列名");
+        if (call->args.size() == 1) {
+          int element = listElement(infer(*call->args[0]),
+                                    "函数“" + call->callee + "”的输入");
+          if (call->callee != "count")
+            bind(element, Type::Number, "函数“" + call->callee + "”的列表元素");
+        } else {
+          bind(infer(*call->args[0]), Type::Table,
+               "函数“" + call->callee + "”的第一个输入");
+          bind(infer(*call->args[1]), Type::Text,
+               "函数“" + call->callee + "”的列名");
+        }
+        bind(result, Type::Number, "函数“" + call->callee + "”的结果");
+        return result;
+      }
       if (call->callee == "length") {
         if (call->args.size() != 1)
           fail("length 需要 1 个列表，但这里给了 " +
@@ -413,20 +628,85 @@ class Inference {
         bind(result, Type::Number, "length 的结果");
         return result;
       }
+      if (call->callee == "first" || call->callee == "last") {
+        if (call->args.size() != 1)
+          fail("函数“" + call->callee + "”需要 1 个列表");
+        int list = infer(*call->args[0]);
+        unify(result, listElement(list, "函数“" + call->callee + "”的输入"),
+              "函数“" + call->callee + "”的结果");
+        return result;
+      }
+      if (call->callee == "same") {
+        if (call->args.size() != 2)
+          fail("same 需要两个要比较的值");
+        infer(*call->args[0]);
+        infer(*call->args[1]);
+        bind(result, Type::Boolean, "same 的结果");
+        return result;
+      }
+      if (call->callee == "fill_missing") {
+        if (call->args.size() != 2)
+          fail("fill_missing 需要一个列表和一个替代值");
+        int list = infer(*call->args[0]);
+        int element = listElement(list, "fill_missing 的列表");
+        unify(element, infer(*call->args[1]), "fill_missing 的替代值");
+        unify(result, list, "fill_missing 的结果");
+        return result;
+      }
+      if (call->callee == "where") {
+        if (call->args.size() != 2) fail("where 需要一个 Table 和一个真假值列表");
+        bind(infer(*call->args[0]), Type::Table, "where 的输入");
+        int mask = infer(*call->args[1]);
+        bind(listElement(mask, "where 的筛选条件"), Type::Boolean,
+             "where 的筛选条件");
+        bind(result, Type::Table, "where 的结果");
+        return result;
+      }
+      if (call->callee == "add_column" || call->callee == "replace_column") {
+        const std::string operation = call->callee == "add_column" ? "add" : "replace";
+        if (call->args.size() != 3)
+          fail(operation + " 需要一个 Table、列名和列表");
+        bind(infer(*call->args[0]), Type::Table, operation + " 的输入");
+        bind(infer(*call->args[1]), Type::Text, operation + " 的列名");
+        listElement(infer(*call->args[2]), operation + " 的新列");
+        bind(result, Type::Table, operation + " 的结果");
+        return result;
+      }
+      if (call->callee == "select_columns") {
+        if (call->args.size() != 2)
+          fail("select_columns 需要一个 Table 和列名列表");
+        bind(infer(*call->args[0]), Type::Table, "select_columns 的输入");
+        int names = infer(*call->args[1]);
+        bind(listElement(names, "select_columns 的列名"), Type::Text,
+             "select_columns 的列名");
+        bind(result, Type::Table, "select_columns 的结果");
+        return result;
+      }
+      if (call->callee == "take" || call->callee == "drop") {
+        if (call->args.size() != 2)
+          fail("函数“" + call->callee + "”需要一个 Table 和行数");
+        bind(infer(*call->args[0]), Type::Table, "函数“" + call->callee + "”的输入");
+        bind(infer(*call->args[1]), Type::Number, "函数“" + call->callee + "”的行数");
+        bind(result, Type::Table, "函数“" + call->callee + "”的结果");
+        return result;
+      }
+      if (call->callee == "sort_by") {
+        if (call->args.size() != 2) fail("sort_by 需要一个 Table 和列名");
+        bind(infer(*call->args[0]), Type::Table, "sort_by 的输入");
+        bind(infer(*call->args[1]), Type::Text, "sort_by 的列名");
+        bind(result, Type::Table, "sort_by 的结果");
+        return result;
+      }
       auto found = functions_.find(call->callee);
       if (found == functions_.end())
         fail("找不到函数“" + call->callee + "”，请检查它是否已经定义");
       const auto& definition = *definitions_.at(call->callee);
-      std::size_t required = 0;
-      while (required < definition.params.size() &&
-             !definition.params[required].defaultValue) ++required;
-      if (call->args.size() < required || call->args.size() > found->second.params.size())
-        fail("函数“" + call->callee + "”需要 " + std::to_string(required) +
-             " 到 " + std::to_string(found->second.params.size()) +
-             " 个输入，但这里给了 " + std::to_string(call->args.size()) + " 个");
-      for (std::size_t i = 0; i < call->args.size(); ++i)
-        unify(infer(*call->args[i]), found->second.params[i],
-              "传给函数“" + call->callee + "”的第 " + std::to_string(i + 1) + " 个值");
+      auto slots = argumentSlots(*call, definition);
+      for (std::size_t slot = 0; slot < slots.size(); ++slot)
+        if (slots[slot] >= 0)
+          unify(infer(*call->args[slots[slot]]), found->second.params[slot],
+                "传给函数“" + call->callee + "”的参数“" +
+                    definition.params[slot].name + "”");
       unify(result, found->second.result, "函数“" + call->callee + "”的结果");
       return result;
     }
@@ -456,7 +736,10 @@ class Inference {
       if (auto* list = dynamic_cast<const ListExpr*>(&expr))
         for (const auto& element : list->elements) presenceOf(*element);
       if (auto* record = dynamic_cast<const RecordExpr*>(&expr))
-        for (const auto& field : record->fields) presenceOf(*field.value);
+        for (const auto& field : record->fields) {
+          if (field.key) presenceOf(*field.key);
+          presenceOf(*field.value);
+        }
       result = kPresent;
     } else if (dynamic_cast<const MissingExpr*>(&expr)) {
       result = kMissing;
@@ -490,6 +773,12 @@ class Inference {
       Presence record = presenceOf(*update->record);
       if (update->key) presenceOf(*update->key);
       result = record;
+    } else if (auto* update = dynamic_cast<const NestedRecordUpdateExpr*>(&expr)) {
+      Presence record = presenceOf(*update->record);
+      for (const auto& part : update->path)
+        if (part.key) presenceOf(*part.key);
+      presenceOf(*update->value);
+      result = record;
     } else if (auto* binary = dynamic_cast<const BinaryExpr*>(&expr)) {
       Presence lhs = presenceOf(*binary->lhs);
       Presence rhs = presenceOf(*binary->rhs);
@@ -504,12 +793,41 @@ class Inference {
         result = propagate(lhs, rhs);
       }
     } else if (auto* call = dynamic_cast<const CallExpr*>(&expr)) {
-      if (call->callee == "length") {
+      if (call->callee == "length" || call->callee == "table" ||
+          call->callee == "row_count") {
         result = presenceOf(*call->args[0]);
+      } else if (call->callee == "first" || call->callee == "last") {
+        presenceOf(*call->args[0]);
+        result = kMaybeMissing;
+      } else if (call->callee == "same") {
+        presenceOf(*call->args[0]);
+        presenceOf(*call->args[1]);
+        result = kPresent;
+      } else if (call->callee == "sum" || call->callee == "count") {
+        result = presenceOf(*call->args[0]);
+        if (call->args.size() == 2)
+          result = propagate(result, presenceOf(*call->args[1]));
+      } else if (call->callee == "average" || call->callee == "min" ||
+                 call->callee == "max") {
+        presenceOf(*call->args[0]);
+        if (call->args.size() == 2) presenceOf(*call->args[1]);
+        result = kMaybeMissing;
+      } else if (call->callee == "fill_missing" || call->callee == "where" ||
+                 call->callee == "select_columns" || call->callee == "take" ||
+                 call->callee == "drop" || call->callee == "sort_by") {
+        result = propagate(presenceOf(*call->args[0]), presenceOf(*call->args[1]));
+      } else if (call->callee == "add_column" ||
+                 call->callee == "replace_column") {
+        result = propagate(propagate(presenceOf(*call->args[0]),
+                                    presenceOf(*call->args[1])),
+                           presenceOf(*call->args[2]));
       } else {
-        auto arguments = std::vector<Presence>();
-        for (const auto& argument : call->args) arguments.push_back(presenceOf(*argument));
         const auto& definition = *definitions_.at(call->callee);
+        auto slots = argumentSlots(*call, definition);
+        auto arguments = std::vector<Presence>(definition.params.size(), kNoPresence);
+        for (std::size_t slot = 0; slot < slots.size(); ++slot)
+          if (slots[slot] >= 0)
+            arguments[slot] = presenceOf(*call->args[slots[slot]]);
         result = analyzeFunctionPresence(definition, std::move(arguments));
       }
     }
@@ -519,8 +837,9 @@ class Inference {
 
   Presence analyzeFunctionPresence(const Function& function,
                                     std::vector<Presence> arguments) {
-    const std::size_t supplied = arguments.size();
-    std::string contextKey = std::to_string(supplied) + ":";
+    std::string contextKey;
+    for (Presence argument : arguments)
+      contextKey.push_back(static_cast<char>('0' + argument));
     for (Presence argument : arguments)
       contextKey.push_back(static_cast<char>('0' + argument));
     auto& contexts = presenceResultsByContext_[function.name];
@@ -532,8 +851,8 @@ class Inference {
     presenceScopes_.clear();
     presenceScopes_.emplace_back();
     for (std::size_t i = 0; i < function.params.size(); ++i) {
-      if (i >= arguments.size())
-        arguments.push_back(presenceOf(*function.params[i].defaultValue));
+      if (arguments[i] == kNoPresence)
+        arguments[i] = presenceOf(*function.params[i].defaultValue);
       presenceScopes_.back().emplace(function.params[i].name, arguments[i]);
     }
 
@@ -609,6 +928,7 @@ struct CodeGenerator::Impl {
       case Type::Text: return llvm::PointerType::get(context, 0);
       case Type::List: return llvm::PointerType::get(context, 0);
       case Type::Record: return llvm::PointerType::get(context, 0);
+      case Type::Table: return llvm::PointerType::get(context, 0);
       case Type::Dynamic: return taggedValueType();
       case Type::Unknown: break;
     }
@@ -769,6 +1089,7 @@ struct CodeGenerator::Impl {
       case Type::Text: return 3;
       case Type::List: return 4;
       case Type::Record: return 5;
+      case Type::Table: return 5;
       case Type::Dynamic: break;
       case Type::Unknown: break;
     }
@@ -813,10 +1134,13 @@ struct CodeGenerator::Impl {
                               {llvmType(Type::Record)});
     llvm::Value* root = builder.CreateCall(emptyFn, {}, "record.empty");
     for (const auto& field : record.fields) {
+      auto* key = field.key
+          ? requirePresent(emitExpr(*field.key), "动态字段名").value
+          : builder.CreateGlobalString(field.name);
       auto value = emitExpr(*field.value);
       auto parts = dynamicParts(value);
       auto* updated = builder.CreateCall(
-          assocFn, {root, builder.CreateGlobalString(field.name), parts[0], parts[1], parts[2]},
+          assocFn, {root, key, parts[0], parts[1], parts[2]},
           "record.insert");
       builder.CreateCall(releaseFn, {root});
       root = updated;
@@ -833,36 +1157,26 @@ struct CodeGenerator::Impl {
     auto putsFn = external("puts", builder.getInt32Ty(), {llvmType(Type::Text)});
     auto exitFn = external("exit", builder.getVoidTy(), {builder.getInt32Ty()});
     builder.CreateCall(
-        putsFn, {builder.CreateGlobalString("Lan 运行错误：Record 字段不是" +
+        putsFn, {builder.CreateGlobalString("Lan 运行错误：读取到的值不是" +
                                            std::string(typeName(expected)))});
     builder.CreateCall(exitFn, {builder.getInt32(1)});
     builder.CreateUnreachable();
   }
 
-  TypedValue emitField(const FieldExpr& field, Type expected) {
-    auto record = requirePresent(emitExpr(*field.record), "字段访问左侧");
-    auto* key = fieldKey(field.name, field.key.get());
-    auto* storage = builder.CreateAlloca(taggedValueType(), nullptr, "field.value");
-    builder.CreateStore(missingValue(Type::Dynamic), storage);
-    auto lookupFn = external("lan_record_lookup", builder.getInt32Ty(),
-                             {llvmType(Type::Record), llvmType(Type::Text),
-                              llvm::PointerType::get(context, 0)});
-    auto* found = builder.CreateICmpNE(
-        builder.CreateCall(lookupFn, {record.value, key, storage}), builder.getInt32(0),
-        "field.found");
-    auto* dynamic = builder.CreateLoad(taggedValueType(), storage, "field.dynamic");
+  TypedValue decodeLookupValue(llvm::Value* found, llvm::Value* dynamic,
+                               Type expected) {
     if (expected == Type::Dynamic)
       return {dynamic, Type::Dynamic, kMaybeMissing};
 
-    auto* tag = builder.CreateExtractValue(dynamic, 0, "field.tag");
+    auto* tag = builder.CreateExtractValue(dynamic, 0, "lookup.tag");
     auto* absent = builder.CreateOr(builder.CreateNot(found),
                                     builder.CreateICmpEQ(tag, builder.getInt32(0)),
-                                    "field.missing");
+                                    "lookup.missing");
     auto* valid = builder.CreateOr(absent,
-        builder.CreateICmpEQ(tag, builder.getInt32(tagFor(expected))), "field.valid");
+        builder.CreateICmpEQ(tag, builder.getInt32(tagFor(expected))), "lookup.valid");
     auto* function = builder.GetInsertBlock()->getParent();
-    auto* validBlock = llvm::BasicBlock::Create(context, "field.typed", function);
-    auto* errorBlock = llvm::BasicBlock::Create(context, "field.type.error", function);
+    auto* validBlock = llvm::BasicBlock::Create(context, "lookup.typed", function);
+    auto* errorBlock = llvm::BasicBlock::Create(context, "lookup.type.error", function);
     builder.CreateCondBr(valid, validBlock, errorBlock);
     builder.SetInsertPoint(errorBlock);
     emitFieldTypeError(expected);
@@ -890,10 +1204,48 @@ struct CodeGenerator::Impl {
     return {builder.CreateSelect(absent, null, pointer), expected, kMaybeMissing};
   }
 
+  TypedValue emitField(const FieldExpr& field, Type expected) {
+    auto record = requirePresent(emitExpr(*field.record), "字段访问左侧");
+    auto* key = fieldKey(field.name, field.key.get());
+    return emitRecordLookup(record.value, key, expected);
+  }
+
+  TypedValue emitRecordLookup(llvm::Value* record, llvm::Value* key, Type expected) {
+    auto* storage = builder.CreateAlloca(taggedValueType(), nullptr, "field.value");
+    builder.CreateStore(missingValue(Type::Dynamic), storage);
+    auto lookupFn = external("lan_record_lookup", builder.getInt32Ty(),
+                             {llvmType(Type::Record), llvmType(Type::Text),
+                              llvm::PointerType::get(context, 0)});
+    auto* found = builder.CreateICmpNE(
+        builder.CreateCall(lookupFn, {record, key, storage}), builder.getInt32(0),
+        "field.found");
+    auto* dynamic = builder.CreateLoad(taggedValueType(), storage, "field.dynamic");
+    return decodeLookupValue(found, dynamic, expected);
+  }
+
+  TypedValue emitListIndex(const FieldExpr& access, Type expected) {
+    auto list = requirePresent(emitExpr(*access.record), "List 下标读取左侧");
+    auto index = requirePresent(emitExpr(*access.key), "List 下标");
+    return emitListLookup(list.value, index.value, expected);
+  }
+
+  TypedValue emitListLookup(llvm::Value* list, llvm::Value* index, Type expected) {
+    auto* storage = builder.CreateAlloca(taggedValueType(), nullptr, "list.item");
+    builder.CreateStore(missingValue(Type::Dynamic), storage);
+    auto lookupFn = external("lan_list_lookup", builder.getInt32Ty(),
+        {llvmType(Type::List), builder.getDoubleTy(),
+         llvm::PointerType::get(context, 0)});
+    auto* found = builder.CreateICmpNE(
+        builder.CreateCall(lookupFn, {list, index, storage}),
+        builder.getInt32(0), "item.found");
+    auto* dynamic = builder.CreateLoad(taggedValueType(), storage, "item.dynamic");
+    return decodeLookupValue(found, dynamic, expected);
+  }
+
   TypedValue emitRecordUpdate(const RecordUpdateExpr& update) {
-    auto value = emitExpr(*update.value);
     auto record = requirePresent(emitExpr(*update.record), "字段更新左侧");
     auto* key = fieldKey(update.name, update.key.get());
+    auto value = emitExpr(*update.value);
     auto parts = dynamicParts(value);
     auto assocFn = external("lan_record_assoc", llvmType(Type::Record),
                             {llvmType(Type::Record), llvmType(Type::Text),
@@ -903,6 +1255,316 @@ struct CodeGenerator::Impl {
                                {record.value, key, parts[0], parts[1], parts[2]},
                                "record.update"),
             Type::Record, kPresent};
+  }
+
+  TypedValue emitNestedRecordUpdate(const NestedRecordUpdateExpr& update) {
+    auto root = requirePresent(emitExpr(*update.record), "嵌套字段更新左侧");
+    std::vector<llvm::Value*> keys;
+    keys.reserve(update.path.size());
+    for (const auto& part : update.path)
+      keys.push_back(fieldKey(part.name, part.key.get()));
+
+    std::vector<llvm::Value*> records{root.value};
+    for (std::size_t i = 0; i + 1 < keys.size(); ++i) {
+      auto child = requirePresent(
+          emitRecordLookup(records.back(), keys[i], Type::Record),
+          "嵌套字段更新的中间字段");
+      records.push_back(child.value);
+    }
+
+    TypedValue current = emitExpr(*update.value);
+    auto assocFn = external("lan_record_assoc", llvmType(Type::Record),
+                            {llvmType(Type::Record), llvmType(Type::Text),
+                             builder.getInt32Ty(), builder.getDoubleTy(),
+                             llvmType(Type::Text)});
+    for (std::size_t i = keys.size(); i-- > 0;) {
+      auto parts = dynamicParts(current);
+      current = {builder.CreateCall(
+                     assocFn,
+                     {records[i], keys[i], parts[0], parts[1], parts[2]},
+                     "record.nested.update"),
+                 Type::Record, kPresent};
+    }
+    return current;
+  }
+
+  TypedValue emitListEndpoint(const CallExpr& call, bool last, Type expected) {
+    auto list = requirePresent(emitExpr(*call.args[0]),
+                               last ? "last 的输入" : "first 的输入");
+    llvm::Value* index = llvm::ConstantFP::get(builder.getDoubleTy(), 0.0);
+    if (last) {
+      auto* length = builder.CreateLoad(
+          builder.getInt64Ty(),
+          builder.CreateStructGEP(listValueType(), list.value, 0), "list.length");
+      auto* nonempty = builder.CreateICmpNE(length, builder.getInt64(0));
+      auto* safeIndex = builder.CreateSelect(
+          nonempty, builder.CreateSub(length, builder.getInt64(1)),
+          builder.getInt64(0));
+      index = builder.CreateUIToFP(safeIndex, builder.getDoubleTy(), "last.index");
+    }
+    return emitListLookup(list.value, index, expected);
+  }
+
+  void emitTableError(const std::string& message) {
+    auto putsFn = external("puts", builder.getInt32Ty(), {llvmType(Type::Text)});
+    auto exitFn = external("exit", builder.getVoidTy(), {builder.getInt32Ty()});
+    builder.CreateCall(putsFn, {builder.CreateGlobalString("Lan 运行错误：" + message)});
+    builder.CreateCall(exitFn, {builder.getInt32(1)});
+    builder.CreateUnreachable();
+  }
+
+  TypedValue emitTableValidation(const CallExpr& call) {
+    auto record = requirePresent(emitExpr(*call.args[0]), "table 的输入");
+    auto* rows = builder.CreateAlloca(builder.getInt64Ty(), nullptr, "table.rows");
+    auto validateFn = external("lan_table_validate", builder.getInt32Ty(),
+                               {llvmType(Type::Record),
+                                llvm::PointerType::get(context, 0)});
+    auto* valid = builder.CreateICmpNE(
+        builder.CreateCall(validateFn, {record.value, rows}), builder.getInt32(0),
+        "table.valid");
+    auto* function = builder.GetInsertBlock()->getParent();
+    auto* validBlock = llvm::BasicBlock::Create(context, "table.validated", function);
+    auto* errorBlock = llvm::BasicBlock::Create(context, "table.invalid", function);
+    builder.CreateCondBr(valid, validBlock, errorBlock);
+    builder.SetInsertPoint(errorBlock);
+    emitTableError("table 的所有字段必须是长度相同的列表");
+    builder.SetInsertPoint(validBlock);
+    return {record.value, Type::Table, kPresent};
+  }
+
+  TypedValue emitTableRowCount(const CallExpr& call) {
+    auto table = requirePresent(emitExpr(*call.args[0]), "row_count 的输入");
+    auto countFn = external("lan_table_row_count", builder.getInt64Ty(),
+                            {llvmType(Type::Table)});
+    auto* rows = builder.CreateCall(countFn, {table.value}, "table.row.count");
+    return {builder.CreateUIToFP(rows, builder.getDoubleTy(), "table.row.number"),
+            Type::Number, kPresent};
+  }
+
+  TypedValue emitTableAggregate(const CallExpr& call) {
+    auto table = requirePresent(emitExpr(*call.args[0]),
+                                "函数“" + call.callee + "”的 Table");
+    auto key = requirePresent(emitExpr(*call.args[1]),
+                              "函数“" + call.callee + "”的列名");
+    int operation = call.callee == "sum" ? 0 : call.callee == "average" ? 1
+                  : call.callee == "min" ? 2 : call.callee == "max" ? 3 : 4;
+    auto* output = builder.CreateAlloca(builder.getDoubleTy(), nullptr,
+                                        "table.aggregate.value");
+    builder.CreateStore(llvm::ConstantFP::get(builder.getDoubleTy(), 0.0), output);
+    auto aggregateFn = external("lan_table_aggregate", builder.getInt32Ty(),
+                                {llvmType(Type::Table), llvmType(Type::Text),
+                                 builder.getInt32Ty(),
+                                 llvm::PointerType::get(context, 0)});
+    auto* status = builder.CreateCall(
+        aggregateFn, {table.value, key.value, builder.getInt32(operation), output},
+        "table.aggregate.status");
+    auto* valid = builder.CreateICmpSGE(status, builder.getInt32(0));
+    auto* function = builder.GetInsertBlock()->getParent();
+    auto* validBlock = llvm::BasicBlock::Create(context, "aggregate.valid", function);
+    auto* errorBlock = llvm::BasicBlock::Create(context, "aggregate.invalid", function);
+    builder.CreateCondBr(valid, validBlock, errorBlock);
+    builder.SetInsertPoint(errorBlock);
+    emitTableError("函数“" + call.callee + "”找不到该列，或列的类型不符合要求");
+    builder.SetInsertPoint(validBlock);
+    auto* value = builder.CreateLoad(builder.getDoubleTy(), output,
+                                     "table.aggregate.result");
+    if (call.callee == "sum" || call.callee == "count")
+      return {value, Type::Number, kPresent};
+    llvm::Value* option = llvm::UndefValue::get(maybeNumberType());
+    option = builder.CreateInsertValue(
+        option, builder.CreateICmpEQ(status, builder.getInt32(1)), 0);
+    option = builder.CreateInsertValue(option, value, 1);
+    return {option, Type::Number, kMaybeMissing};
+  }
+
+  TypedValue emitListAggregate(const CallExpr& call) {
+    auto list = requirePresent(emitExpr(*call.args[0]),
+                               "函数“" + call.callee + "”的 List");
+    int operation = call.callee == "sum" ? 0 : call.callee == "average" ? 1
+                  : call.callee == "min" ? 2 : call.callee == "max" ? 3 : 4;
+    auto* output = builder.CreateAlloca(builder.getDoubleTy(), nullptr,
+                                        "list.aggregate.value");
+    builder.CreateStore(llvm::ConstantFP::get(builder.getDoubleTy(), 0.0), output);
+    auto aggregateFn = external("lan_list_aggregate", builder.getInt32Ty(),
+        {llvmType(Type::List), builder.getInt32Ty(),
+         llvm::PointerType::get(context, 0)});
+    auto* status = builder.CreateCall(
+        aggregateFn, {list.value, builder.getInt32(operation), output},
+        "list.aggregate.status");
+    auto* valid = builder.CreateICmpSGE(status, builder.getInt32(0));
+    auto* function = builder.GetInsertBlock()->getParent();
+    auto* validBlock = llvm::BasicBlock::Create(context, "aggregate.valid", function);
+    auto* errorBlock = llvm::BasicBlock::Create(context, "aggregate.invalid", function);
+    builder.CreateCondBr(valid, validBlock, errorBlock);
+    builder.SetInsertPoint(errorBlock);
+    emitTableError("函数“" + call.callee + "”需要数字列表");
+    builder.SetInsertPoint(validBlock);
+    auto* value = builder.CreateLoad(builder.getDoubleTy(), output,
+                                     "list.aggregate.result");
+    if (call.callee == "sum" || call.callee == "count")
+      return {value, Type::Number, kPresent};
+    llvm::Value* option = llvm::UndefValue::get(maybeNumberType());
+    option = builder.CreateInsertValue(
+        option, builder.CreateICmpEQ(status, builder.getInt32(1)), 0);
+    option = builder.CreateInsertValue(option, value, 1);
+    return {option, Type::Number, kMaybeMissing};
+  }
+
+  TypedValue emitSame(const CallExpr& call) {
+    auto left = emitExpr(*call.args[0]);
+    auto right = emitExpr(*call.args[1]);
+    auto leftParts = dynamicParts(left);
+    auto rightParts = dynamicParts(right);
+    auto sameFn = external("lan_value_same", builder.getInt32Ty(),
+        {builder.getInt32Ty(), builder.getDoubleTy(), llvmType(Type::Text),
+         builder.getInt32Ty(), builder.getDoubleTy(), llvmType(Type::Text)});
+    auto* equal = builder.CreateCall(
+        sameFn,
+        {leftParts[0], leftParts[1], leftParts[2],
+         rightParts[0], rightParts[1], rightParts[2]},
+        "structurally.same");
+    return {builder.CreateICmpNE(equal, builder.getInt32(0), "same.result"),
+            Type::Boolean, kPresent};
+  }
+
+  void requireRuntimeSuccess(llvm::Value* status, const std::string& message) {
+    auto* function = builder.GetInsertBlock()->getParent();
+    auto* validBlock = llvm::BasicBlock::Create(context, "operation.valid", function);
+    auto* errorBlock = llvm::BasicBlock::Create(context, "operation.invalid", function);
+    builder.CreateCondBr(builder.CreateICmpEQ(status, builder.getInt32(0)),
+                         validBlock, errorBlock);
+    builder.SetInsertPoint(errorBlock);
+    emitTableError(message);
+    builder.SetInsertPoint(validBlock);
+  }
+
+  TypedValue emitListBinary(const BinaryExpr& binary) {
+    Type rightType = inference->expressionType(*binary.rhs);
+    auto left = requirePresent(emitExpr(*binary.lhs), "整列运算左侧");
+    auto emittedRight = emitExpr(*binary.rhs);
+    auto right = binary.op == "??" && rightType != Type::List
+        ? emittedRight : requirePresent(emittedRight, "整列运算右侧");
+    auto leftParts = dynamicParts(left);
+    auto rightParts = dynamicParts(right);
+    int operation = binary.op == "+" ? 0 : binary.op == "-" ? 1
+                  : binary.op == "*" ? 2 : binary.op == "/" ? 3
+                  : binary.op == "==" ? 4 : binary.op == "!=" ? 5
+                  : binary.op == "<" ? 6 : binary.op == ">" ? 7
+                  : binary.op == "<=" ? 8 : binary.op == ">=" ? 9
+                  : binary.op == "and" ? 10 : binary.op == "or" ? 11 : 12;
+    auto* status = builder.CreateAlloca(builder.getInt32Ty(), nullptr,
+                                        "list.operation.status");
+    auto operationFn = external(
+        "lan_list_binary", llvmType(Type::List),
+        {builder.getInt32Ty(), builder.getDoubleTy(), llvmType(Type::Text),
+         builder.getInt32Ty(), builder.getInt32Ty(), builder.getDoubleTy(),
+         llvmType(Type::Text), builder.getInt32Ty(),
+         builder.getInt32Ty(), llvm::PointerType::get(context, 0)});
+    auto* result = builder.CreateCall(
+        operationFn,
+        {leftParts[0], leftParts[1], leftParts[2],
+         builder.getInt32(inference->expressionListRank(*binary.lhs)),
+         rightParts[0], rightParts[1], rightParts[2],
+         builder.getInt32(inference->expressionListRank(*binary.rhs)),
+         builder.getInt32(operation), status},
+        "list.operation");
+    requireRuntimeSuccess(builder.CreateLoad(builder.getInt32Ty(), status),
+                          "整列运算要求元素类型正确");
+    return {result, Type::List, kPresent};
+  }
+
+  TypedValue emitListUnary(const UnaryExpr& unary) {
+    auto list = requirePresent(emitExpr(*unary.operand), "一元整列运算");
+    auto* status = builder.CreateAlloca(builder.getInt32Ty(), nullptr,
+                                        "list.unary.status");
+    auto operationFn = external("lan_list_unary", llvmType(Type::List),
+        {llvmType(Type::List), builder.getInt32Ty(), builder.getInt32Ty(),
+         llvm::PointerType::get(context, 0)});
+    auto* result = builder.CreateCall(
+        operationFn, {list.value,
+                      builder.getInt32(inference->expressionListRank(*unary.operand)),
+                      builder.getInt32(unary.op == '!' ? 1 : 0), status},
+        "list.unary");
+    requireRuntimeSuccess(builder.CreateLoad(builder.getInt32Ty(), status),
+                          "一元整列运算的元素类型不正确");
+    return {result, Type::List, kPresent};
+  }
+
+  TypedValue emitFillMissing(const CallExpr& call) {
+    auto list = requirePresent(emitExpr(*call.args[0]), "fill_missing 的列表");
+    auto replacement = requirePresent(emitExpr(*call.args[1]),
+                                      "fill_missing 的替代值");
+    auto parts = dynamicParts(replacement);
+    auto* status = builder.CreateAlloca(builder.getInt32Ty(), nullptr,
+                                        "fill.missing.status");
+    auto function = external(
+        "lan_list_fill_missing", llvmType(Type::List),
+        {llvmType(Type::List), builder.getInt32Ty(), builder.getDoubleTy(),
+         llvmType(Type::Text), llvm::PointerType::get(context, 0)});
+    auto* result = builder.CreateCall(function,
+        {list.value, parts[0], parts[1], parts[2], status}, "filled.column");
+    requireRuntimeSuccess(builder.CreateLoad(builder.getInt32Ty(), status),
+                          "fill_missing 的替代值必须与列元素类型相同");
+    return {result, Type::List, kPresent};
+  }
+
+  TypedValue emitTableTransform(const CallExpr& call) {
+    const std::string displayName = call.callee == "add_column" ? "add"
+                                  : call.callee == "replace_column" ? "replace"
+                                  : call.callee;
+    auto table = requirePresent(emitExpr(*call.args[0]),
+                                "操作“" + displayName + "”的 Table");
+    auto* status = builder.CreateAlloca(builder.getInt32Ty(), nullptr,
+                                        "table.operation.status");
+    llvm::Value* result = nullptr;
+    if (call.callee == "where") {
+      auto mask = requirePresent(emitExpr(*call.args[1]), "where 的筛选条件");
+      auto function = external("lan_table_where", llvmType(Type::Table),
+          {llvmType(Type::Table), llvmType(Type::List),
+           llvm::PointerType::get(context, 0)});
+      result = builder.CreateCall(function, {table.value, mask.value, status},
+                                  "filtered.table");
+    } else if (call.callee == "add_column" ||
+               call.callee == "replace_column") {
+      const std::string operation = call.callee == "add_column" ? "add" : "replace";
+      auto name = requirePresent(emitExpr(*call.args[1]), operation + " 的列名");
+      auto column = requirePresent(emitExpr(*call.args[2]), operation + " 的新列");
+      auto function = external("lan_table_update_column", llvmType(Type::Table),
+          {llvmType(Type::Table), llvmType(Type::Text), llvmType(Type::List),
+           builder.getInt32Ty(),
+           llvm::PointerType::get(context, 0)});
+      result = builder.CreateCall(function,
+          {table.value, name.value, column.value,
+           builder.getInt32(call.callee == "replace_column"), status},
+          "table.updated.column");
+    } else if (call.callee == "select_columns") {
+      auto names = requirePresent(emitExpr(*call.args[1]),
+                                  "select_columns 的列名列表");
+      auto function = external("lan_table_select_columns", llvmType(Type::Table),
+          {llvmType(Type::Table), llvmType(Type::List),
+           llvm::PointerType::get(context, 0)});
+      result = builder.CreateCall(function, {table.value, names.value, status},
+                                  "selected.table");
+    } else if (call.callee == "take" || call.callee == "drop") {
+      auto amount = requirePresent(emitExpr(*call.args[1]),
+                                   "函数“" + call.callee + "”的行数");
+      auto function = external("lan_table_slice", llvmType(Type::Table),
+          {llvmType(Type::Table), builder.getDoubleTy(), builder.getInt32Ty(),
+           llvm::PointerType::get(context, 0)});
+      result = builder.CreateCall(function,
+          {table.value, amount.value, builder.getInt32(call.callee == "drop"), status},
+          "sliced.table");
+    } else {
+      auto name = requirePresent(emitExpr(*call.args[1]), "sort_by 的列名");
+      auto function = external("lan_table_sort_by", llvmType(Type::Table),
+          {llvmType(Type::Table), llvmType(Type::Text),
+           llvm::PointerType::get(context, 0)});
+      result = builder.CreateCall(function, {table.value, name.value, status},
+                                  "sorted.table");
+    }
+    requireRuntimeSuccess(builder.CreateLoad(builder.getInt32Ty(), status),
+                          "操作“" + displayName + "”的参数或列不符合要求");
+    return {result, Type::Table, kPresent};
   }
 
   llvm::Value* emitList(const ListExpr& list) {
@@ -1242,6 +1904,26 @@ struct CodeGenerator::Impl {
     return {compute(lhs, rhs), resultType, kPresent};
   }
 
+  std::vector<int> emittedArgumentSlots(const CallExpr& call,
+                                        const Function& definition) const {
+    std::vector<int> slots(definition.params.size(), -1);
+    std::size_t positional = 0;
+    for (std::size_t source = 0; source < call.args.size(); ++source) {
+      if (call.argNames[source].empty()) {
+        slots[positional++] = static_cast<int>(source);
+      } else {
+        auto found = std::find_if(
+            definition.params.begin(), definition.params.end(),
+            [&](const Parameter& parameter) {
+              return parameter.name == call.argNames[source];
+            });
+        slots[static_cast<std::size_t>(found - definition.params.begin())] =
+            static_cast<int>(source);
+      }
+    }
+    return slots;
+  }
+
   TypedValue emitExpr(const Expr& expr) {
     Type type = inference->expressionType(expr);
     Presence presence = inference->expressionPresence(expr);
@@ -1274,11 +1956,17 @@ struct CodeGenerator::Impl {
     if (auto* conditional = dynamic_cast<const IfExpr*>(&expr)) return emitIf(*conditional);
     if (auto* propagate = dynamic_cast<const PropagateExpr*>(&expr))
       return emitPropagate(*propagate);
-    if (auto* field = dynamic_cast<const FieldExpr*>(&expr))
+    if (auto* field = dynamic_cast<const FieldExpr*>(&expr)) {
+      if (inference->expressionType(*field->record) == Type::List)
+        return emitListIndex(*field, type);
       return emitField(*field, type);
+    }
     if (auto* update = dynamic_cast<const RecordUpdateExpr*>(&expr))
       return emitRecordUpdate(*update);
+    if (auto* update = dynamic_cast<const NestedRecordUpdateExpr*>(&expr))
+      return emitNestedRecordUpdate(*update);
     if (auto* unary = dynamic_cast<const UnaryExpr*>(&expr)) {
+      if (type == Type::List) return emitListUnary(*unary);
       auto operand = emitExpr(*unary->operand);
       return guarded({operand}, type, presence, [&]() {
         auto* raw = rawPayload(operand);
@@ -1287,6 +1975,8 @@ struct CodeGenerator::Impl {
       });
     }
     if (auto* binary = dynamic_cast<const BinaryExpr*>(&expr)) {
+      if (inference->isVectorOperation(*binary))
+        return emitListBinary(*binary);
       if (binary->op == "??") return emitCoalesce(*binary);
       if (binary->op == "and" || binary->op == "or") return emitLogical(*binary);
       const auto& op = binary->op;
@@ -1329,6 +2019,20 @@ struct CodeGenerator::Impl {
       });
     }
     if (auto* call = dynamic_cast<const CallExpr*>(&expr)) {
+      if (call->callee == "same") return emitSame(*call);
+      if (call->callee == "table") return emitTableValidation(*call);
+      if (call->callee == "row_count") return emitTableRowCount(*call);
+      if (call->callee == "sum" || call->callee == "average" ||
+          call->callee == "min" || call->callee == "max" ||
+          call->callee == "count")
+        return call->args.size() == 1 ? emitListAggregate(*call)
+                                      : emitTableAggregate(*call);
+      if (call->callee == "fill_missing") return emitFillMissing(*call);
+      if (call->callee == "where" || call->callee == "add_column" ||
+          call->callee == "replace_column" ||
+          call->callee == "select_columns" || call->callee == "take" ||
+          call->callee == "drop" || call->callee == "sort_by")
+        return emitTableTransform(*call);
       if (call->callee == "length") {
         auto list = emitExpr(*call->args[0]);
         return guarded({list}, Type::Number, presence, [&]() {
@@ -1338,14 +2042,17 @@ struct CodeGenerator::Impl {
           return builder.CreateUIToFP(length, builder.getDoubleTy(), "length.number");
         });
       }
+      if (call->callee == "first") return emitListEndpoint(*call, false, type);
+      if (call->callee == "last") return emitListEndpoint(*call, true, type);
       std::vector<llvm::Value*> args;
       const auto& target = *declarations.at(call->callee);
       auto targetPresences = inference->parameterPresences(target);
       std::vector<TypedValue> supplied;
       for (const auto& argument : call->args) supplied.push_back(emitExpr(*argument));
+      auto slots = emittedArgumentSlots(*call, target);
       scopes.emplace_back();
       for (std::size_t i = 0; i < target.params.size(); ++i) {
-        auto argument = i < supplied.size() ? supplied[i]
+        auto argument = slots[i] >= 0 ? supplied[slots[i]]
             : emitExpr(*target.params[i].defaultValue);
         argument = convertPresence(argument, targetPresences[i]);
         scopes.back().emplace(target.params[i].name, argument);
@@ -1419,7 +2126,7 @@ struct CodeGenerator::Impl {
     } else if (result.type == Type::List) {
       builder.CreateCall(printListFunction, {raw});
       builder.CreateCall(printfFn, {builder.CreateGlobalString("\n")});
-    } else if (result.type == Type::Record) {
+    } else if (result.type == Type::Record || result.type == Type::Table) {
       auto recordPrint = external("lan_record_print", builder.getVoidTy(),
                                   {llvmType(Type::Record)});
       builder.CreateCall(recordPrint, {raw});

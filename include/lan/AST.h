@@ -7,7 +7,9 @@
 
 namespace lan {
 
-enum class Type { Unknown, Number, Boolean, Text, List, Record, Dynamic };
+// Table is a compile-time refinement. Its LLVM/runtime representation is the
+// same Record pointer returned by table(record).
+enum class Type { Unknown, Number, Boolean, Text, List, Record, Table, Dynamic };
 
 struct Expr {
   virtual ~Expr() = default;
@@ -41,11 +43,13 @@ struct ListExpr final : Expr {
 struct RecordField {
   RecordField(std::string name, Expr* value)
       : name(std::move(name)), value(value) {}
+  RecordField(Expr* key, Expr* value) : key(key), value(value) {}
   RecordField(RecordField&&) = default;
   RecordField& operator=(RecordField&&) = default;
   RecordField(const RecordField&) = delete;
   RecordField& operator=(const RecordField&) = delete;
   std::string name;
+  std::unique_ptr<Expr> key;
   std::unique_ptr<Expr> value;
 };
 
@@ -91,6 +95,26 @@ struct RecordUpdateExpr final : Expr {
   std::unique_ptr<Expr> value;
 };
 
+struct RecordPathPart {
+  explicit RecordPathPart(std::string name) : name(std::move(name)) {}
+  explicit RecordPathPart(Expr* key) : key(key) {}
+  RecordPathPart(RecordPathPart&&) = default;
+  RecordPathPart& operator=(RecordPathPart&&) = default;
+  RecordPathPart(const RecordPathPart&) = delete;
+  RecordPathPart& operator=(const RecordPathPart&) = delete;
+  std::string name;
+  std::unique_ptr<Expr> key;
+};
+
+struct NestedRecordUpdateExpr final : Expr {
+  NestedRecordUpdateExpr(Expr* record, std::vector<RecordPathPart>&& path,
+                         Expr* value)
+      : record(record), path(std::move(path)), value(value) {}
+  std::unique_ptr<Expr> record;
+  std::vector<RecordPathPart> path;
+  std::unique_ptr<Expr> value;
+};
+
 struct BinaryExpr final : Expr {
   BinaryExpr(std::string op, Expr* lhs, Expr* rhs)
       : op(std::move(op)), lhs(lhs), rhs(rhs) {}
@@ -99,14 +123,40 @@ struct BinaryExpr final : Expr {
   std::unique_ptr<Expr> rhs;
 };
 
+struct CallArgument {
+  CallArgument(Expr* value, std::string name = {})
+      : name(std::move(name)), value(value) {}
+  CallArgument(CallArgument&&) = default;
+  CallArgument& operator=(CallArgument&&) = default;
+  CallArgument(const CallArgument&) = delete;
+  CallArgument& operator=(const CallArgument&) = delete;
+  std::string name;
+  std::unique_ptr<Expr> value;
+};
+
 struct CallExpr final : Expr {
-  CallExpr(std::string callee, std::vector<Expr*>* args)
+  CallExpr(std::string callee, std::vector<Expr*>* args,
+           std::vector<std::string>* argNames = nullptr)
       : callee(std::move(callee)) {
     for (auto* arg : *args) this->args.emplace_back(arg);
+    if (argNames) this->argNames = std::move(*argNames);
+    else this->argNames.resize(args->size());
+    delete args;
+    delete argNames;
+  }
+  CallExpr(std::string callee, std::vector<CallArgument>* args)
+      : callee(std::move(callee)) {
+    for (auto& arg : *args) {
+      argNames.push_back(std::move(arg.name));
+      this->args.emplace_back(arg.value.release());
+    }
     delete args;
   }
   std::string callee;
   std::vector<std::unique_ptr<Expr>> args;
+  // Empty means positional; otherwise it is the parameter name supplied by
+  // the caller. This parallel array always has args.size() entries.
+  std::vector<std::string> argNames;
 };
 
 struct LetExpr final : Expr {

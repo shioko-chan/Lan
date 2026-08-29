@@ -1,0 +1,12 @@
+{matrix = [[1, 2], [3, 4]];
+row = [1, 2];
+{
+  compare: matrix == row,
+  reverse_compare: row == matrix,
+  add: matrix + row,
+  negative: -matrix,
+  defaults: [[1, missing], [missing, 4]] ?? 0,
+  text: [["A", "B"], ["C", "D"]] + ["!", "?"],
+  logic: [[true, missing], [false, true]] and [true, false],
+  ragged: [[1, 2, 3], [4]] + [[10, 20], [30, 40]]
+}}

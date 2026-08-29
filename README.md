@@ -3,9 +3,6 @@
 Lan 是一门面向非程序员的纯函数式语言。写 Lan 程序很像写数学公式或电子表格公式：
 给事物起名字、描述计算关系，然后在文件最后写出想看到的结果。
 
-编译器使用 Flex、Bison、C++17 和 LLVM。源代码不需要类型标注、`main`、`return`、
-分号或打印命令。
-
 ## 五分钟入门
 
 最简单的程序就是一个值：
@@ -32,9 +29,9 @@ square(5)
 
 ```lan
 price(original, member) =
-  if member:
+  if member
     original * 0.8
-  else:
+  else
     original
 
 price(100, true)
@@ -52,6 +49,58 @@ circle_area(10)
 ```
 
 这些名称是不可变的公式，不是可以反复修改的存储格。
+
+### 缩进与花括号
+
+多行块可以使用缩进，也可以显式使用花括号和分号。下面两段程序生成完全相同的
+语法树和 LLVM IR：
+
+```lan
+calculate(value) =
+  next = value + 1
+  doubled = next * 2
+  doubled
+```
+
+```lan
+calculate(value) = {
+  next = value + 1;
+  doubled = next * 2;
+  doubled
+}
+```
+
+花括号块中的每个中间绑定后必须写 `;`，最后一个结果表达式后的分号可写可不写。
+缩进形式使用 layout rule：同级行之间插入虚拟分号，退出缩进时插入虚拟右花括号；
+没有开启新块的更深缩进行作为上一表达式的续行。虚拟标记与显式 `{`、`;`、`}`
+共用同一套块文法。换行在显式花括号内部只用于排版，不分隔表达式。
+`if` 和 `else` 后面都不写冒号；
+条件也有两种等价写法：
+
+```lan
+choose(value) =
+  if value > 0
+    "正数"
+  else
+    "非正数"
+```
+
+```lan
+choose(value) = {
+  if value > 0 {
+    "正数"
+  } else {
+    "非正数"
+  }
+}
+```
+
+`{name: value}` 仍然是 Record，冒号区分 Record 字段，等号和分号区分代码块绑定：
+
+```lan
+make_person() = {name: "小明", age: 20}
+calculation() = {age = 20; age + 1}
+```
 
 ### 默认参数
 
@@ -87,7 +136,16 @@ keep()        # 10
 keep(missing) # missing
 ```
 
-当前调用使用位置参数，不支持按名称传参；因此只能从参数列表末尾开始省略。
+调用也可以在位置参数之后使用命名参数，从而跳过前面带默认值的参数：
+
+```lan
+greeting(name, punctuation = "!", excited = false) = ...
+
+greeting("小明", excited = true)
+```
+
+位置参数必须放在命名参数之前。同一个参数不能重复传入；未知参数名和缺少必填参数
+都会在编译期报错。
 
 ### 同名名称与遮蔽
 
@@ -110,10 +168,10 @@ next()
 ```lan
 example(flag) =
   value = 10
-  if flag:
+  if flag
     value = 20
     value
-  else:
+  else
     value
 ```
 
@@ -131,9 +189,9 @@ greeting(name) = "你好，" + name
 
 message(name, age) =
   hello = greeting(name)
-  if adult(age):
+  if adult(age)
     hello + "，你已经成年"
-  else:
+  else
     hello + "，你还未成年"
 
 message("小明", 20)
@@ -179,9 +237,9 @@ names() = ["小明", "小兰"]
 
 ```lan
 choose(flag) =
-  if flag:
+  if flag
     [1, 2, 3]
-  else:
+  else
     [4]
 
 choose(true)
@@ -203,8 +261,207 @@ choose(true)
 如果元素来自动态 Record 字段，无法在编译期确定实际标签，构造列表时会检查所有
 非 missing 元素类型相同，不一致则运行时拒绝。
 
-`length(numbers())` 返回列表元素数量。列表不可变，当前版本尚未提供按位置读取。
-Record 可以作为列表元素，但同一个列表的所有元素都必须是 Record。
+`length(numbers())` 返回列表元素数量。List 使用和 Record 一致的点号读取语法：
+
+```lan
+numbers.0             # 固定下标
+numbers.(index)       # 运行时下标
+```
+
+下标从 `0` 开始。越界、负数、非整数下标以及存储值本身为 missing 都得到 `missing`，
+可以用 `??` 提供默认值。下标必须是 Number；文字键仍表示 Record 动态字段读取。
+固定形式只接受非负整数字面量；需要检查负数或小数时使用 `list.(-1)`、
+`list.(1.5)`。连续读取可以直接写成 `matrix.1.0`。
+列表不可变。Record 可以作为列表元素，但同一个列表的所有元素都必须是 Record。
+
+List 支持与 Table 列一致的聚合函数：
+
+```lan
+sum([10, missing, 20])       # 30
+average([10, missing, 20])   # 15
+min([10, missing, 20])       # 10
+max([10, missing, 20])       # 20
+count([10, missing, 20])     # 2
+```
+
+聚合忽略列表内部的 `missing`。空列表或全 missing 列表的 `sum` 和 `count` 返回
+`0`；`average`、`min` 和 `max` 返回 `missing`。前四个函数要求 `List<Number>`，
+`count` 接受任意单类型 List。列表本身为 missing 时仍遵循普通参数规则并运行时拒绝。
+
+`first(list)` 和 `last(list)` 分别读取第一个和最后一个元素，空列表返回 `missing`。
+它们也支持流式写法：`items first` 和 `items last`。
+
+聚合也提供接收值在前的流式语法糖：
+
+```lan
+numbers sum                         # sum(numbers)
+numbers average                     # average(numbers)
+people sum "score"                 # sum(people, "score")
+people count "score"               # count(people, "score")
+```
+
+五个聚合名称都支持这种写法。流式形式只改变阅读顺序，在 AST 中立即降低为普通内置
+函数调用，因此类型检查、missing 和运行时行为完全相同。复杂的动态列名可以加括号：
+`people sum (chosen_column)`。
+
+列表和表格转换也可以把接收值写在前面，并且可以连续连接：
+
+```lan
+values fill_missing 0                         # fill_missing(values, 0)
+values length                                 # length(values)
+people where .age >= 18                       # where(people, people.age >= 18)
+people add adult: .age >= 18
+people replace score: .score ?? 0
+people select_columns ["name", "score"]
+people sort_by "score" take 10
+people drop 5
+people row_count
+```
+
+流式链可以使用更深缩进跨行书写，不需要括号或续行符：
+
+```lan
+result = people
+  where .age >= 18
+  sort_by "score"
+  take 10
+  select_columns ["name", "score"]
+```
+
+流式操作的最后一个参数读取后面的完整表达式，直到表达式边界或下一个流式关键字，
+因此算术、比较、逻辑和 `??` 不需要额外括号。`add` 只允许新列，`replace` 只允许已有
+列；列名写在冒号前，列值必须是与表格行数一致的 List。`same` 和 `table` 仍只使用
+普通函数调用。这些形式都会立即降低为普通内置调用，不引入方法调用或可变对象。
+
+流式参数中的 `.age` 表示当前步骤左侧整体值的 `age` 字段，不是当前行或 List 元素。
+每一步都会重新确定这个接收值，并且左侧表达式只求值一次。在流式参数之外单独使用
+`.age` 会在编译期报错。
+
+流式操作名称是上下文名称，不是保留关键字。只有当名称出现在一个完整值后面的流式
+位置时，才会被识别为操作；在其他位置仍可作为变量、参数或 Record 字段：
+
+```lan
+count = 10
+increase(count) = count + 1
+stats = {count: count}
+actual = values count
+```
+
+内置函数本身仍不能被同名用户函数重新定义，但不会占用普通值名称。
+
+## Table 与整列计算
+
+Table 没有独立的字面量语法，也不是新的运行时数据类型。使用内置的 `table(record)`
+验证一个 Record：它的每个字段都必须是 List，并且所有 List 长度相同。
+
+```lan
+people = table({name: ["小明", "小兰", "小红"], age: [20, 17, missing], score: [80, 90, missing]})
+```
+
+验证成功后返回原来的 Record 指针，不复制 Record 或任何 List。编译器把这个值静态
+细化为 Table；LLVM 和运行时仍使用 Record 指针。普通 Record 不能直接传给表格操作，
+必须先经过 `table(...)`。
+
+```lan
+row_count(people)          # 3
+sum(people, "age")         # 37
+average(people, "score")   # 85
+min(people, "age")         # 17
+max(people, "age")         # 20
+count(people, "score")     # 2
+```
+
+列可以直接与一个值或另一列进行逐元素算术和比较。标量会自动广播，
+单元格中的 `missing` 只传播到对应的结果单元格：
+
+```lan
+people.score + 5           # [85, 95, missing]
+people.age >= 18           # [true, false, missing]
+fill_missing(people.score, 0)
+```
+
+两个 List 长度不同时，只计算双方都有元素的位置，结果长度以较短的 List 为准：
+
+```lan
+[1, 2, 3] + [10, 20]      # [11, 22]
+[1, 2] < [0, 3, 4]        # [false, true]
+```
+
+这只适用于普通的逐元素运算；Table 仍然要求所有列长度相同，以保持矩形结构。
+
+逻辑、一元运算、默认值和文字连接也支持逐元素处理及标量广播：
+
+```lan
+[true, false, missing] and false   # [false, false, false]
+[true, false, missing] or true     # [true, true, true]
+not [true, missing]                # [false, missing]
+-[1, missing, -2]                 # [-1, missing, 2]
+[1, missing, 3] ?? 0              # [1, 0, 3]
+["A", missing] + "!"             # ["A!", missing]
+```
+
+逐元素 `and` 和 `or` 使用短路逻辑对应的三值结果：`false and missing` 是
+`false`，`true or missing` 是 `true`；其余无法确定的组合得到 `missing`。
+文字 `+` 只允许 Text 列与 Text 列或 Text 标量连接。`??` 的左侧为 List 时按元素
+提供默认值；`missing ?? list` 仍表示整个 List 的默认值。
+
+嵌套 List 使用从末尾维度对齐的递归广播。先比较静态嵌套层数，将较低维的操作数
+广播到缺少的前置维度，然后逐层运算；双方到达同一维度后，每一层都截到较短长度：
+
+```lan
+[[1, 2], [3, 4]] == [1, 2]
+# [[true, true], [false, false]]
+
+[[1, 2, 3], [4]] + [[10, 20], [30, 40]]
+# [[11, 22], [34]]
+```
+
+该规则只适用于 List。Table 必须先通过 `table.column` 取出一列，Table 值本身不参与
+广播。
+
+需要比较完整结构而不是广播时，使用 `same(left, right)`：
+
+```lan
+same([[1, 2], [3, 4]], [1, 2])                 # false
+same([1, missing], [1, missing])               # true
+same({a: 1, b: 2}, {b: 2, a: 1})              # true
+```
+
+`same` 总是返回单个 Boolean，不广播，也不要求两边类型相同。不同类型、不同 List
+长度、不同嵌套结构或不同 Record 键集合返回 false。List 按位置递归比较；Record
+忽略 HAMT 顺序，按键递归比较。两个 missing 相同，一个 missing 与存在值不同。
+Table 按底层 `Record<List<T>>` 结构比较。
+
+以下操作返回新的 Table，输入 Table 保持不变：
+
+```lan
+people where people.age >= 18                     # missing 条件视为 false
+people add adult: people.age >= 18                # 只添加新列
+people replace score: people.score ?? 0           # 只替换已有列
+select_columns(people, ["name", "score"])
+take(people, 10)
+drop(people, 10)
+sort_by(people, "score")                           # 稳定升序，missing 放末尾
+```
+
+`add` 和 `replace` 要求新列与现有列长度相同；空 Table 可以由 `add` 的第一列确定行数。
+`add` 遇到同名列会运行时拒绝，`replace` 遇到不存在的列也会运行时拒绝。
+`where` 的条件必须是同长度的 Boolean 列。`take` 和 `drop` 的行数必须是非负整数，
+超过总行数时会截到表格边界。`select_columns` 遇到不存在的列会运行时拒绝。
+列名列表不能为空，因为当前的 `Record<List<T>>` 表示无法为零列表格单独保存行数。
+
+`sum`、`average`、`min` 和 `max` 只接受数字列；`count` 可以用于任何列，返回其中
+非 missing 单元格的数量。聚合会忽略 missing。空列或全 missing 列的 `sum` 为 0、
+`count` 为 0，而 `average`、`min`、`max` 返回 missing，因此可以用 `??` 处理：
+
+```lan
+average(people, "unknown")       # 列不存在，运行错误
+average(table({age: []}), "age") ?? 0
+```
+
+Table 底层仍是 `Record<List<T>>`：HAMT 负责列名查找，单类型 List 保存实际列数据。
+表格验证只遍历列描述和读取列表长度，不遍历或复制单元格。筛选、截取、排序、
+整列计算会为结果分配新的 List 和 HAMT 路径，但不会修改输入 Table。
 
 ## Record
 
@@ -227,6 +484,16 @@ read(person) =
 read({name: "小明", age: 20})
 ```
 
+Record 字面量也允许由 Text 表达式提供动态字段名：
+
+```lan
+field = "age"
+person = {name: "Alice", (field): 21}
+```
+
+`{field: 21}` 的字段名固定为 `"field"`，而 `{(field): 21}` 使用变量 `field` 的值。
+动态键表达式必须产生 Text。
+
 不存在的字段得到 `missing`。可以用 `??` 提供默认值；如果把它直接用于普通运算，
 则按缺失值规则在运行时拒绝：
 
@@ -247,8 +514,21 @@ birthday(person) =
 
 `person.age = value` 不是可变赋值，而是下面两步的语法糖：创建一个更新后的新 Record，
 再让同级的新 `person` 绑定遮蔽旧绑定。`old` 仍指向更新前的值。动态键也可以写成
-`person.(field) = value`。第一阶段只允许更新根名称的直接字段，不支持
-`company.owner.name = value` 这样的嵌套左值。
+`person.(field) = value`。
+
+需要显式保留原绑定时，可以使用 `with` 一次添加或替换多个字段：
+
+```lan
+updated = person with {
+  age: 21,
+  city: "Sydney"
+}
+```
+
+更新块同样支持 `(field): value` 动态键。嵌套更新写成
+`person.address.city = "Sydney"`，它会从内向外构造新的 Record 路径。更新目标必须以
+局部绑定名称为根；`get_person().age = 21` 会在编译期被拒绝。缺失或不是 Record 的
+中间字段会在运行时拒绝。直接的 `person.self = person` 也会被拒绝。
 
 Record 在语义上无序。为了让结果可复现，显示 Record 时按字段名称的 UTF-8 字节顺序
 排序；顺序不是插入顺序。
@@ -265,9 +545,9 @@ HAMT 节点用引用计数管理。第一阶段尚未启用“引用计数为 1 
 
 ```lan
 lookup(found) =
-  if found:
+  if found
     "数据"
-  else:
+  else
     missing
 
 lookup(false) ?? "没有找到"
@@ -279,10 +559,10 @@ lookup(false) ?? "没有找到"
 ```lan
 missing + 1       # 运行错误
 length(missing)  # 运行错误
-if missing:      # 运行错误
+if missing
+       # 运行错误
   1
-else:
-  0
+else  0
 ```
 
 后缀 `?` 明确允许当前表达式传播缺失。运算仍然从左到右求值；被 `?` 检查的值一旦
@@ -318,14 +598,14 @@ normalize(missing)  # 0
 “所有值可缺失”是语言语义，不代表所有值都在运行时装箱。编译器同时推断值是否
 确定存在，并为不同类型选择紧凑表示：
 
-| 情况 | LLVM 表示 |
-|---|---|
-| 确定存在的数字 | 裸 `double` SSA 值 |
-| 可能缺失的数字 | `{ i1 present, double value }` |
-| 确定存在的真假值 | `i1` |
-| 可能缺失的真假值 | `i2`：0 缺失、1 false、2 true |
-| 可能缺失的文字、列表或 Record | `ptr`：空指针表示缺失 |
-| 列表元素或动态字段中的缺失值 | 专用 `MISSING` 标签 |
+| 情况                          | LLVM 表示                      |
+| ----------------------------- | ------------------------------ |
+| 确定存在的数字                | 裸 `double` SSA 值             |
+| 可能缺失的数字                | `{ i1 present, double value }` |
+| 确定存在的真假值              | `i1`                           |
+| 可能缺失的真假值              | `i2`：0 缺失、1 false、2 true  |
+| 可能缺失的文字、列表或 Record | `ptr`：空指针表示缺失          |
+| 列表元素或动态字段中的缺失值  | 专用 `MISSING` 标签            |
 
 生成 IR 前会运行 LLVM `-O2` 流水线，因此常量存在标志、无效分支和临时 Option
 包装可以继续被消除。
@@ -378,12 +658,28 @@ ctest --test-dir build --output-on-failure
 ./build/lanc --run examples/record.lan
 ```
 
+`--build` 在当前目录创建 `.lan/<程序名>/`，保留 LLVM IR、目标文件和本地可执行文件：
+
+```sh
+./build/lanc --build examples/types.lan
+
+# 产生：
+# .lan/types/types.ll
+# .lan/types/types.o
+# .lan/types/types
+```
+
+`--run` 进行完全相同的持久化构建，然后自动执行 `.lan/<程序名>/<程序名>`。
+它不再创建临时 IR 或通过 `lli` 解释执行。`.lan/` 已加入 `.gitignore`。
+
 生成 LLVM IR：
 
 ```sh
 ./build/lanc examples/types.lan -o types.ll
 lli types.ll
 ```
+
+`-o` 只用于默认的 IR 输出模式，不能与 `--build` 或 `--run` 一起使用。
 
 ## 编译结构
 
@@ -395,7 +691,8 @@ Lan 公式
   -> 持久化 HAMT 运行时：Record 查询、路径复制与引用计数
   -> LLVM：SSA 值、分支和 PHI 节点
   -> verifier：IR 校验
-  -> lli：计算并显示文件末尾的结果
+  -> Clang：生成 `.o` 和本地可执行文件
+  -> 可执行文件：计算并显示文件末尾的结果
 ```
 
 用户函数内部直接使用 LLVM SSA 值，不产生可变局部变量。文字连接由隐藏的运行时

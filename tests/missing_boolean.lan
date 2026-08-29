@@ -1,7 +1,7 @@
 maybe_boolean(flag) =
-  if flag:
+  if flag
     true
-  else:
+  else
     missing
 
 maybe_boolean(false) ?? false

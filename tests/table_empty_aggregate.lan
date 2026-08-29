@@ -1,0 +1,5 @@
+report() =
+  empty = table({numbers: []})
+  {sum: sum(empty, "numbers"), count: count(empty, "numbers"), average: average(empty, "numbers") ?? -1}
+
+report()

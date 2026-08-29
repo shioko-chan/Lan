@@ -1,0 +1,14 @@
+get(items, index) = items.(index)
+
+{numbers = [10, 20, missing];
+people = table({name: ["A", "B"]});
+{
+  fixed: numbers.0,
+  dynamic: get(numbers, 1),
+  stored_missing: numbers.2 ?? -1,
+  past_end: numbers.10 ?? -1,
+  negative: numbers.(-1) ?? -1,
+  fractional: numbers.(1.5) ?? -1,
+  nested: [[1, 2], [3, 4]].1.0,
+  table_text: people.name.0
+}}

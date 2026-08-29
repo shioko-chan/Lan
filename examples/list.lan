@@ -1,7 +1,7 @@
 choose(flag) =
-  if flag:
+  if flag
     [1, 2, 3]
-  else:
+  else
     [4]
 
 choose(true)

@@ -1,0 +1,7 @@
+bad(flag) =
+  if flag:
+    1
+  else:
+    0
+
+bad(true)

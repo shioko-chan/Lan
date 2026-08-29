@@ -1,7 +1,7 @@
 choose(flag, first, second) =
-  if flag:
+  if flag
     first
-  else:
+  else
     second
 
 choose(not false, 42, 0)

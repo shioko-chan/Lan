@@ -10,13 +10,20 @@
 
 - [x] ~~将 Lan 定位为面向非程序员的纯函数式数据转换 DSL。~~
 - [x] ~~使用 Flex、Bison、C++17 和 LLVM 后端。~~
-- [x] ~~采用表达式语言，没有 `main`、`return`、分号和用户可见的打印副作用。~~
+- [x] ~~采用表达式语言，没有 `main`、`return` 和用户可见的打印副作用；缩进形式无需分号。~~
+- [x] ~~支持用缩进表示多行块。~~
+- [x] ~~支持用花括号和分号显式表示同一种多行块。~~
+- [x] ~~缩进块和花括号块降低为完全相同的 AST。~~
+- [x] ~~使用 layout rule 将缩进转换为虚拟块起止符和分隔符，再与显式块共用文法。~~
+- [x] ~~块内更深缩进且未开启新块时作为表达式续行，支持多行流式链。~~
+- [x] ~~使用冒号区分 Record 字段，使用等号和分号区分花括号代码块。~~
+- [x] ~~`if` 和 `else` 后不使用冒号；缩进或花括号直接确定分支范围。~~
 - [x] ~~固定从左到右求值，并为 `if`、`and`、`or`、`?`、`??` 定义短路行为。~~
 - [x] ~~禁止直接递归和间接递归。~~
 - [x] ~~要求函数调用图为 DAG。~~
 - [x] ~~沿调用 DAG 分析函数，不使用固定次数的反复扫描。~~
 - [x] ~~不提供通用 `for`、`while` 和无限迭代。~~
-- [ ] 设计少量保证有限的集合转换或聚合操作，替代通用循环。
+- [x] ~~提供少量保证有限的整列计算、筛选、截取、排序和聚合操作，替代通用循环。~~
 
 ## 名称、作用域与函数
 
@@ -28,6 +35,7 @@
 - [x] ~~允许默认表达式引用它前面的参数。~~
 - [x] ~~区分“省略参数”和“显式传入 `missing`”。~~
 - [x] ~~禁止重复的函数名和参数名。~~
+- [x] ~~支持位置参数后的命名参数，并检查顺序、重复、未知名称和必填参数。~~
 
 ## 类型与 missing
 
@@ -56,14 +64,23 @@
 - [x] ~~`missing` 可以作为 `Option<T>` 元素，不算另一种元素类型。~~
 - [x] ~~动态 Record 字段组成列表时，在运行时检查非 missing 元素标签一致。~~
 - [x] ~~支持 `length(list)`。~~
+- [x] ~~支持 `list.0` 和 `list.(index)` 安全下标读取，越界返回 missing。~~
+- [x] ~~支持 List 与标量或另一 List 的逐元素算术和比较；长度不同时以短 List 为准。~~
+- [x] ~~支持 List 的 `and`、`or`、`not`、一元负号、`??` 和 Text `+` 广播运算。~~
+- [x] ~~支持嵌套 List 从末尾维度对齐、前置维度广播和同维逐层截短。~~
+- [x] ~~支持 `fill_missing(list, value)` 显式填充缺失单元格。~~
+- [x] ~~支持 List 的 `sum`、`average`、`min`、`max` 和 `count` 聚合。~~
+- [x] ~~支持 `numbers sum` 和 `people sum "column"` 形式的流式聚合语法糖。~~
+- [x] ~~为 List/Table 转换、长度和行数操作提供可连接的流式语法糖。~~
+- [x] ~~将流式操作名实现为上下文名称，不占用变量、参数和字段关键字。~~
 - [ ] 将当前逐元素标签 ABI 改为按 `T` 生成的紧凑连续数组。
 - [ ] 为 `List<Number>` 使用紧凑数字数组和存在位。
 - [ ] 为 `List<Boolean>` 使用紧凑 `i2` 数组。
 - [ ] 为 `List<Text>`、`List<Record>` 和嵌套 List 使用指针数组及空指针 niche。
-- [ ] 添加安全的列表元素读取，结果类型为 `Option<T>`。
-- [ ] 添加少量 DSL 内置操作，例如 `first`、`last`、`sum`、`count`。
+- [x] ~~支持 `first(list)`、`last(list)` 及 `items first`、`items last`，空列表返回 missing。~~
+- [x] ~~流式参数中的 `.field` 读取当前步骤的整体接收值，且接收值只求值一次。~~
 - [ ] 设计保证有限的 `select`、`transform` 或列表推导能力。
-- [ ] 决定是否支持 List 结构相等比较。
+- [x] ~~使用 `same(left, right)` 支持 List 结构相等比较。~~
 
 ## Record
 
@@ -83,14 +100,36 @@
 - [x] ~~Record 在语言语义上无序。~~
 - [x] ~~打印时按字段名称的 UTF-8 字节顺序排序，保证结果可复现。~~
 - [x] ~~Record 可以嵌套，也可以作为单类型列表元素。~~
-- [ ] 支持 `person.address.city = value` 形式的嵌套字段更新。
-- [ ] 支持嵌套路径中的动态字段，例如 `person.(section).city = value`。
-- [ ] 在编译期拒绝 `record.self = record` 和 `record.(key) = record`。
+- [x] ~~支持 `person.address.city = value` 形式的嵌套字段更新。~~
+- [x] ~~支持嵌套路径中的动态字段，例如 `person.(section).city = value`。~~
+- [x] ~~在编译期拒绝直接的 `record.self = record` 和 `record.(key) = record`。~~
 - [ ] 使用 SSA 来源/别名摘要，拒绝通过直接别名绕过的自包含更新。
-- [ ] 决定是否公开显式的 `record with {field: value}` 表达式。
-- [ ] 决定是否支持 `{(key): value}` 动态键字面量。
+- [x] ~~支持显式的 `record with {field: value}` 不可变更新表达式。~~
+- [x] ~~支持 Record 字面量和 `with` 更新中的 `{(key): value}` 动态键。~~
 - [ ] 决定是否提供 `fields`、`values`、字段数量和字段存在判断。
-- [ ] 决定是否支持 Record 结构相等比较。
+- [x] ~~使用 `same(left, right)` 支持 List、Record 和 Table 的递归结构相等比较。~~
+
+## Table 与整列操作
+
+- [x] ~~不增加独立的 `table {}` 语法。~~
+- [x] ~~使用内置 `table(record)` 验证并细化普通 Record。~~
+- [x] ~~Table 只存在于静态类型系统，运行时仍使用原 Record 指针。~~
+- [x] ~~验证过程不复制 Record 或 List。~~
+- [x] ~~要求所有 Record 字段都是 List，并且所有列长度相同。~~
+- [x] ~~普通 Record 不能直接传给 Table 专用操作。~~
+- [x] ~~支持 `row_count(table)`。~~
+- [x] ~~支持数字列的 `sum`、`average`、`min` 和 `max`。~~
+- [x] ~~支持任意列的非 missing `count`。~~
+- [x] ~~聚合忽略 missing；空列的 `average`、`min`、`max` 返回 missing。~~
+- [x] ~~支持 `where(table, mask)`，并将 mask 中的 missing 视为 false。~~
+- [x] ~~使用 `table add name: expression` 添加列，并拒绝同名列。~~
+- [x] ~~使用 `table replace name: expression` 替换列，并拒绝不存在的列。~~
+- [x] ~~支持 `select_columns(table, names)` 选择字段。~~
+- [x] ~~支持有界的 `take(table, n)` 和 `drop(table, n)`。~~
+- [x] ~~支持 `sort_by(table, name)` 稳定升序排序，missing 固定放在末尾。~~
+- [ ] 在静态已知的 Record 字面量上提前检查列类型和已知长度，减少运行时验证。
+- [ ] 为 Table 保存编译期 TableShape，使固定列名可直接得到准确的 `List<T>` 类型。
+- [ ] 设计分组聚合操作。
 
 ## 堆对象 DAG 与内存管理
 
@@ -126,6 +165,9 @@
 ## 当前验证状态
 
 - [x] ~~项目可以成功构建。~~
-- [x] ~~现有 45 项自动化测试全部通过。~~
+- [x] ~~`--build` 持久化保存 LLVM IR、目标文件和本地可执行文件，`--run` 构建后执行。~~
+- [x] ~~现有 89 项自动化测试全部通过。~~
 - [x] ~~测试覆盖递归拒绝、遮蔽、默认参数、missing、短路、`List<T>`、Record 和 HAMT 更新。~~
-
+- [x] ~~测试覆盖 Table 零复制验证、整列聚合、空列和无效表格拒绝。~~
+- [x] ~~测试覆盖整列计算、缺失值填充、筛选、加列、选列、截取和稳定排序。~~
+- [x] ~~测试覆盖缩进块与花括号/分号块的等价行为。~~

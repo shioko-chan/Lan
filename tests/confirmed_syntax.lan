@@ -1,0 +1,43 @@
+greeting(name, punctuation = "!", excited = false) =
+  {
+    name: name,
+    punctuation: punctuation,
+    excited: excited
+  }
+
+demo() =
+  key = "age"
+  person = {
+    name: "Alice",
+    (key): 20,
+    address: {city: "Melbourne"}
+  }
+  updated = person with {
+    age: 21,
+    city: "Sydney"
+  }
+  dynamic_updated = person with {(key): 22}
+  section = "address"
+  person.(section).city = "Sydney"
+  people = table({
+    age: [17, 20, 30],
+    score: [1, 2, 3]
+  })
+  adults = people
+    where .age >= 18
+    add adult: .age >= 18
+    replace score: .score + 5
+  {
+    named: greeting("小明", excited = true),
+    old_age: person.age,
+    updated_age: updated.age,
+    dynamic_updated_age: dynamic_updated.age,
+    nested_city: person.address.city,
+    adults: adults,
+    first: [4, 5] first,
+    last: last([4, 5]),
+    empty_first: [] first,
+    empty_last: [] last
+  }
+
+demo()

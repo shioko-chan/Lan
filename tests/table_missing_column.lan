@@ -1,0 +1,5 @@
+bad() =
+  people = table({name: ["小明"]})
+  count(people, "age")
+
+bad()

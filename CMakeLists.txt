@@ -34,13 +34,35 @@ add_dependencies(lanc lan_record_runtime)
 target_include_directories(lanc PRIVATE include ${CMAKE_CURRENT_BINARY_DIR} ${LLVM_INCLUDE_DIRS})
 target_compile_definitions(lanc PRIVATE ${LLVM_DEFINITIONS})
 target_compile_definitions(lanc PRIVATE LAN_RECORD_BITCODE_PATH="${LAN_RECORD_BITCODE}")
+target_compile_definitions(lanc PRIVATE LAN_CLANG_PATH="${CLANG_EXECUTABLE}")
 llvm_map_components_to_libnames(LLVM_LIBS Core Support Passes BitReader Linker)
 target_link_libraries(lanc PRIVATE ${LLVM_LIBS})
 
-find_program(LLI_EXECUTABLE lli HINTS ${LLVM_TOOLS_BINARY_DIR} REQUIRED)
-target_compile_definitions(lanc PRIVATE LAN_LLI_PATH="${LLI_EXECUTABLE}")
-
 enable_testing()
+add_test(NAME confirmed_new_syntax
+  COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/confirmed_syntax.lan)
+set_tests_properties(confirmed_new_syntax PROPERTIES
+  PASS_REGULAR_EXPRESSION [=[empty_first: missing.*last: 5.*updated_age: 21]=])
+foreach(error_case
+    named_after_named
+    named_duplicate
+    named_unknown
+    named_missing
+    stream_receiver_outside
+    record_dynamic_key_type
+    record_temporary_update
+    record_self_update)
+  add_test(NAME reject_${error_case}
+    COMMAND lanc ${CMAKE_CURRENT_SOURCE_DIR}/tests/${error_case}_error.lan)
+  set_tests_properties(reject_${error_case} PROPERTIES WILL_FAIL TRUE)
+endforeach()
+add_test(NAME reject_record_nested_intermediate_at_runtime
+  COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/record_nested_intermediate_error.lan)
+set_tests_properties(reject_record_nested_intermediate_at_runtime PROPERTIES WILL_FAIL TRUE)
+add_test(NAME build_native_executable
+  COMMAND lanc --build ${CMAKE_CURRENT_SOURCE_DIR}/tests/simple.lan)
+set_tests_properties(build_native_executable PROPERTIES
+  PASS_REGULAR_EXPRESSION [=[Lan：已生成 .*\.lan/simple/simple]=])
 add_test(NAME reject_direct_recursion
   COMMAND lanc ${CMAKE_CURRENT_SOURCE_DIR}/tests/direct_recursion_error.lan)
 set_tests_properties(reject_direct_recursion PROPERTIES WILL_FAIL TRUE)
@@ -186,3 +208,120 @@ set_tests_properties(infer_empty_list_element PROPERTIES
 add_test(NAME reject_function_list_element_mismatch
   COMMAND lanc ${CMAKE_CURRENT_SOURCE_DIR}/tests/list_function_type_error.lan)
 set_tests_properties(reject_function_list_element_mismatch PROPERTIES WILL_FAIL TRUE)
+
+add_test(NAME list_aggregates
+  COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/list_aggregates.lan)
+set_tests_properties(list_aggregates PROPERTIES PASS_REGULAR_EXPRESSION
+  [=[\{all_missing_min: -1, average: 15, count: 2, empty_average: -1, empty_count: 0, empty_sum: 0, max: 20, min: 10, sum: 30\}]=])
+add_test(NAME reject_text_list_numeric_aggregate
+  COMMAND lanc ${CMAKE_CURRENT_SOURCE_DIR}/tests/list_numeric_aggregate_type_error.lan)
+set_tests_properties(reject_text_list_numeric_aggregate PROPERTIES WILL_FAIL TRUE)
+add_test(NAME stream_aggregate_syntax
+  COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/stream_aggregates.lan)
+set_tests_properties(stream_aggregate_syntax PROPERTIES PASS_REGULAR_EXPRESSION
+  [=[aggregate_named_field: \[1, 2, 3\].*list_average: 15.*list_count: 2.*list_max: 20.*list_min: 10.*list_sum: 30.*table_average: 15.*table_count: 2.*table_max: 20.*table_min: 10.*table_sum: 30]=])
+add_test(NAME stream_transformation_syntax
+  COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/stream_transformations.lan)
+set_tests_properties(stream_transformation_syntax PROPERTIES PASS_REGULAR_EXPRESSION
+  [=[\{dropped_rows: 1, first_name: "C", first_score: 71, length: 3, rows: 1\}]=])
+add_test(NAME contextual_stream_names
+  COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/contextual_stream_names.lan)
+set_tests_properties(contextual_stream_names PROPERTIES PASS_REGULAR_EXPRESSION
+  [=[\{aggregate: 2, fields: 18, parameters: 21\}]=])
+add_test(NAME layout_stream_continuation
+  COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/layout_stream_continuation.lan)
+set_tests_properties(layout_stream_continuation PROPERTIES PASS_REGULAR_EXPRESSION
+  [=[\{adults: \[true, true\], names: \["C", "A"\], rows: 2\}]=])
+add_test(NAME list_zip_uses_shorter_length
+  COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/list_shorter_zip.lan)
+set_tests_properties(list_zip_uses_shorter_length PROPERTIES PASS_REGULAR_EXPRESSION
+  [=[\{add: \[11, 22\], comparison: \[false, true\], reversed: \[9, 18\]\}]=])
+add_test(NAME safe_list_index
+  COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/list_index.lan)
+set_tests_properties(safe_list_index PROPERTIES PASS_REGULAR_EXPRESSION
+  [=[\{dynamic: 20, fixed: 10, fractional: -1, negative: -1, nested: 3, past_end: -1, stored_missing: -1, table_text: "A"\}]=])
+add_test(NAME reject_text_list_index
+  COMMAND lanc ${CMAKE_CURRENT_SOURCE_DIR}/tests/list_text_index_error.lan)
+set_tests_properties(reject_text_list_index PROPERTIES WILL_FAIL TRUE)
+add_test(NAME list_broadcast_operators
+  COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/list_broadcast_operators.lan)
+set_tests_properties(list_broadcast_operators PROPERTIES PASS_REGULAR_EXPRESSION
+  [=[\{and_false: \[false, false, false\], and_true: \[true, false, missing\], default_column: \[1, 2, 3\], default_scalar: \[1, 0, 3\], negated: \[false, true, missing\], numbers: \[-1, missing, 2\], or_false: \[true, false, missing\], or_true: \[true, true, true\], text_columns: \["A1", "B2"\], text_scalar: \["A!", missing, "C!"\]\}]=])
+add_test(NAME reject_mixed_text_column_concat
+  COMMAND lanc ${CMAKE_CURRENT_SOURCE_DIR}/tests/list_text_concat_type_error.lan)
+set_tests_properties(reject_mixed_text_column_concat PROPERTIES WILL_FAIL TRUE)
+add_test(NAME nested_list_broadcast
+  COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/nested_list_broadcast.lan)
+set_tests_properties(nested_list_broadcast PROPERTIES PASS_REGULAR_EXPRESSION
+  [=[\{add: \[\[2, 4\], \[4, 6\]\], compare: \[\[true, true\], \[false, false\]\], defaults: \[\[1, 0\], \[0, 4\]\], logic: \[\[true, false\], \[false, false\]\], negative: \[\[-1, -2\], \[-3, -4\]\], ragged: \[\[11, 22\], \[34\]\], reverse_compare: \[\[true, true\], \[false, false\]\], text: \[\["A!", "B\?"\], \["C!", "D\?"\]\]\}]=])
+add_test(NAME structural_same
+  COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/structural_same.lan)
+set_tests_properties(structural_same PROPERTIES PASS_REGULAR_EXPRESSION
+  [=[\{different_shape: false, different_types: false, list_length: false, lists: true, missing_values: true, nested: true, numbers: true, one_missing: false, record_keys: false, records: true, table_record: true\}]=])
+
+add_test(NAME table_column_operations
+  COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/examples/table.lan)
+set_tests_properties(table_column_operations PROPERTIES PASS_REGULAR_EXPRESSION
+  [=[\{age_max: 20, age_min: 17, age_total: 37, rows: 3, score_average: 85, scored: 2\}]=])
+add_test(NAME table_empty_aggregates
+  COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/table_empty_aggregate.lan)
+set_tests_properties(table_empty_aggregates PROPERTIES PASS_REGULAR_EXPRESSION
+  [=[\{average: -1, count: 0, sum: 0\}]=])
+add_test(NAME reject_table_unequal_columns
+  COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/table_invalid_length.lan)
+set_tests_properties(reject_table_unequal_columns PROPERTIES WILL_FAIL TRUE)
+add_test(NAME reject_table_non_list_column
+  COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/table_invalid_column.lan)
+set_tests_properties(reject_table_non_list_column PROPERTIES WILL_FAIL TRUE)
+add_test(NAME table_operation_requires_validation
+  COMMAND lanc ${CMAKE_CURRENT_SOURCE_DIR}/tests/table_requires_validation.lan)
+set_tests_properties(table_operation_requires_validation PROPERTIES WILL_FAIL TRUE)
+add_test(NAME reject_non_numeric_table_aggregate
+  COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/table_numeric_column_error.lan)
+set_tests_properties(reject_non_numeric_table_aggregate PROPERTIES WILL_FAIL TRUE)
+add_test(NAME reject_missing_table_column
+  COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/table_missing_column.lan)
+set_tests_properties(reject_missing_table_column PROPERTIES WILL_FAIL TRUE)
+
+add_test(NAME table_transformations
+  COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/table_transformations.lan)
+set_tests_properties(table_transformations PROPERTIES PASS_REGULAR_EXPRESSION
+  [=[arithmetic: \[85, 0, 95, 75\].*comparison: \[true, false, true, false\].*first_two: \{age: \[20, 17\], name: \["B", "A"\], score: \[80, missing\]\}.*list_arithmetic: \[40, 34, 40, 60\].*scalar_left: \[20, missing, 10, 30\].*text_comparison: \[false, true, false, false\]]=])
+add_test(NAME reject_table_column_wrong_length
+  COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/table_column_length_error.lan)
+set_tests_properties(reject_table_column_wrong_length PROPERTIES WILL_FAIL TRUE)
+add_test(NAME reject_adding_existing_table_column
+  COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/table_add_existing_error.lan)
+set_tests_properties(reject_adding_existing_table_column PROPERTIES WILL_FAIL TRUE)
+add_test(NAME reject_replacing_missing_table_column
+  COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/table_replace_missing_error.lan)
+set_tests_properties(reject_replacing_missing_table_column PROPERTIES WILL_FAIL TRUE)
+add_test(NAME reject_non_boolean_where_mask
+  COMMAND lanc ${CMAKE_CURRENT_SOURCE_DIR}/tests/table_where_type_error.lan)
+set_tests_properties(reject_non_boolean_where_mask PROPERTIES WILL_FAIL TRUE)
+add_test(NAME reject_empty_column_selection
+  COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/table_empty_selection_error.lan)
+set_tests_properties(reject_empty_column_selection PROPERTIES WILL_FAIL TRUE)
+add_test(NAME reject_fractional_table_take
+  COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/table_fractional_take_error.lan)
+set_tests_properties(reject_fractional_table_take PROPERTIES WILL_FAIL TRUE)
+
+add_test(NAME brace_semicolon_blocks
+  COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/brace_semicolon.lan)
+set_tests_properties(brace_semicolon_blocks PROPERTIES PASS_REGULAR_EXPRESSION "80")
+add_test(NAME brace_inline_blocks
+  COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/brace_inline.lan)
+set_tests_properties(brace_inline_blocks PROPERTIES PASS_REGULAR_EXPRESSION "12")
+add_test(NAME brace_top_level_scope
+  COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/brace_top_level.lan)
+set_tests_properties(brace_top_level_scope PROPERTIES
+  PASS_REGULAR_EXPRESSION [=[\{result: 21\}]=])
+add_test(NAME reject_missing_semicolon_in_brace
+  COMMAND lanc ${CMAKE_CURRENT_SOURCE_DIR}/tests/brace_missing_semicolon_error.lan)
+set_tests_properties(reject_missing_semicolon_in_brace PROPERTIES WILL_FAIL TRUE)
+add_test(NAME mix_indentation_and_braces
+  COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/mixed_block_styles.lan)
+set_tests_properties(mix_indentation_and_braces PROPERTIES PASS_REGULAR_EXPRESSION "21")
+add_test(NAME reject_colon_after_if_else
+  COMMAND lanc ${CMAKE_CURRENT_SOURCE_DIR}/tests/colon_after_if_error.lan)
+set_tests_properties(reject_colon_after_if_else PROPERTIES WILL_FAIL TRUE)

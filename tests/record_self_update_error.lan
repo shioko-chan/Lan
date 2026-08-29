@@ -1,0 +1,6 @@
+bad() =
+  person = {age: 20}
+  person.self = person
+  person
+
+bad()

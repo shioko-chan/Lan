@@ -1,0 +1,10 @@
+price(original, member) = {
+  discount = 0.8;
+  if member {
+    original * discount
+  } else {
+    original
+  };
+}
+
+price(100, true)

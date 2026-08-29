@@ -1,0 +1,5 @@
+bad() =
+  people = table({name: ["小明", "小兰"]})
+  sum(people, "name")
+
+bad()

@@ -1,0 +1,3 @@
+calculate(value) = { next = value + 1; doubled = next * 2; doubled }
+
+calculate(5)

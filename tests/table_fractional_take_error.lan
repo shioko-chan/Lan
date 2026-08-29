@@ -1,0 +1,2 @@
+{people = table({name: ["A", "B"]});
+take(people, 1.5)}
