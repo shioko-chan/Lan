@@ -140,7 +140,7 @@ int main(int argc, char** argv) {
     return status;
   }
   std::string linkCommand = shellQuote(LAN_CLANG_PATH) + " " +
-      shellQuote(objectPath.string()) + " -o " + shellQuote(executablePath.string());
+      shellQuote(objectPath.string()) + " -lm -o " + shellQuote(executablePath.string());
   status = commandExitCode(std::system(linkCommand.c_str()));
   if (status != 0) {
     std::cerr << "Lan：生成可执行文件失败\n";

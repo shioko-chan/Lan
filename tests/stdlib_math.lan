@@ -1,0 +1,14 @@
+root(value) = sqrt(value)
+
+{
+  constants: [pi, e, tau],
+  shadowed_pi: {pi = 4; pi},
+  signs: [sign(-8), sign(-0), sign(3)],
+  roots: [root(9), pow(2, 3), pow(0, 0), hypot(3, 4)],
+  logarithms: [exp(0), log(e), log(8, 2)],
+  trigonometry: [sin(0), cos(0), tan(0), asin(0), acos(1), atan(0), atan2(0, 0)],
+  angles: [radians(180), degrees(pi)],
+  mapped: [1, 4, 9] |> map(sqrt(.)),
+  propagated: [missing, 4] |> map(sqrt(.?)),
+  table_math: table({value: [1, 4, 9]}) |> add({root: sqrt(.value)})
+}

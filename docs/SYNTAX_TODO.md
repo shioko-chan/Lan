@@ -2,7 +2,8 @@
 
 本文件记录语法、静态语义、求值规则、编译器 lowering、运行时表示和内存管理。
 用户可调用的函数及集合操作记录在 [`STDLIB_TODO.md`](STDLIB_TODO.md)，尚未实现的
-IO Monad 规范记录在 [`IO_DESIGN.md`](IO_DESIGN.md)。
+IO Monad 规范记录在 [`IO_DESIGN.md`](IO_DESIGN.md)，时间与随机 effect 记录在
+[`TIME_RANDOM_DESIGN.md`](TIME_RANDOM_DESIGN.md)。
 
 标记说明：
 
@@ -131,7 +132,7 @@ IO Monad 规范记录在 [`IO_DESIGN.md`](IO_DESIGN.md)。
 - [ ] 明确定义 totality 强度：只保证终止，还是保证所有输入都正常返回。
 - [ ] 统一定义资源耗尽和其他运行时数据错误的语言语义。
 - [x] ~~项目可以构建，`--build` 保存中间产物，`--run` 构建后执行。~~
-- [x] ~~现有 114 项自动化测试全部通过。~~
+- [x] ~~现有 131 项自动化测试全部通过。~~
 - [x] ~~测试覆盖递归拒绝、遮蔽、默认参数、missing、短路、List 类型和 Record 更新。~~
 - [x] ~~测试覆盖 Table 验证、聚合、转换、列式 lowering 和跨函数字段按需读取。~~
 - [x] ~~测试覆盖缩进/花括号等价、紧凑 ABI、SIMD、除零顺序和结构化诊断。~~

@@ -226,6 +226,80 @@ message("小明", 20)
 - 逻辑：`and`、`or`、`not`，也兼容 `&&`、`||`、`!`
 - 中文或英文名称
 
+### Text、Number 与转换函数
+
+`length` 同时接受 Text 和 List。Text 长度按用户看到的 Unicode grapheme cluster 计算，
+不是 UTF-8 字节数；组合字符和由零宽连接符组成的 emoji 各算一个字符：
+
+```lan
+length("你好")             # 2
+length("👨‍👩‍👧‍👦")          # 1
+trim("  Hello　")         # "Hello"
+lowercase("ÄBC Σ")        # "äbc σ"
+uppercase("äbc σ")        # "ÄBC Σ"
+starts_with("report.csv", "report")  # true
+ends_with("report.csv", ".csv")      # true
+```
+
+`trim` 使用 Unicode White_Space；`lowercase` 和 `uppercase` 使用 Unicode 简单大小写
+映射。`split` 保留首尾和相邻分隔符产生的空 Text，空分隔符会被拒绝：
+
+```lan
+parts = split("a,,c,", ",")  # ["a", "", "c", ""]
+join(parts, "|")             # "a||c|"
+```
+
+基础 Number 函数只接受标量，不对 List 隐式广播：
+
+```lan
+abs(-3.5)              # 3.5
+floor(-1.2)            # -2
+ceil(-1.2)             # -1
+round(2.5)             # 2，使用 ties-to-even
+round(12.25, 1)        # 12.2
+clamp(15, 0, 10)       # 10
+numbers |> map(abs(.)) # 明确逐元素调用
+```
+
+`round` 的小数位数必须是 `-308` 到 `308` 之间的整数值 Number。`clamp` 要求最小值
+不大于最大值。这些函数拒绝 missing 和非有限 Number。
+
+完整数学库还提供正确舍入为 Number 的 `pi`、`e` 和 `tau` 常量，以及以下标量函数：
+
+```lan
+sign(-8)             # -1；正负零都返回 0
+sqrt(9)              # 3
+pow(2, 3)            # 8
+exp(0)               # 1
+log(e)               # 1，默认以 e 为底
+log(8, 2)            # 3
+hypot(3, 4)          # 5
+
+sin(pi / 2)          # 三角函数使用弧度
+cos(0)
+tan(0)
+asin(0)
+acos(1)
+atan(0)
+atan2(0, 0)
+radians(180)         # pi
+degrees(pi)          # 180
+```
+
+`sqrt`、`pow`、`log`、`asin` 和 `acos` 会检查定义域；所有数学函数都会拒绝非有限
+输入和非有限结果。数学函数不隐式广播集合，应写成
+`numbers |> map(sqrt(.))`。常量不是关键字，局部绑定可以遮蔽它们。
+
+`parse_number` 严格解析完整 Text，只接受十进制及科学计数法，不忽略首尾空白；失败
+返回 missing。`to_text` 接受现有数据值并产生确定的 Text 表示：
+
+```lan
+parse_number("-12.5e2")       # -1250
+parse_number("12x") ?? 0      # 0
+require(parse_number(input))   # 需要严格拒绝失败时
+to_text([1, missing, 3])       # "[1, missing, 3]"
+```
+
 ## 单类型列表
 
 一个列表中的所有元素必须属于同一种类型。编译器自动推断元素类型，不需要用户写
@@ -305,6 +379,17 @@ count([10, missing, 20])     # 2
 `count` 接受任意单类型 List。列表本身为 missing 时仍遵循普通参数规则并运行时拒绝。
 
 `first(list)` 和 `last(list)` 分别读取第一个和最后一个元素，空列表返回 `missing`。
+
+`concat` 连接两个元素类型相同的 List；`reverse`、`take` 和 `drop` 返回新 List，原 List
+保持不变。截取数量必须是非负整数，超过长度时截到容器边界：
+
+```lan
+items = concat([1, 2], [3, 4])
+reverse(items)       # [4, 3, 2, 1]
+take(items, 2)       # [1, 2]
+drop(items, 2)       # [3, 4]
+items |> reverse() |> take(2)  # [4, 3]
+```
 
 ### 集合管道与元素表达式
 
@@ -570,6 +655,17 @@ move({name: "Alice", age: 20})
 Record 在语义上无序。为了让结果可复现，显示 Record 时按字段名称的 UTF-8 字节顺序
 排序；顺序不是插入顺序。
 
+`fields(record)` 按同一确定顺序返回字段名称，`has_field(record, key)` 判断键是否存在。
+字段存在和值为 missing 是两件不同的事：
+
+```lan
+person = {name: "Alice", age: missing}
+
+fields(person)                 # ["age", "name"]
+has_field(person, "age")      # true
+has_field(person, "score")    # false
+```
+
 底层使用持久化 HAMT。更新只复制从根到目标字段的路径，其余分支由新旧 Record 共享，
 HAMT 节点用引用计数管理。第一阶段尚未启用“引用计数为 1 时原地更新”的优化；当前
 始终采用安全的路径复制，后续补齐编译器的所有权保留与释放后可在不改变语义的前提下
@@ -740,6 +836,9 @@ repeat(value) = repeat(value)  # 编译错误
 
 需要 CMake、Flex、Bison、Clang 和 LLVM 开发文件：
 
+Unicode Text 操作使用随源码内置的 utf8proc 2.11.3；构建时不需要另行安装，许可证位于
+`third_party/utf8proc/LICENSE.md`。
+
 ```sh
 cmake -S . -B build -DLLVM_DIR="$(llvm-config --cmakedir)"
 cmake --build build
@@ -797,5 +896,7 @@ Lan 公式
 下一阶段适合补齐容器的所有权分析和释放，在唯一引用路径上启用 Record 原地更新，
 然后增加列表遍历和模式匹配。
 
-语言核心的已完成事项和后续计划见 [`SYNTAX_TODO.md`](SYNTAX_TODO.md)，标准库 API
-清单见 [`STDLIB_TODO.md`](STDLIB_TODO.md)。
+语言核心的已完成事项和后续计划见
+[`docs/SYNTAX_TODO.md`](docs/SYNTAX_TODO.md)，标准库 API 清单见
+[`docs/STDLIB_TODO.md`](docs/STDLIB_TODO.md)。完整的专题设计文档也统一位于
+[`docs/`](docs/) 目录。

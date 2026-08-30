@@ -1,6 +1,6 @@
 # Lan 数学库设计
 
-本文件定义尚未完整实现的纯数学标准库。Lan 只有一种数值类型 Number，运行时使用
+本文件定义已经实现的纯数学标准库。Lan 只有一种数值类型 Number，运行时使用
 IEEE 754 `double`；数学函数不引入 Integer、Decimal 或复数类型。
 
 ## 共同规则
@@ -60,7 +60,7 @@ hypot(x, y)                  -> Number
 - `pow` 的负底数要求指数是整数值；零的负指数被拒绝；`pow(0, 0)` 定义为 `1`。
 - `log` 要求 number 大于零，并要求 base 大于零且不等于 `1`。
 - 不增加 `ln`、`log2`、`log10` 等同义入口；使用 `log(value)` 或
-  `log(value, base = 10)`。
+  `log(value, 10)`。
 - `hypot` 应使用避免不必要中间溢出的稳定实现，而不是简单展开为
   `sqrt(x * x + y * y)`。
 
@@ -106,18 +106,19 @@ numbers |> fill_missing(0) |> map(sqrt(.))
 
 ## 暂不提供
 
-- 随机数和随机分布：属于显式 IO/随机状态能力，不属于纯数学库。
+- 随机数和随机分布：属于 [`TIME_RANDOM_DESIGN.md`](TIME_RANDOM_DESIGN.md) 中的显式
+  IO/随机状态能力，不属于纯数学库。
 - 复数、任意精度整数、Decimal 和单位量。
 - `gcd`、`lcm`、阶乘及组合数学：需要先决定是否正式表达整数值约束。
 - 双曲函数、Gamma 和误差函数：实际 DSL 用例出现后再扩展。
 - 统计函数：应当作为独立的 List/Table 统计 API 设计。
 - 数值积分、微分方程和矩阵代数：不属于第一版数据 DSL 的基础数学层。
 
-## Lowering 与实现顺序
+## Lowering
 
-1. 实现 `pi`、`e`、`tau` 及基础数值函数。
-2. 实现 `sqrt`、`pow`、`exp`、`log`、`hypot`，补齐定义域和溢出诊断。
-3. 实现三角函数及角度转换。
-4. 在普通调用、List `map`、Table 元素上下文和跨函数调用中验证类型与诊断路径。
-5. 对 LLVM 有对应 intrinsic 的函数直接 lowering；其余调用随运行时链接的数学库。
-6. 仅在保持从左到右首错定位时增加紧凑 Number List 的专用循环和 SIMD lowering。
+数学常量直接 lower 为 LLVM `double` 常量。数学函数调用随 C 运行时一起编译成 LLVM
+bitcode，在链接进 Lan Module 后参与完整的 LLVM `O2` 优化；宿主数学函数通过 `libm`
+链接。运行时入口先执行定义域和有限性检查，再返回裸 Number。
+
+数学函数没有独立的集合 ABI。List `map` 和 Table 元素上下文复用普通标量调用，保持
+从左到右的求值及首错定位；后续只有在不改变这些语义时才考虑专用 SIMD lowering。

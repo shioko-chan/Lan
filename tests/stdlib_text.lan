@@ -1,0 +1,15 @@
+text_size(value) = length(value)
+
+{parts = split("a,,c,", ",");
+result = {
+  graphemes: length("A👨‍👩‍👧‍👦é"),
+  inferred_text_length: text_size("你好"),
+  trimmed: trim("   Hello 世界  　"),
+  lower: lowercase("ÄBC Σ"),
+  upper: uppercase("äbc σ"),
+  starts: starts_with("你好世界", "你好"),
+  ends: ends_with("report.csv", ".csv"),
+  parts: parts,
+  joined: join(parts, "|")
+};
+result}

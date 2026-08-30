@@ -3,7 +3,8 @@
 本文件记录用户可调用的公开函数和集合管道操作。语法、类型系统、编译器和运行时事项
 记录在 [`SYNTAX_TODO.md`](SYNTAX_TODO.md)，IO Monad 的完整规则记录在
 [`IO_DESIGN.md`](IO_DESIGN.md)，数学函数规则记录在
-[`MATH_DESIGN.md`](MATH_DESIGN.md)。
+[`MATH_DESIGN.md`](MATH_DESIGN.md)，时间与随机规则记录在
+[`TIME_RANDOM_DESIGN.md`](TIME_RANDOM_DESIGN.md)。
 
 当前标准库以编译器 intrinsic 和随程序链接的运行时函数实现，但这不改变其公开 API
 身份。管道 `value |> operation(args)` 等价于把 `value` 作为第一个输入；建立元素上下文
@@ -32,10 +33,10 @@
 - [x] ~~`filter` 保留 predicate 为 true 的元素，missing predicate 视为 false。~~
 - [x] ~~`find` 从左到右返回第一个匹配元素或 missing。~~
 - [x] ~~`any`、`all` 使用三值逻辑并从左到右短路。~~
-- [ ] `concat(left, right)` 连接两个元素类型相同的 List。
+- [x] ~~`concat(left, right)` 连接两个元素类型相同的 List。~~
 - [ ] `flatten(lists)` 只展开一层嵌套 List。
-- [ ] `reverse(list)` 返回逆序 List。
-- [ ] 将 `take(list, n)` 和 `drop(list, n)` 扩展到 List，并保持操作有界。
+- [x] ~~`reverse(list)` 返回逆序 List。~~
+- [x] ~~将 `take(list, n)` 和 `drop(list, n)` 扩展到 List，并保持操作有界。~~
 - [ ] `sort(list)` 稳定排序 Number 或 Text List，missing 固定放在末尾。
 - [ ] `distinct(list)` 去重并保留每个值第一次出现的位置。
 - [x] ~~不增加 `contains`；使用 `items |> any(. == target)` 表达。~~
@@ -45,39 +46,39 @@
 
 ## Text
 
-- [ ] `length(text)` 按 Unicode 字符而非 UTF-8 字节返回长度。
-- [ ] `trim(text)` 去除首尾空白。
-- [ ] `lowercase(text)` 和 `uppercase(text)` 做 Unicode 大小写转换。
-- [ ] `starts_with(text, prefix)` 和 `ends_with(text, suffix)` 判断前后缀。
+- [x] ~~`length(text)` 按 Unicode grapheme cluster 而非 UTF-8 字节返回长度。~~
+- [x] ~~`trim(text)` 去除首尾 Unicode White_Space。~~
+- [x] ~~`lowercase(text)` 和 `uppercase(text)` 做 Unicode 简单大小写转换。~~
+- [x] ~~`starts_with(text, prefix)` 和 `ends_with(text, suffix)` 判断前后缀。~~
 - [ ] `text_contains(text, part)` 判断是否包含子文本。
-- [ ] `split(text, separator)` 返回 `List<Text>`。
-- [ ] `join(parts, separator)` 将 `List<Text>` 连接成 Text。
+- [x] ~~`split(text, separator)` 返回 `List<Text>`，并拒绝空分隔符。~~
+- [x] ~~`join(parts, separator)` 将不存在 missing 元素的 `List<Text>` 连接成 Text。~~
 
 ## Number
 
-- [ ] `abs(number)` 返回绝对值。
-- [ ] `sign(number)` 返回 `-1`、`0` 或 `1`。
-- [ ] `floor(number)`、`ceil(number)` 返回对应的整数值，结果类型仍为 Number。
-- [ ] `round(number, digits = 0)` 使用 ties-to-even 按指定小数位舍入。
-- [ ] `clamp(number, minimum, maximum)` 将数值限制在闭区间内。
-- [ ] 增加普通 Number 常量 `pi`、`e` 和 `tau`。
-- [ ] `sqrt`、`pow`、`exp`、`log` 和 `hypot` 提供根、幂、指数和对数运算。
-- [ ] `sin`、`cos`、`tan`、`asin`、`acos`、`atan` 和 `atan2` 使用弧度。
-- [ ] `radians` 和 `degrees` 在角度单位边界做显式转换。
+- [x] ~~`abs(number)` 返回绝对值。~~
+- [x] ~~`sign(number)` 返回 `-1`、`0` 或 `1`。~~
+- [x] ~~`floor(number)`、`ceil(number)` 返回对应的整数值，结果类型仍为 Number。~~
+- [x] ~~`round(number, digits = 0)` 使用 ties-to-even 按指定小数位舍入。~~
+- [x] ~~`clamp(number, minimum, maximum)` 将数值限制在闭区间内。~~
+- [x] ~~增加普通 Number 常量 `pi`、`e` 和 `tau`。~~
+- [x] ~~`sqrt`、`pow`、`exp`、`log` 和 `hypot` 提供根、幂、指数和对数运算。~~
+- [x] ~~`sin`、`cos`、`tan`、`asin`、`acos`、`atan` 和 `atan2` 使用弧度。~~
+- [x] ~~`radians` 和 `degrees` 在角度单位边界做显式转换。~~
 - [x] ~~数学函数只接受标量 Number；List 和 Table 元素计算显式使用 `map` 或元素表达式。~~
 - [x] ~~定义域错误、无效参数以及产生 NaN 或无穷大的数学结果运行时拒绝。~~
 - [x] ~~不增加 `mod`、`ln`、`log2`、`log10` 等平行入口；使用 `%` 和带可选 base 的 `log`。~~
 
 ## 转换
 
-- [ ] `to_text(value)` 将支持的值转换为确定、可复现的 Text 表示。
-- [ ] `parse_number(text)` 返回 `Option<Number>`；解析失败返回 missing。
+- [x] ~~`to_text(value)` 将 Number、Boolean、Text、List、Record 和 Table 转换为确定的 Text 表示。~~
+- [x] ~~`parse_number(text)` 严格解析有限 Number；解析失败返回 missing。~~
 - [x] ~~不增加 `to_number`、`try_number` 等同义入口；严格解析使用 `require(parse_number(text))`。~~
 
 ## Record
 
-- [ ] `fields(record)` 按与 Record 输出一致的确定顺序返回 `List<Text>`。
-- [ ] `has_field(record, key)` 判断字段是否存在，并区分字段缺失与字段值为 missing。
+- [x] ~~`fields(record)` 按与 Record 输出一致的确定顺序返回 `List<Text>`。~~
+- [x] ~~`has_field(record, key)` 判断字段是否存在，并区分字段缺失与字段值为 missing。~~
 - [ ] `merge(left, right)` 合并两个 Record；同名字段由右侧覆盖。
 - [ ] `remove_field(record, key)` 返回移除指定字段后的 Record。
 - [x] ~~不提供 `values(record)`；Record 字段可以异型，无法自然组成单类型 List。~~
@@ -130,6 +131,18 @@
   和 `sheet(workbook, name)`。
 - [x] ~~TXT 直接使用 UTF-8 Text API，不增加 `read_txt`、`write_txt` 同义名称。~~
 - [x] ~~第一阶段不提供文件句柄、追加写入、目录遍历、网络、当前时间、随机数、交互式逐行输入或无限数据流。~~
+
+## Time 与 Random
+
+- [ ] 增加可比较、可存入集合的 UTC `Instant` 值类型。
+- [ ] `now() -> IO<Instant>`，并为测试运行器提供 `--fixed-time`。
+- [ ] `parse_time`、`format_time`、Unix 秒数转换、`add_seconds` 和 `seconds_between`。
+- [ ] `random()` 和 `random_between` 产生连续 Number 样本。
+- [ ] `random_integer` 使用整数边界和无偏拒绝采样。
+- [ ] `choose(list)` 从非 missing 元素抽样；`shuffle(list)` 使用 Fisher–Yates。
+- [ ] 使用版本化 `lan-pcg64-v1` 序列，并通过 `--random-seed` 支持跨平台复现。
+- [x] ~~Time 和 Random 只能通过显式 IO action 观察宿主状态，不提供伪装成纯函数的全局状态。~~
+- [x] ~~第一阶段不提供 sleep、后台定时器、时区数据库、密码学随机数或统计分布。~~
 
 ## 标准库设计原则
 

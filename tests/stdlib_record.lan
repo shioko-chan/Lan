@@ -1,0 +1,9 @@
+{person = {name: "Alice", age: missing, city: "Sydney"};
+result = {
+  names: fields(person),
+  has_age: has_field(person, "age"),
+  has_city: has_field(person, "city"),
+  has_score: has_field(person, "score"),
+  empty: fields({})
+};
+result}

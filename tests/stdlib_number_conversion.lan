@@ -1,0 +1,17 @@
+{
+  absolute: abs(-3.5),
+  down: floor(-1.2),
+  up: ceil(-1.2),
+  even_down: round(2.5),
+  even_up: round(3.5),
+  decimal: round(12.25, 1),
+  bounded_low: clamp(-5, 0, 10),
+  bounded_middle: clamp(4, 0, 10),
+  bounded_high: clamp(15, 0, 10),
+  parsed: parse_number("-12.5e2") ?? 0,
+  invalid: parse_number("12x") ?? 99,
+  number_text: to_text(12.5),
+  boolean_text: to_text(true),
+  list_text: to_text([1, missing, 3]),
+  record_text: to_text({b: true, a: "x"})
+}

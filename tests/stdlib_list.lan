@@ -1,0 +1,14 @@
+first_two(values) = take(values, 2)
+
+{items = concat([1, missing, 3], [4, 5]);
+result = {
+  all: items,
+  reversed: reverse(items),
+  first_three: take(items, 3),
+  after_two: drop(items, 2),
+  oversized_take: take(items, 100),
+  oversized_drop: drop(items, 100),
+  inferred_list_take: first_two(items),
+  pipeline: items |> reverse() |> take(2)
+};
+result}

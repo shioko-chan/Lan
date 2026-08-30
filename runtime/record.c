@@ -1,8 +1,12 @@
 #include <stdint.h>
+#include <errno.h>
+#include <float.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include "utf8proc.h"
 
 typedef struct LanRecordNode LanRecordNode;
 
@@ -398,10 +402,6 @@ static LanList* make_typed_list(uint64_t length, int32_t storage_tag) {
   return list;
 }
 
-static LanList* make_list(uint64_t length) {
-  return make_typed_list(length, LAN_MISSING);
-}
-
 static void store_list_value(LanList* list, uint64_t index, LanValue value) {
   if (list->storage_tag == LAN_NUMBER) {
     if (value.tag == LAN_MISSING) {
@@ -443,6 +443,196 @@ int32_t lan_list_lookup_at(void* list_pointer, uint64_t index,
   if (!list || index >= list->length) return 0;
   *output = load_list_value(list, index);
   return 1;
+}
+
+static int32_t unicode_white_space(utf8proc_int32_t codepoint) {
+  return (codepoint >= 0x0009 && codepoint <= 0x000d) || codepoint == 0x0020 ||
+         codepoint == 0x0085 || codepoint == 0x00a0 || codepoint == 0x1680 ||
+         (codepoint >= 0x2000 && codepoint <= 0x200a) || codepoint == 0x2028 ||
+         codepoint == 0x2029 || codepoint == 0x202f || codepoint == 0x205f ||
+         codepoint == 0x3000;
+}
+
+static char* duplicate_text_range(const char* start, size_t length) {
+  char* result = malloc(length + 1);
+  if (!result) abort();
+  memcpy(result, start, length);
+  result[length] = '\0';
+  return result;
+}
+
+int32_t lan_text_length(const char* text, double* output) {
+  const utf8proc_uint8_t* current = (const utf8proc_uint8_t*)text;
+  utf8proc_ssize_t remaining = (utf8proc_ssize_t)strlen(text);
+  utf8proc_int32_t previous = 0;
+  utf8proc_int32_t state = 0;
+  uint64_t graphemes = 0;
+  int32_t first = 1;
+  while (remaining > 0) {
+    utf8proc_int32_t codepoint;
+    utf8proc_ssize_t consumed = utf8proc_iterate(current, remaining, &codepoint);
+    if (consumed < 0) return -1;
+    if (first || utf8proc_grapheme_break_stateful(previous, codepoint, &state))
+      ++graphemes;
+    first = 0;
+    previous = codepoint;
+    current += consumed;
+    remaining -= consumed;
+  }
+  *output = (double)graphemes;
+  return 0;
+}
+
+char* lan_text_trim(const char* text, int32_t* status) {
+  const utf8proc_uint8_t* bytes = (const utf8proc_uint8_t*)text;
+  size_t length = strlen(text);
+  size_t first = length;
+  size_t last = 0;
+  size_t offset = 0;
+  int32_t saw_non_space = 0;
+  *status = 0;
+  while (offset < length) {
+    utf8proc_int32_t codepoint;
+    utf8proc_ssize_t consumed = utf8proc_iterate(
+        bytes + offset, (utf8proc_ssize_t)(length - offset), &codepoint);
+    if (consumed < 0) { *status = -1; return NULL; }
+    if (!unicode_white_space(codepoint)) {
+      if (!saw_non_space) first = offset;
+      saw_non_space = 1;
+      last = offset + (size_t)consumed;
+    }
+    offset += (size_t)consumed;
+  }
+  return saw_non_space ? duplicate_text_range(text + first, last - first)
+                       : duplicate_text_range("", 0);
+}
+
+char* lan_text_case(const char* text, int32_t uppercase, int32_t* status) {
+  size_t length = strlen(text);
+  if (length > (SIZE_MAX - 1) / 4) abort();
+  utf8proc_uint8_t* output = malloc(length * 4 + 1);
+  if (!output) abort();
+  const utf8proc_uint8_t* current = (const utf8proc_uint8_t*)text;
+  utf8proc_ssize_t remaining = (utf8proc_ssize_t)length;
+  size_t written = 0;
+  *status = 0;
+  while (remaining > 0) {
+    utf8proc_int32_t codepoint;
+    utf8proc_ssize_t consumed = utf8proc_iterate(current, remaining, &codepoint);
+    if (consumed < 0) {
+      free(output);
+      *status = -1;
+      return NULL;
+    }
+    codepoint = uppercase ? utf8proc_toupper(codepoint)
+                          : utf8proc_tolower(codepoint);
+    utf8proc_ssize_t encoded = utf8proc_encode_char(codepoint, output + written);
+    if (encoded < 0) {
+      free(output);
+      *status = -1;
+      return NULL;
+    }
+    written += (size_t)encoded;
+    current += consumed;
+    remaining -= consumed;
+  }
+  output[written] = '\0';
+  return (char*)output;
+}
+
+int32_t lan_text_starts_with(const char* text, const char* prefix) {
+  size_t text_length = strlen(text);
+  size_t prefix_length = strlen(prefix);
+  return prefix_length <= text_length &&
+         memcmp(text, prefix, prefix_length) == 0;
+}
+
+int32_t lan_text_ends_with(const char* text, const char* suffix) {
+  size_t text_length = strlen(text);
+  size_t suffix_length = strlen(suffix);
+  return suffix_length <= text_length &&
+         memcmp(text + text_length - suffix_length, suffix, suffix_length) == 0;
+}
+
+void* lan_text_split(const char* text, const char* separator, int32_t* status) {
+  size_t separator_length = strlen(separator);
+  *status = 0;
+  if (separator_length == 0) { *status = -1; return NULL; }
+  uint64_t pieces = 1;
+  const char* current = text;
+  const char* found;
+  while ((found = strstr(current, separator)) != NULL) {
+    ++pieces;
+    current = found + separator_length;
+  }
+  LanList* result = make_typed_list(pieces, LAN_TEXT);
+  current = text;
+  for (uint64_t index = 0; index < pieces; ++index) {
+    found = strstr(current, separator);
+    size_t length = found ? (size_t)(found - current) : strlen(current);
+    store_list_value(result, index,
+                     (LanValue){LAN_TEXT, 0, duplicate_text_range(current, length)});
+    current = found ? found + separator_length : current + length;
+  }
+  return result;
+}
+
+char* lan_text_join(void* list_pointer, const char* separator, int32_t* status) {
+  LanList* list = list_pointer;
+  size_t separator_length = strlen(separator);
+  size_t total = 0;
+  diagnostic_error_index = -1;
+  *status = 0;
+  for (uint64_t index = 0; index < list->length; ++index) {
+    LanValue value = load_list_value(list, index);
+    if (value.tag != LAN_TEXT) {
+      diagnostic_error_index = (int64_t)index;
+      *status = -1;
+      return NULL;
+    }
+    size_t item_length = strlen(value.pointer);
+    if (item_length > SIZE_MAX - total) abort();
+    total += item_length;
+    if (index != 0) {
+      if (separator_length > SIZE_MAX - total) abort();
+      total += separator_length;
+    }
+  }
+  char* result = malloc(total + 1);
+  if (!result) abort();
+  size_t written = 0;
+  for (uint64_t index = 0; index < list->length; ++index) {
+    if (index != 0) {
+      memcpy(result + written, separator, separator_length);
+      written += separator_length;
+    }
+    LanValue value = load_list_value(list, index);
+    size_t item_length = strlen(value.pointer);
+    memcpy(result + written, value.pointer, item_length);
+    written += item_length;
+  }
+  result[written] = '\0';
+  return result;
+}
+
+void* lan_record_fields(void* record) {
+  LanRecordNode* root = record;
+  uint32_t count = entry_count(root);
+  LanEntry* entries = count ? malloc(count * sizeof(*entries)) : NULL;
+  uint32_t index = 0;
+  if (count) collect_entries(root, entries, &index);
+  qsort(entries, count, sizeof(*entries), compare_entries);
+  LanList* result = make_typed_list(count, LAN_TEXT);
+  for (uint32_t field = 0; field < count; ++field)
+    store_list_value(result, field,
+                     (LanValue){LAN_TEXT, 0, strdup(entries[field].key)});
+  free(entries);
+  return result;
+}
+
+int32_t lan_record_has_field(void* record, const char* key) {
+  LanValue ignored;
+  return lan_record_lookup(record, key, &ignored);
 }
 
 static int32_t validate_table_node(LanRecordNode* node, uint64_t* rows,
@@ -637,6 +827,125 @@ static double floor_modulo(double dividend, double divisor) {
   double result = fmod(dividend, divisor);
   if (result != 0.0 && ((result < 0.0) != (divisor < 0.0))) result += divisor;
   return result == 0.0 ? 0.0 : result;
+}
+
+int32_t lan_number_unary(double number, int32_t operation, double* output) {
+  if (!isfinite(number)) return -1;
+  double result;
+  switch (operation) {
+    case 0: result = fabs(number); break;
+    case 1: result = floor(number); break;
+    case 2: result = ceil(number); break;
+    case 3: result = number < 0.0 ? -1.0 : number > 0.0 ? 1.0 : 0.0; break;
+    case 4:
+      if (number < 0.0) return -1;
+      result = sqrt(number);
+      break;
+    case 5: result = exp(number); break;
+    case 6: result = sin(number); break;
+    case 7: result = cos(number); break;
+    case 8: result = tan(number); break;
+    case 9:
+      if (number < -1.0 || number > 1.0) return -1;
+      result = asin(number);
+      break;
+    case 10:
+      if (number < -1.0 || number > 1.0) return -1;
+      result = acos(number);
+      break;
+    case 11: result = atan(number); break;
+    case 12: result = number * (0x1.921fb54442d18p+1 / 180.0); break;
+    case 13: result = number * (180.0 / 0x1.921fb54442d18p+1); break;
+    default: return -1;
+  }
+  if (!isfinite(result)) return -1;
+  *output = result == 0.0 ? 0.0 : result;
+  return 0;
+}
+
+int32_t lan_number_binary(double left, double right, int32_t operation,
+                          double* output) {
+  if (!isfinite(left) || !isfinite(right)) return -1;
+  double result;
+  switch (operation) {
+    case 0:
+      if ((left < 0.0 && right != trunc(right)) ||
+          (left == 0.0 && right < 0.0))
+        return -1;
+      result = pow(left, right);
+      break;
+    case 1:
+      if (left <= 0.0 || right <= 0.0 || right == 1.0) return -1;
+      result = log(left) / log(right);
+      break;
+    case 2: result = hypot(left, right); break;
+    case 3: result = atan2(left, right); break;
+    default: return -1;
+  }
+  if (!isfinite(result)) return -1;
+  *output = result == 0.0 ? 0.0 : result;
+  return 0;
+}
+
+int32_t lan_number_round(double number, double digits_value, double* output) {
+  if (!isfinite(number) || !isfinite(digits_value) ||
+      digits_value < -308.0 || digits_value > 308.0 ||
+      digits_value != trunc(digits_value))
+    return -1;
+  int digits = (int)digits_value;
+  double result;
+  if (digits >= 16 || (digits >= 0 && fabs(number) >= 1.0e15)) {
+    result = number;
+  } else if (digits >= 0) {
+    double scale = pow(10.0, digits);
+    result = nearbyint(number * scale) / scale;
+  } else {
+    double scale = pow(10.0, -digits);
+    result = nearbyint(number / scale) * scale;
+  }
+  if (!isfinite(result)) return -1;
+  *output = result == 0.0 ? 0.0 : result;
+  return 0;
+}
+
+int32_t lan_number_clamp(double number, double minimum, double maximum,
+                         double* output) {
+  if (!isfinite(number) || !isfinite(minimum) || !isfinite(maximum) ||
+      minimum > maximum)
+    return -1;
+  *output = number < minimum ? minimum : number > maximum ? maximum : number;
+  return 0;
+}
+
+static int32_t valid_number_text(const char* text) {
+  const unsigned char* current = (const unsigned char*)text;
+  if (*current == '+' || *current == '-') ++current;
+  int32_t before = 0;
+  while (*current >= '0' && *current <= '9') { before = 1; ++current; }
+  int32_t after = 0;
+  if (*current == '.') {
+    ++current;
+    while (*current >= '0' && *current <= '9') { after = 1; ++current; }
+  }
+  if (!before && !after) return 0;
+  if (*current == 'e' || *current == 'E') {
+    ++current;
+    if (*current == '+' || *current == '-') ++current;
+    int32_t exponent = 0;
+    while (*current >= '0' && *current <= '9') { exponent = 1; ++current; }
+    if (!exponent) return 0;
+  }
+  return *current == '\0';
+}
+
+int32_t lan_parse_number(const char* text, double* output) {
+  if (!valid_number_text(text)) return 0;
+  errno = 0;
+  char* end = NULL;
+  double value = strtod(text, &end);
+  if (errno == ERANGE || !end || *end != '\0' || !isfinite(value)) return 0;
+  *output = value;
+  return 1;
 }
 
 int32_t lan_list_aggregate(void* list, int32_t operation, double* output) {
@@ -1241,6 +1550,50 @@ static LanList* slice_list(LanList* source, uint64_t start, uint64_t length) {
   return result;
 }
 
+void* lan_list_concat(void* left_pointer, void* right_pointer, int32_t* status) {
+  LanList* left = left_pointer;
+  LanList* right = right_pointer;
+  diagnostic_error_index = -1;
+  *status = 0;
+  int32_t storage_tag = left->storage_tag == LAN_MISSING
+      ? right->storage_tag : left->storage_tag;
+  if (right->storage_tag != LAN_MISSING && storage_tag != right->storage_tag) {
+    *status = -1;
+    return NULL;
+  }
+  if (right->length > UINT64_MAX - left->length) abort();
+  LanList* result = make_typed_list(left->length + right->length, storage_tag);
+  for (uint64_t i = 0; i < left->length; ++i)
+    store_list_value(result, i, load_list_value(left, i));
+  for (uint64_t i = 0; i < right->length; ++i)
+    store_list_value(result, left->length + i, load_list_value(right, i));
+  return result;
+}
+
+void* lan_list_reverse(void* list_pointer) {
+  LanList* source = list_pointer;
+  LanList* result = make_typed_list(source->length, source->storage_tag);
+  for (uint64_t i = 0; i < source->length; ++i)
+    store_list_value(result, i, load_list_value(source, source->length - i - 1));
+  return result;
+}
+
+void* lan_list_slice(void* list_pointer, double amount, int32_t drop,
+                     int32_t* status) {
+  LanList* source = list_pointer;
+  *status = 0;
+  if (amount < 0 || amount > 9007199254740992.0 ||
+      amount != (double)(uint64_t)amount) {
+    *status = -1;
+    return NULL;
+  }
+  uint64_t count = (uint64_t)amount;
+  if (count > source->length) count = source->length;
+  uint64_t start = drop ? count : 0;
+  uint64_t length = drop ? source->length - count : count;
+  return slice_list(source, start, length);
+}
+
 static LanList* filter_list(LanList* source, LanList* mask, uint64_t kept) {
   LanList* result = make_typed_list(kept, source->storage_tag);
   uint64_t output = 0;
@@ -1400,6 +1753,88 @@ void* lan_table_sort_by(void* record, const char* key, int32_t* status) {
 }
 
 static void print_value(LanValue value);
+
+typedef struct {
+  char* data;
+  size_t length;
+  size_t capacity;
+} LanTextBuilder;
+
+static void text_builder_reserve(LanTextBuilder* builder, size_t added) {
+  if (added > SIZE_MAX - builder->length - 1) abort();
+  size_t needed = builder->length + added + 1;
+  if (needed <= builder->capacity) return;
+  size_t capacity = builder->capacity ? builder->capacity : 32;
+  while (capacity < needed) {
+    if (capacity > SIZE_MAX / 2) { capacity = needed; break; }
+    capacity *= 2;
+  }
+  char* data = realloc(builder->data, capacity);
+  if (!data) abort();
+  builder->data = data;
+  builder->capacity = capacity;
+}
+
+static void text_builder_append_bytes(LanTextBuilder* builder,
+                                      const char* text, size_t length) {
+  text_builder_reserve(builder, length);
+  memcpy(builder->data + builder->length, text, length);
+  builder->length += length;
+  builder->data[builder->length] = '\0';
+}
+
+static void text_builder_append(LanTextBuilder* builder, const char* text) {
+  text_builder_append_bytes(builder, text, strlen(text));
+}
+
+static void format_value(LanTextBuilder* builder, LanValue value, int32_t nested) {
+  if (value.tag == LAN_MISSING) {
+    text_builder_append(builder, "missing");
+  } else if (value.tag == LAN_NUMBER) {
+    char number[64];
+    int length = snprintf(number, sizeof(number), "%.17g", value.number);
+    if (length < 0 || (size_t)length >= sizeof(number)) abort();
+    text_builder_append_bytes(builder, number, (size_t)length);
+  } else if (value.tag == LAN_BOOLEAN) {
+    text_builder_append(builder, value.number != 0 ? "true" : "false");
+  } else if (value.tag == LAN_TEXT) {
+    if (nested) text_builder_append(builder, "\"");
+    text_builder_append(builder, value.pointer);
+    if (nested) text_builder_append(builder, "\"");
+  } else if (value.tag == LAN_LIST) {
+    LanList* list = value.pointer;
+    text_builder_append(builder, "[");
+    for (uint64_t i = 0; i < list->length; ++i) {
+      if (i) text_builder_append(builder, ", ");
+      format_value(builder, load_list_value(list, i), 1);
+    }
+    text_builder_append(builder, "]");
+  } else if (value.tag == LAN_RECORD) {
+    LanRecordNode* record = value.pointer;
+    uint32_t count = entry_count(record);
+    LanEntry* entries = count ? malloc(count * sizeof(*entries)) : NULL;
+    uint32_t index = 0;
+    if (count) collect_entries(record, entries, &index);
+    qsort(entries, count, sizeof(*entries), compare_entries);
+    text_builder_append(builder, "{");
+    for (uint32_t i = 0; i < count; ++i) {
+      if (i) text_builder_append(builder, ", ");
+      text_builder_append(builder, entries[i].key);
+      text_builder_append(builder, ": ");
+      format_value(builder, entries[i].value, 1);
+    }
+    text_builder_append(builder, "}");
+    free(entries);
+  }
+}
+
+char* lan_value_to_text(int32_t tag, double number, void* pointer) {
+  if (tag == LAN_TEXT && pointer) return strdup(pointer);
+  LanTextBuilder builder = {NULL, 0, 0};
+  format_value(&builder, (LanValue){tag, number, pointer}, 0);
+  if (!builder.data) return strdup("");
+  return builder.data;
+}
 
 void lan_record_print(void* record) {
   LanRecordNode* root = record;

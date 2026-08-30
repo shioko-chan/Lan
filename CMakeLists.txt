@@ -10,13 +10,25 @@ find_package(LLVM REQUIRED CONFIG)
 find_program(CLANG_EXECUTABLE clang HINTS ${LLVM_TOOLS_BINARY_DIR} REQUIRED)
 
 set(LAN_RECORD_BITCODE ${CMAKE_CURRENT_BINARY_DIR}/lan_record_runtime.bc)
+set(LAN_UTF8PROC_BITCODE ${CMAKE_CURRENT_BINARY_DIR}/lan_utf8proc_runtime.bc)
 add_custom_command(
   OUTPUT ${LAN_RECORD_BITCODE}
   COMMAND ${CLANG_EXECUTABLE} -std=c17 -O2 -emit-llvm -c
+          -I${CMAKE_CURRENT_SOURCE_DIR}/third_party/utf8proc
           ${CMAKE_CURRENT_SOURCE_DIR}/runtime/record.c -o ${LAN_RECORD_BITCODE}
-  DEPENDS runtime/record.c
+  DEPENDS runtime/record.c third_party/utf8proc/utf8proc.h
   VERBATIM)
-add_custom_target(lan_record_runtime DEPENDS ${LAN_RECORD_BITCODE})
+add_custom_command(
+  OUTPUT ${LAN_UTF8PROC_BITCODE}
+  COMMAND ${CLANG_EXECUTABLE} -std=c17 -O2 -emit-llvm -c
+          ${CMAKE_CURRENT_SOURCE_DIR}/third_party/utf8proc/utf8proc.c
+          -o ${LAN_UTF8PROC_BITCODE}
+  DEPENDS third_party/utf8proc/utf8proc.c
+          third_party/utf8proc/utf8proc.h
+          third_party/utf8proc/utf8proc_data.c
+  VERBATIM)
+add_custom_target(lan_record_runtime
+  DEPENDS ${LAN_RECORD_BITCODE} ${LAN_UTF8PROC_BITCODE})
 
 BISON_TARGET(LanParser src/parser.y ${CMAKE_CURRENT_BINARY_DIR}/parser.cpp
              DEFINES_FILE ${CMAKE_CURRENT_BINARY_DIR}/parser.hpp)
@@ -34,6 +46,7 @@ add_dependencies(lanc lan_record_runtime)
 target_include_directories(lanc PRIVATE include ${CMAKE_CURRENT_BINARY_DIR} ${LLVM_INCLUDE_DIRS})
 target_compile_definitions(lanc PRIVATE ${LLVM_DEFINITIONS})
 target_compile_definitions(lanc PRIVATE LAN_RECORD_BITCODE_PATH="${LAN_RECORD_BITCODE}")
+target_compile_definitions(lanc PRIVATE LAN_UTF8PROC_BITCODE_PATH="${LAN_UTF8PROC_BITCODE}")
 target_compile_definitions(lanc PRIVATE LAN_CLANG_PATH="${CLANG_EXECUTABLE}")
 llvm_map_components_to_libnames(LLVM_LIBS Core Support Passes BitReader Linker)
 target_link_libraries(lanc PRIVATE ${LLVM_LIBS})
@@ -130,6 +143,70 @@ foreach(modulo_error scalar_modulo_zero scalar_modulo_negative_zero
             ${expected_index_argument}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_runtime_error.cmake)
 endforeach()
+add_test(NAME stdlib_text
+  COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib_text.lan)
+set_tests_properties(stdlib_text PROPERTIES PASS_REGULAR_EXPRESSION
+  [=[graphemes: 3.*joined: "a\|\|c\|".*lower: "äbc σ".*parts: \["a", "", "c", ""\].*trimmed: "Hello 世界".*upper: "ÄBC Σ"]=])
+add_test(NAME stdlib_number_conversion
+  COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib_number_conversion.lan)
+set_tests_properties(stdlib_number_conversion PROPERTIES PASS_REGULAR_EXPRESSION
+  [=[absolute: 3.5.*decimal: 12.2.*even_down: 2.*even_up: 4.*invalid: 99.*parsed: -1250.*record_text: "\{a: "x", b: true\}"]=])
+add_test(NAME stdlib_math
+  COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib_math.lan)
+set_tests_properties(stdlib_math PROPERTIES PASS_REGULAR_EXPRESSION
+  [=[angles: \[3.14159, 180\].*constants: \[3.14159, 2.71828, 6.28319\].*logarithms: \[1, 1, 3\].*mapped: \[1, 2, 3\].*propagated: \[missing, 2\].*roots: \[3, 8, 1, 5\].*shadowed_pi: 4.*signs: \[-1, 0, 1\].*table_math: \{root: \[1, 2, 3\], value: \[1, 4, 9\]\}.*trigonometry: \[0, 1, 0, 0, 0, 0, 0\]]=])
+add_test(NAME reject_stdlib_math_type
+  COMMAND lanc ${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib_math_type_error.lan)
+set_tests_properties(reject_stdlib_math_type PROPERTIES WILL_FAIL TRUE)
+foreach(math_runtime_error sqrt pow log overflow)
+  if(math_runtime_error STREQUAL "overflow")
+    set(math_expected "结果必须有限")
+  else()
+    set(math_expected "${math_runtime_error}")
+  endif()
+  add_test(NAME reject_stdlib_math_${math_runtime_error}
+    COMMAND ${CMAKE_COMMAND}
+            -DLANC=$<TARGET_FILE:lanc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib_math_${math_runtime_error}_error.lan
+            -DEXPECTED=${math_expected}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_runtime_error.cmake)
+endforeach()
+add_test(NAME reject_stdlib_math_map_domain
+  COMMAND ${CMAKE_COMMAND}
+          -DLANC=$<TARGET_FILE:lanc>
+          -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib_math_map_error.lan
+          -DEXPECTED=sqrt
+          -DEXPECTED_INDEX=2
+          -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_runtime_error.cmake)
+add_test(NAME stdlib_list
+  COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib_list.lan)
+set_tests_properties(stdlib_list PROPERTIES PASS_REGULAR_EXPRESSION
+  [=[after_two: \[3, 4, 5\].*first_three: \[1, missing, 3\].*oversized_drop: \[\].*pipeline: \[5, 4\].*reversed: \[5, 4, 3, missing, 1\]]=])
+add_test(NAME stdlib_record
+  COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib_record.lan)
+set_tests_properties(stdlib_record PROPERTIES PASS_REGULAR_EXPRESSION
+  [=[empty: \[\].*has_age: true.*has_score: false.*names: \["age", "city", "name"\]]=])
+foreach(stdlib_type_error length concat)
+  add_test(NAME reject_stdlib_${stdlib_type_error}_type
+    COMMAND lanc ${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib_${stdlib_type_error}_type_error.lan)
+  set_tests_properties(reject_stdlib_${stdlib_type_error}_type PROPERTIES
+    WILL_FAIL TRUE)
+endforeach()
+foreach(stdlib_runtime_error split_empty clamp_range list_take)
+  add_test(NAME reject_stdlib_${stdlib_runtime_error}
+    COMMAND ${CMAKE_COMMAND}
+            -DLANC=$<TARGET_FILE:lanc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib_${stdlib_runtime_error}_error.lan
+            -DEXPECTED=运行错误
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_runtime_error.cmake)
+endforeach()
+add_test(NAME reject_stdlib_join_missing
+  COMMAND ${CMAKE_COMMAND}
+          -DLANC=$<TARGET_FILE:lanc>
+          -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib_join_missing_error.lan
+          -DEXPECTED=join
+          -DEXPECTED_INDEX=1
+          -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_runtime_error.cmake)
 add_test(NAME structured_runtime_diagnostic
   COMMAND ${CMAKE_COMMAND}
           -DLANC=$<TARGET_FILE:lanc>

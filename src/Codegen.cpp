@@ -72,7 +72,24 @@ class Inference {
           function->name == "drop" || function->name == "sort_by" ||
           function->name == "same" || function->name == "first" ||
           function->name == "last" || function->name == "is_missing" ||
-          function->name == "require")
+          function->name == "require" || function->name == "trim" ||
+          function->name == "lowercase" || function->name == "uppercase" ||
+          function->name == "starts_with" || function->name == "ends_with" ||
+          function->name == "split" || function->name == "join" ||
+          function->name == "abs" || function->name == "floor" ||
+          function->name == "ceil" || function->name == "round" ||
+          function->name == "clamp" || function->name == "sign" ||
+          function->name == "sqrt" || function->name == "pow" ||
+          function->name == "exp" || function->name == "log" ||
+          function->name == "hypot" || function->name == "sin" ||
+          function->name == "cos" || function->name == "tan" ||
+          function->name == "asin" || function->name == "acos" ||
+          function->name == "atan" || function->name == "atan2" ||
+          function->name == "radians" || function->name == "degrees" ||
+          function->name == "to_text" ||
+          function->name == "parse_number" || function->name == "concat" ||
+          function->name == "reverse" || function->name == "fields" ||
+          function->name == "has_field")
         fail("“" + function->name + "”由语言保留，请换一个函数名");
       if (functions_.count(function->name))
         fail("函数“" + function->name + "”定义了不止一次");
@@ -111,6 +128,31 @@ class Inference {
     scopes_.clear();
     scopes_.emplace_back();
     infer(*program.result);
+
+    for (const auto& constraint : lengthConstraints_) {
+      Type input = resolved(constraint.input);
+      if (input == Type::Unknown) {
+        bind(constraint.input, Type::List, "length 的输入");
+        listElement(constraint.input, "length 的输入");
+      } else if (input != Type::List && input != Type::Text) {
+        fail("length 需要 List 或 Text，但这里得到的是" +
+             std::string(typeName(input)));
+      }
+    }
+    for (const auto& constraint : sliceConstraints_) {
+      Type input = resolved(constraint.input);
+      if (input == Type::Unknown) {
+        bind(constraint.input, Type::List, "take/drop 的输入");
+        listElement(constraint.input, "take/drop 的输入");
+        input = Type::List;
+      }
+      if (input != Type::List && input != Type::Table)
+        fail("take/drop 需要 List 或 Table，但这里得到的是" +
+             std::string(typeName(input)));
+      unify(constraint.result, constraint.input, "take/drop 的结果");
+      if (input == Type::Table)
+        shapeCopies_.push_back({constraint.input, constraint.result});
+    }
 
     for (const auto& access : dynamicAccesses_) {
       Type objectType = resolved(access.object);
@@ -278,6 +320,9 @@ class Inference {
   };
   std::vector<FixedAccess> fixedAccesses_;
   std::vector<std::pair<int, int>> shapeCopies_;
+  struct UnaryConstraint { int input; int result; };
+  std::vector<UnaryConstraint> lengthConstraints_;
+  std::vector<UnaryConstraint> sliceConstraints_;
   std::unordered_map<const Expr*, Presence> presences_;
   std::unordered_map<std::string, std::vector<Presence>> parameterPresences_;
   std::unordered_map<std::string, Presence> resultPresences_;
@@ -634,6 +679,11 @@ class Inference {
       }
       if (variable->name == "$lan_current_element")
         fail("当前元素“.”只能写在集合操作的元素表达式中");
+      if (variable->name == "pi" || variable->name == "e" ||
+          variable->name == "tau") {
+        bind(result, Type::Number, "数学常量“" + variable->name + "”");
+        return result;
+      }
       fail("找不到名称“" + variable->name + "”，请检查拼写或先给它一个值");
     }
     if (auto* let = dynamic_cast<const LetExpr*>(&expr)) {
@@ -876,11 +926,139 @@ class Inference {
       }
       if (call->callee == "length") {
         if (call->args.size() != 1)
-          fail("length 需要 1 个列表，但这里给了 " +
+          fail("length 需要 1 个 List 或 Text，但这里给了 " +
                std::to_string(call->args.size()) + " 个值");
-        int list = infer(*call->args[0]);
-        listElement(list, "length 的输入");
+        int input = infer(*call->args[0]);
+        lengthConstraints_.push_back({input, result});
         bind(result, Type::Number, "length 的结果");
+        return result;
+      }
+      if (call->callee == "trim" || call->callee == "lowercase" ||
+          call->callee == "uppercase") {
+        if (call->args.size() != 1)
+          fail("函数“" + call->callee + "”需要 1 个 Text");
+        bind(infer(*call->args[0]), Type::Text,
+             "函数“" + call->callee + "”的输入");
+        bind(result, Type::Text, "函数“" + call->callee + "”的结果");
+        return result;
+      }
+      if (call->callee == "starts_with" || call->callee == "ends_with") {
+        if (call->args.size() != 2)
+          fail("函数“" + call->callee + "”需要 Text 和要匹配的 Text");
+        bind(infer(*call->args[0]), Type::Text,
+             "函数“" + call->callee + "”的 Text");
+        bind(infer(*call->args[1]), Type::Text,
+             "函数“" + call->callee + "”的匹配内容");
+        bind(result, Type::Boolean, "函数“" + call->callee + "”的结果");
+        return result;
+      }
+      if (call->callee == "split") {
+        if (call->args.size() != 2) fail("split 需要 Text 和分隔符");
+        bind(infer(*call->args[0]), Type::Text, "split 的 Text");
+        bind(infer(*call->args[1]), Type::Text, "split 的分隔符");
+        bind(listElement(result, "split 的结果"), Type::Text,
+             "split 的结果元素");
+        return result;
+      }
+      if (call->callee == "join") {
+        if (call->args.size() != 2) fail("join 需要 Text List 和分隔符");
+        int parts = infer(*call->args[0]);
+        bind(listElement(parts, "join 的输入"), Type::Text, "join 的元素");
+        bind(infer(*call->args[1]), Type::Text, "join 的分隔符");
+        bind(result, Type::Text, "join 的结果");
+        return result;
+      }
+      if (call->callee == "abs" || call->callee == "floor" ||
+          call->callee == "ceil" || call->callee == "sign" ||
+          call->callee == "sqrt" || call->callee == "exp" ||
+          call->callee == "sin" || call->callee == "cos" ||
+          call->callee == "tan" || call->callee == "asin" ||
+          call->callee == "acos" || call->callee == "atan" ||
+          call->callee == "radians" || call->callee == "degrees") {
+        if (call->args.size() != 1)
+          fail("函数“" + call->callee + "”需要 1 个 Number");
+        bind(infer(*call->args[0]), Type::Number,
+             "函数“" + call->callee + "”的输入");
+        bind(result, Type::Number, "函数“" + call->callee + "”的结果");
+        return result;
+      }
+      if (call->callee == "pow" || call->callee == "hypot" ||
+          call->callee == "atan2") {
+        if (call->args.size() != 2)
+          fail("函数“" + call->callee + "”需要 2 个 Number");
+        bind(infer(*call->args[0]), Type::Number,
+             "函数“" + call->callee + "”的第一个输入");
+        bind(infer(*call->args[1]), Type::Number,
+             "函数“" + call->callee + "”的第二个输入");
+        bind(result, Type::Number, "函数“" + call->callee + "”的结果");
+        return result;
+      }
+      if (call->callee == "log") {
+        if (call->args.size() != 1 && call->args.size() != 2)
+          fail("log 需要 Number 和可选的底数");
+        bind(infer(*call->args[0]), Type::Number, "log 的输入");
+        if (call->args.size() == 2)
+          bind(infer(*call->args[1]), Type::Number, "log 的底数");
+        bind(result, Type::Number, "log 的结果");
+        return result;
+      }
+      if (call->callee == "round") {
+        if (call->args.size() != 1 && call->args.size() != 2)
+          fail("round 需要 Number 和可选的小数位数");
+        bind(infer(*call->args[0]), Type::Number, "round 的输入");
+        if (call->args.size() == 2)
+          bind(infer(*call->args[1]), Type::Number, "round 的小数位数");
+        bind(result, Type::Number, "round 的结果");
+        return result;
+      }
+      if (call->callee == "clamp") {
+        if (call->args.size() != 3)
+          fail("clamp 需要 Number、最小值和最大值");
+        for (const auto& argument : call->args)
+          bind(infer(*argument), Type::Number, "clamp 的参数");
+        bind(result, Type::Number, "clamp 的结果");
+        return result;
+      }
+      if (call->callee == "to_text") {
+        if (call->args.size() != 1) fail("to_text 需要 1 个值");
+        infer(*call->args[0]);
+        bind(result, Type::Text, "to_text 的结果");
+        return result;
+      }
+      if (call->callee == "parse_number") {
+        if (call->args.size() != 1) fail("parse_number 需要 1 个 Text");
+        bind(infer(*call->args[0]), Type::Text, "parse_number 的输入");
+        bind(result, Type::Number, "parse_number 的结果");
+        return result;
+      }
+      if (call->callee == "concat") {
+        if (call->args.size() != 2) fail("concat 需要两个 List");
+        int left = infer(*call->args[0]);
+        int right = infer(*call->args[1]);
+        unify(listElement(left, "concat 的左侧"),
+              listElement(right, "concat 的右侧"), "concat 的元素");
+        unify(result, left, "concat 的结果");
+        return result;
+      }
+      if (call->callee == "reverse") {
+        if (call->args.size() != 1) fail("reverse 需要 1 个 List");
+        int input = infer(*call->args[0]);
+        listElement(input, "reverse 的输入");
+        unify(result, input, "reverse 的结果");
+        return result;
+      }
+      if (call->callee == "fields") {
+        if (call->args.size() != 1) fail("fields 需要 1 个 Record");
+        bind(infer(*call->args[0]), Type::Record, "fields 的输入");
+        bind(listElement(result, "fields 的结果"), Type::Text,
+             "fields 的结果元素");
+        return result;
+      }
+      if (call->callee == "has_field") {
+        if (call->args.size() != 2) fail("has_field 需要 Record 和字段名");
+        bind(infer(*call->args[0]), Type::Record, "has_field 的 Record");
+        bind(infer(*call->args[1]), Type::Text, "has_field 的字段名");
+        bind(result, Type::Boolean, "has_field 的结果");
         return result;
       }
       if (call->callee == "first" || call->callee == "last") {
@@ -920,11 +1098,10 @@ class Inference {
       }
       if (call->callee == "take" || call->callee == "drop") {
         if (call->args.size() != 2)
-          fail("函数“" + call->callee + "”需要一个 Table 和行数");
-        bind(infer(*call->args[0]), Type::Table, "函数“" + call->callee + "”的输入");
+          fail("函数“" + call->callee + "”需要一个 List/Table 和数量");
+        int input = infer(*call->args[0]);
         bind(infer(*call->args[1]), Type::Number, "函数“" + call->callee + "”的行数");
-        bind(result, Type::Table, "函数“" + call->callee + "”的结果");
-        shapeCopies_.push_back({expressions_.at(call->args[0].get()), result});
+        sliceConstraints_.push_back({input, result});
         return result;
       }
       if (call->callee == "sort_by") {
@@ -986,6 +1163,10 @@ class Inference {
         auto found = scope->find(variable->name);
         if (found != scope->end()) { result = found->second; break; }
       }
+      if (result == kNoPresence &&
+          (variable->name == "pi" || variable->name == "e" ||
+           variable->name == "tau"))
+        result = kPresent;
     } else if (auto* let = dynamic_cast<const LetExpr*>(&expr)) {
       Presence value = presenceOf(*let->value);
       presenceScopes_.emplace_back();
@@ -1079,6 +1260,43 @@ class Inference {
         presenceOf(*call->args[0]);
         if (call->args.size() == 2) presenceOf(*call->args[1]);
         result = kMaybeMissing;
+      } else if (call->callee == "parse_number") {
+        presenceOf(*call->args[0]);
+        result = kMaybeMissing;
+      } else if (call->callee == "trim" || call->callee == "lowercase" ||
+                 call->callee == "uppercase" || call->callee == "abs" ||
+                 call->callee == "floor" || call->callee == "ceil" ||
+                 call->callee == "sign" || call->callee == "sqrt" ||
+                 call->callee == "exp" || call->callee == "sin" ||
+                 call->callee == "cos" || call->callee == "tan" ||
+                 call->callee == "asin" || call->callee == "acos" ||
+                 call->callee == "atan" || call->callee == "radians" ||
+                 call->callee == "degrees" ||
+                 call->callee == "to_text" || call->callee == "reverse" ||
+                 call->callee == "fields") {
+        result = presenceOf(*call->args[0]);
+      } else if (call->callee == "starts_with" ||
+                 call->callee == "ends_with" || call->callee == "split" ||
+                 call->callee == "join" || call->callee == "concat" ||
+                 call->callee == "has_field") {
+        result = propagate(presenceOf(*call->args[0]),
+                           presenceOf(*call->args[1]));
+      } else if (call->callee == "round") {
+        result = presenceOf(*call->args[0]);
+        if (call->args.size() == 2)
+          result = propagate(result, presenceOf(*call->args[1]));
+      } else if (call->callee == "clamp") {
+        result = propagate(presenceOf(*call->args[0]),
+                           presenceOf(*call->args[1]));
+        result = propagate(result, presenceOf(*call->args[2]));
+      } else if (call->callee == "pow" || call->callee == "hypot" ||
+                 call->callee == "atan2") {
+        result = propagate(presenceOf(*call->args[0]),
+                           presenceOf(*call->args[1]));
+      } else if (call->callee == "log") {
+        result = presenceOf(*call->args[0]);
+        if (call->args.size() == 2)
+          result = propagate(result, presenceOf(*call->args[1]));
       } else if (call->callee == "fill_missing" ||
                  call->callee == "select_columns" || call->callee == "take" ||
                  call->callee == "drop" || call->callee == "sort_by") {
@@ -1204,16 +1422,22 @@ struct CodeGenerator::Impl {
 
   Impl() : module(std::make_unique<llvm::Module>("lan_module", context)) {}
 
-  void loadRecordRuntime() {
-    auto buffer = llvm::MemoryBuffer::getFile(LAN_RECORD_BITCODE_PATH);
+  void loadRuntime(const std::string& path, const std::string& displayName) {
+    auto buffer = llvm::MemoryBuffer::getFile(path);
     if (!buffer)
-      throw std::runtime_error("无法读取 Record 运行时：" + buffer.getError().message());
+      throw std::runtime_error("无法读取" + displayName + "运行时：" +
+                               buffer.getError().message());
     auto runtime = llvm::parseBitcodeFile((*buffer)->getMemBufferRef(), context);
     if (!runtime)
-      throw std::runtime_error("无法解析 Record 运行时：" +
+      throw std::runtime_error("无法解析" + displayName + "运行时：" +
                                llvm::toString(runtime.takeError()));
     if (llvm::Linker::linkModules(*module, std::move(*runtime)))
-      throw std::runtime_error("无法链接 Record 运行时");
+      throw std::runtime_error("无法链接" + displayName + "运行时");
+  }
+
+  void loadRecordRuntime() {
+    loadRuntime(LAN_UTF8PROC_BITCODE_PATH, "Unicode");
+    loadRuntime(LAN_RECORD_BITCODE_PATH, "Lan");
   }
 
   llvm::Type* llvmType(Type type) {
@@ -1353,6 +1577,11 @@ struct CodeGenerator::Impl {
     } else if (auto* binary = dynamic_cast<const BinaryExpr*>(
                    currentDiagnosticExpression);
                binary && inference->isVectorOperation(*binary)) {
+      auto indexFn = external("lan_diagnostic_error_index", builder.getInt64Ty(), {});
+      listIndex = builder.CreateCall(indexFn, {}, "error.list.index");
+    } else if (auto* call = dynamic_cast<const CallExpr*>(
+                   currentDiagnosticExpression);
+               call && call->callee == "join") {
       auto indexFn = external("lan_diagnostic_error_index", builder.getInt64Ty(), {});
       listIndex = builder.CreateCall(indexFn, {}, "error.list.index");
     }
@@ -2550,6 +2779,241 @@ struct CodeGenerator::Impl {
     return {result, Type::List, kPresent};
   }
 
+  TypedValue emitTextBuiltin(const CallExpr& call) {
+    if (call.callee == "starts_with" || call.callee == "ends_with") {
+      auto text = requirePresent(emitExpr(*call.args[0]),
+                                 "函数“" + call.callee + "”的 Text");
+      auto part = requirePresent(emitExpr(*call.args[1]),
+                                 "函数“" + call.callee + "”的匹配内容");
+      auto function = external(
+          call.callee == "starts_with" ? "lan_text_starts_with"
+                                       : "lan_text_ends_with",
+          builder.getInt32Ty(), {llvmType(Type::Text), llvmType(Type::Text)});
+      auto* result = builder.CreateCall(function, {text.value, part.value},
+                                        call.callee + ".result");
+      return {builder.CreateICmpNE(result, builder.getInt32(0)),
+              Type::Boolean, kPresent};
+    }
+    if (call.callee == "split") {
+      auto text = requirePresent(emitExpr(*call.args[0]), "split 的 Text");
+      auto separator = requirePresent(emitExpr(*call.args[1]), "split 的分隔符");
+      auto* status = builder.CreateAlloca(builder.getInt32Ty(), nullptr,
+                                          "split.status");
+      auto function = external("lan_text_split", llvmType(Type::List),
+          {llvmType(Type::Text), llvmType(Type::Text),
+           llvm::PointerType::get(context, 0)});
+      auto* result = builder.CreateCall(
+          function, {text.value, separator.value, status}, "split.result");
+      requireRuntimeSuccess(builder.CreateLoad(builder.getInt32Ty(), status),
+                            "split 的分隔符不能为空");
+      return {result, Type::List, kPresent};
+    }
+    if (call.callee == "join") {
+      auto parts = requirePresent(emitExpr(*call.args[0]), "join 的 Text List");
+      auto separator = requirePresent(emitExpr(*call.args[1]), "join 的分隔符");
+      auto* status = builder.CreateAlloca(builder.getInt32Ty(), nullptr,
+                                          "join.status");
+      auto function = external("lan_text_join", llvmType(Type::Text),
+          {llvmType(Type::List), llvmType(Type::Text),
+           llvm::PointerType::get(context, 0)});
+      auto* result = builder.CreateCall(
+          function, {parts.value, separator.value, status}, "join.result");
+      requireRuntimeSuccess(builder.CreateLoad(builder.getInt32Ty(), status),
+                            "join 的元素必须是存在的 Text");
+      return {result, Type::Text, kPresent};
+    }
+    auto text = requirePresent(emitExpr(*call.args[0]),
+                               "函数“" + call.callee + "”的输入");
+    auto* status = builder.CreateAlloca(builder.getInt32Ty(), nullptr,
+                                        call.callee + ".status");
+    auto function = external(
+        call.callee == "trim" ? "lan_text_trim" : "lan_text_case",
+        llvmType(Type::Text),
+        call.callee == "trim"
+            ? std::vector<llvm::Type*>{llvmType(Type::Text),
+                                      llvm::PointerType::get(context, 0)}
+            : std::vector<llvm::Type*>{llvmType(Type::Text), builder.getInt32Ty(),
+                                      llvm::PointerType::get(context, 0)});
+    llvm::Value* result = call.callee == "trim"
+        ? builder.CreateCall(function, {text.value, status}, call.callee + ".result")
+        : builder.CreateCall(function,
+            {text.value, builder.getInt32(call.callee == "uppercase"), status},
+            call.callee + ".result");
+    requireRuntimeSuccess(builder.CreateLoad(builder.getInt32Ty(), status),
+                          "Text 包含无效的 UTF-8");
+    return {result, Type::Text, kPresent};
+  }
+
+  TypedValue emitNumberBuiltin(const CallExpr& call) {
+    auto number = requirePresent(emitExpr(*call.args[0]),
+                                 "函数“" + call.callee + "”的输入");
+    auto* output = builder.CreateAlloca(builder.getDoubleTy(), nullptr,
+                                        call.callee + ".output");
+    llvm::Value* status = nullptr;
+    if (call.callee == "abs" || call.callee == "floor" ||
+        call.callee == "ceil" || call.callee == "sign" ||
+        call.callee == "sqrt" || call.callee == "exp" ||
+        call.callee == "sin" || call.callee == "cos" ||
+        call.callee == "tan" || call.callee == "asin" ||
+        call.callee == "acos" || call.callee == "atan" ||
+        call.callee == "radians" || call.callee == "degrees") {
+      int operation = call.callee == "abs" ? 0
+                    : call.callee == "floor" ? 1
+                    : call.callee == "ceil" ? 2
+                    : call.callee == "sign" ? 3
+                    : call.callee == "sqrt" ? 4
+                    : call.callee == "exp" ? 5
+                    : call.callee == "sin" ? 6
+                    : call.callee == "cos" ? 7
+                    : call.callee == "tan" ? 8
+                    : call.callee == "asin" ? 9
+                    : call.callee == "acos" ? 10
+                    : call.callee == "atan" ? 11
+                    : call.callee == "radians" ? 12 : 13;
+      auto function = external("lan_number_unary", builder.getInt32Ty(),
+          {builder.getDoubleTy(), builder.getInt32Ty(),
+           llvm::PointerType::get(context, 0)});
+      status = builder.CreateCall(function,
+          {number.value, builder.getInt32(operation), output},
+          call.callee + ".status");
+    } else if (call.callee == "pow" || call.callee == "log" ||
+               call.callee == "hypot" || call.callee == "atan2") {
+      llvm::Value* right = nullptr;
+      if (call.callee == "log" && call.args.size() == 1) {
+        right = llvm::ConstantFP::get(builder.getDoubleTy(),
+                                     0x1.5bf0a8b145769p+1);
+      } else {
+        right = requirePresent(emitExpr(*call.args[1]),
+                               "函数“" + call.callee + "”的第二个输入").value;
+      }
+      int operation = call.callee == "pow" ? 0
+                    : call.callee == "log" ? 1
+                    : call.callee == "hypot" ? 2 : 3;
+      auto function = external("lan_number_binary", builder.getInt32Ty(),
+          {builder.getDoubleTy(), builder.getDoubleTy(), builder.getInt32Ty(),
+           llvm::PointerType::get(context, 0)});
+      status = builder.CreateCall(
+          function, {number.value, right, builder.getInt32(operation), output},
+          call.callee + ".status");
+    } else if (call.callee == "round") {
+      llvm::Value* digits = llvm::ConstantFP::get(builder.getDoubleTy(), 0.0);
+      if (call.args.size() == 2)
+        digits = requirePresent(emitExpr(*call.args[1]),
+                                "round 的小数位数").value;
+      auto function = external("lan_number_round", builder.getInt32Ty(),
+          {builder.getDoubleTy(), builder.getDoubleTy(),
+           llvm::PointerType::get(context, 0)});
+      status = builder.CreateCall(function, {number.value, digits, output},
+                                  "round.status");
+    } else {
+      auto minimum = requirePresent(emitExpr(*call.args[1]), "clamp 的最小值");
+      auto maximum = requirePresent(emitExpr(*call.args[2]), "clamp 的最大值");
+      auto function = external("lan_number_clamp", builder.getInt32Ty(),
+          {builder.getDoubleTy(), builder.getDoubleTy(), builder.getDoubleTy(),
+           llvm::PointerType::get(context, 0)});
+      status = builder.CreateCall(
+          function, {number.value, minimum.value, maximum.value, output},
+          "clamp.status");
+    }
+    std::string error = "数学函数要求有限 Number，并且结果必须有限";
+    if (call.callee == "round")
+      error = "round 的小数位数必须是 -308 到 308 之间的整数";
+    else if (call.callee == "clamp")
+      error = "clamp 要求有限 Number 且最小值不能大于最大值";
+    else if (call.callee == "sqrt")
+      error = "sqrt 要求不小于零的有限 Number";
+    else if (call.callee == "pow")
+      error = "pow 的定义域无效或结果不是有限 Number";
+    else if (call.callee == "log")
+      error = "log 要求正数，且底数必须为正数并且不能等于 1";
+    else if (call.callee == "asin" || call.callee == "acos")
+      error = "函数“" + call.callee + "”要求 -1 到 1 之间的有限 Number";
+    requireRuntimeSuccess(status, error);
+    return {builder.CreateLoad(builder.getDoubleTy(), output,
+                               call.callee + ".result"),
+            Type::Number, kPresent};
+  }
+
+  TypedValue emitConversionBuiltin(const CallExpr& call) {
+    auto input = requirePresent(emitExpr(*call.args[0]),
+                                "函数“" + call.callee + "”的输入");
+    if (call.callee == "to_text") {
+      auto parts = dynamicParts(input);
+      auto function = external("lan_value_to_text", llvmType(Type::Text),
+          {builder.getInt32Ty(), builder.getDoubleTy(), llvmType(Type::Text)});
+      return {builder.CreateCall(function, {parts[0], parts[1], parts[2]},
+                                 "text.value"),
+              Type::Text, kPresent};
+    }
+    auto* output = builder.CreateAlloca(builder.getDoubleTy(), nullptr,
+                                        "parsed.number");
+    auto function = external("lan_parse_number", builder.getInt32Ty(),
+        {llvmType(Type::Text), llvm::PointerType::get(context, 0)});
+    auto* valid = builder.CreateICmpNE(
+        builder.CreateCall(function, {input.value, output}), builder.getInt32(0),
+        "number.parsed");
+    llvm::Value* option = llvm::UndefValue::get(maybeNumberType());
+    option = builder.CreateInsertValue(option, valid, 0);
+    option = builder.CreateInsertValue(
+        option, builder.CreateLoad(builder.getDoubleTy(), output), 1);
+    return {option, Type::Number, kMaybeMissing};
+  }
+
+  TypedValue emitListBuiltin(const CallExpr& call) {
+    auto input = requirePresent(emitExpr(*call.args[0]),
+                                "函数“" + call.callee + "”的 List");
+    if (call.callee == "reverse") {
+      auto function = external("lan_list_reverse", llvmType(Type::List),
+                               {llvmType(Type::List)});
+      return {builder.CreateCall(function, {input.value}, "reversed.list"),
+              Type::List, kPresent};
+    }
+    if (call.callee == "concat") {
+      auto right = requirePresent(emitExpr(*call.args[1]), "concat 的右侧 List");
+      auto* status = builder.CreateAlloca(builder.getInt32Ty(), nullptr,
+                                          "concat.status");
+      auto function = external("lan_list_concat", llvmType(Type::List),
+          {llvmType(Type::List), llvmType(Type::List),
+           llvm::PointerType::get(context, 0)});
+      auto* result = builder.CreateCall(
+          function, {input.value, right.value, status}, "concatenated.list");
+      requireRuntimeSuccess(builder.CreateLoad(builder.getInt32Ty(), status),
+                            "concat 的两个 List 必须具有相同元素类型");
+      return {result, Type::List, kPresent};
+    }
+    auto amount = requirePresent(emitExpr(*call.args[1]),
+                                 "函数“" + call.callee + "”的数量");
+    auto* status = builder.CreateAlloca(builder.getInt32Ty(), nullptr,
+                                        "list.slice.status");
+    auto function = external("lan_list_slice", llvmType(Type::List),
+        {llvmType(Type::List), builder.getDoubleTy(), builder.getInt32Ty(),
+         llvm::PointerType::get(context, 0)});
+    auto* result = builder.CreateCall(function,
+        {input.value, amount.value, builder.getInt32(call.callee == "drop"), status},
+        "sliced.list");
+    requireRuntimeSuccess(builder.CreateLoad(builder.getInt32Ty(), status),
+                          "take/drop 的数量必须是非负整数");
+    return {result, Type::List, kPresent};
+  }
+
+  TypedValue emitRecordBuiltin(const CallExpr& call) {
+    auto record = requirePresent(emitExpr(*call.args[0]),
+                                 "函数“" + call.callee + "”的 Record");
+    if (call.callee == "fields") {
+      auto function = external("lan_record_fields", llvmType(Type::List),
+                               {llvmType(Type::Record)});
+      return {builder.CreateCall(function, {record.value}, "record.fields"),
+              Type::List, kPresent};
+    }
+    auto key = requirePresent(emitExpr(*call.args[1]), "has_field 的字段名");
+    auto function = external("lan_record_has_field", builder.getInt32Ty(),
+        {llvmType(Type::Record), llvmType(Type::Text)});
+    auto* found = builder.CreateCall(function, {record.value, key.value},
+                                     "record.has.field");
+    return {builder.CreateICmpNE(found, builder.getInt32(0)),
+            Type::Boolean, kPresent};
+  }
+
   TypedValue emitTableTransform(const CallExpr& call) {
     const std::string& displayName = call.callee;
     auto table = requirePresent(emitExpr(*call.args[0]),
@@ -3012,6 +3476,18 @@ struct CodeGenerator::Impl {
             return convertPresence(tableRowElement(row->table, row->index), presence);
         }
       }
+      if (variable->name == "pi")
+        return {llvm::ConstantFP::get(builder.getDoubleTy(),
+                                     0x1.921fb54442d18p+1),
+                Type::Number, kPresent};
+      if (variable->name == "e")
+        return {llvm::ConstantFP::get(builder.getDoubleTy(),
+                                     0x1.5bf0a8b145769p+1),
+                Type::Number, kPresent};
+      if (variable->name == "tau")
+        return {llvm::ConstantFP::get(builder.getDoubleTy(),
+                                     0x1.921fb54442d18p+2),
+                Type::Number, kPresent};
     }
     if (auto* let = dynamic_cast<const LetExpr*>(&expr)) {
       auto value = emitExpr(*let->value);
@@ -3133,15 +3609,50 @@ struct CodeGenerator::Impl {
         return call->args.size() == 1 ? emitListAggregate(*call)
                                       : emitTableAggregate(*call);
       if (call->callee == "fill_missing") return emitFillMissing(*call);
+      if (call->callee == "trim" || call->callee == "lowercase" ||
+          call->callee == "uppercase" || call->callee == "starts_with" ||
+          call->callee == "ends_with" || call->callee == "split" ||
+          call->callee == "join")
+        return emitTextBuiltin(*call);
+      if (call->callee == "abs" || call->callee == "floor" ||
+          call->callee == "ceil" || call->callee == "round" ||
+          call->callee == "clamp" || call->callee == "sign" ||
+          call->callee == "sqrt" || call->callee == "pow" ||
+          call->callee == "exp" || call->callee == "log" ||
+          call->callee == "hypot" || call->callee == "sin" ||
+          call->callee == "cos" || call->callee == "tan" ||
+          call->callee == "asin" || call->callee == "acos" ||
+          call->callee == "atan" || call->callee == "atan2" ||
+          call->callee == "radians" || call->callee == "degrees")
+        return emitNumberBuiltin(*call);
+      if (call->callee == "to_text" || call->callee == "parse_number")
+        return emitConversionBuiltin(*call);
+      if (call->callee == "concat" || call->callee == "reverse" ||
+          ((call->callee == "take" || call->callee == "drop") &&
+           inference->expressionType(*call->args[0]) == Type::List))
+        return emitListBuiltin(*call);
+      if (call->callee == "fields" || call->callee == "has_field")
+        return emitRecordBuiltin(*call);
       if (call->callee == "select_columns" || call->callee == "take" ||
           call->callee == "drop" || call->callee == "sort_by")
         return emitTableTransform(*call);
       if (call->callee == "length") {
-        auto list = emitExpr(*call->args[0]);
-        return guarded({list}, Type::Number, presence, [&]() {
+        auto input = requirePresent(emitExpr(*call->args[0]), "length 的输入");
+        if (input.type == Type::Text) {
+          auto* output = builder.CreateAlloca(builder.getDoubleTy(), nullptr,
+                                              "text.length");
+          auto function = external("lan_text_length", builder.getInt32Ty(),
+              {llvmType(Type::Text), llvm::PointerType::get(context, 0)});
+          auto* status = builder.CreateCall(function, {input.value, output},
+                                            "text.length.status");
+          requireRuntimeSuccess(status, "Text 包含无效的 UTF-8");
+          return {builder.CreateLoad(builder.getDoubleTy(), output),
+                  Type::Number, kPresent};
+        }
+        return guarded({input}, Type::Number, presence, [&]() {
           auto* length = builder.CreateLoad(
               builder.getInt64Ty(),
-              builder.CreateStructGEP(listValueType(), rawPayload(list), 0), "list.length");
+              builder.CreateStructGEP(listValueType(), rawPayload(input), 0), "list.length");
           return builder.CreateUIToFP(length, builder.getDoubleTy(), "length.number");
         });
       }
