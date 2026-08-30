@@ -78,6 +78,12 @@ add_test(NAME table_map_table_fusion
           -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/table_map_table_fusion.ll
           -DFALLBACK_OUTPUT=${CMAKE_CURRENT_BINARY_DIR}/table_fusion_fallback.ll
           -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_table_fusion.cmake)
+add_test(NAME compact_list_abi
+  COMMAND ${CMAKE_COMMAND}
+          -DLANC=$<TARGET_FILE:lanc>
+          -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/compact_list_abi.lan
+          -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/compact_list_abi.ll
+          -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_compact_list_abi.cmake)
 add_test(NAME confirmed_new_syntax
   COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/confirmed_syntax.lan)
 set_tests_properties(confirmed_new_syntax PROPERTIES

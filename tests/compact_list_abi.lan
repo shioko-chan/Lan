@@ -1,0 +1,12 @@
+{numbers = [1, missing, 3];
+flags = [true, missing, false, true];
+texts = ["A", missing, "B", "C", "D"];
+nested = [[1], missing];
+calculated = numbers + [10, 20, 30];
+{
+  calculated: calculated,
+  numbers: numbers,
+  flags: flags,
+  texts: texts,
+  nested: nested
+}}

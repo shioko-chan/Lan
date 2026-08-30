@@ -264,7 +264,32 @@ static int compare_entries(const void* left, const void* right) {
   return strcmp(a->key, b->key);
 }
 
-typedef struct { uint64_t length; LanValue* elements; } LanList;
+typedef struct {
+  uint64_t length;
+  void* elements;
+  int32_t storage_tag;
+  uint8_t* presence;
+} LanList;
+
+static LanValue load_list_value(const LanList* list, uint64_t index) {
+  if (list->storage_tag == LAN_NUMBER) {
+    if (list->presence && !list->presence[index])
+      return (LanValue){LAN_MISSING, 0, NULL};
+    return (LanValue){LAN_NUMBER, ((double*)list->elements)[index], NULL};
+  }
+  if (list->storage_tag == LAN_BOOLEAN) {
+    uint8_t encoded = ((uint8_t*)list->elements)[index];
+    return encoded == 0 ? (LanValue){LAN_MISSING, 0, NULL}
+                        : (LanValue){LAN_BOOLEAN, encoded == 2, NULL};
+  }
+  if (list->storage_tag == LAN_TEXT || list->storage_tag == LAN_LIST ||
+      list->storage_tag == LAN_RECORD) {
+    void* pointer = ((void**)list->elements)[index];
+    return pointer ? (LanValue){list->storage_tag, 0, pointer}
+                   : (LanValue){LAN_MISSING, 0, NULL};
+  }
+  return ((LanValue*)list->elements)[index];
+}
 
 static int32_t same_value(LanValue left, LanValue right);
 
@@ -272,7 +297,7 @@ static int32_t same_list(LanList* left, LanList* right) {
   if (left == right) return 1;
   if (!left || !right || left->length != right->length) return 0;
   for (uint64_t i = 0; i < left->length; ++i)
-    if (!same_value(left->elements[i], right->elements[i])) return 0;
+    if (!same_value(load_list_value(left, i), load_list_value(right, i))) return 0;
   return 1;
 }
 
@@ -315,17 +340,53 @@ int32_t lan_value_same(int32_t left_tag, double left_number, void* left_pointer,
                     (LanValue){right_tag, right_number, right_pointer});
 }
 
-static LanList* make_list(uint64_t length) {
+static LanList* make_typed_list(uint64_t length, int32_t storage_tag) {
   LanList* list = malloc(sizeof(*list));
   if (!list) abort();
   list->length = length;
-  list->elements = length ? calloc(length, sizeof(*list->elements)) : NULL;
+  list->storage_tag = storage_tag;
+  list->presence = NULL;
+  size_t element_size = sizeof(LanValue);
+  if (storage_tag == LAN_NUMBER) element_size = sizeof(double);
+  else if (storage_tag == LAN_BOOLEAN) element_size = sizeof(uint8_t);
+  else if (storage_tag == LAN_TEXT || storage_tag == LAN_LIST ||
+           storage_tag == LAN_RECORD) element_size = sizeof(void*);
+  list->elements = length ? calloc(length, element_size) : NULL;
   if (length && !list->elements) abort();
+  if (storage_tag == LAN_NUMBER && length) {
+    list->presence = calloc(length, sizeof(*list->presence));
+    if (!list->presence) abort();
+  }
   return list;
 }
 
+static LanList* make_list(uint64_t length) {
+  return make_typed_list(length, LAN_MISSING);
+}
+
 static void store_list_value(LanList* list, uint64_t index, LanValue value) {
-  list->elements[index] = value;
+  if (list->storage_tag == LAN_NUMBER) {
+    if (value.tag == LAN_MISSING) {
+      list->presence[index] = 0;
+      return;
+    }
+    ((double*)list->elements)[index] = value.number;
+    list->presence[index] = 1;
+    return;
+  }
+  if (list->storage_tag == LAN_BOOLEAN) {
+    ((uint8_t*)list->elements)[index] =
+        value.tag == LAN_MISSING ? 0 : (value.number != 0 ? 2 : 1);
+    return;
+  }
+  if (list->storage_tag == LAN_TEXT || list->storage_tag == LAN_LIST ||
+      list->storage_tag == LAN_RECORD) {
+    ((void**)list->elements)[index] =
+        value.tag == LAN_MISSING ? NULL : value.pointer;
+    retain_value(value);
+    return;
+  }
+  ((LanValue*)list->elements)[index] = value;
   retain_value(value);
 }
 
@@ -334,7 +395,15 @@ int32_t lan_list_lookup(void* list_pointer, double index, LanValue* output) {
   if (!list || index < 0 || index > 9007199254740992.0) return 0;
   uint64_t integer = (uint64_t)index;
   if ((double)integer != index || integer >= list->length) return 0;
-  *output = list->elements[integer];
+  *output = load_list_value(list, integer);
+  return 1;
+}
+
+int32_t lan_list_lookup_at(void* list_pointer, uint64_t index,
+                           LanValue* output) {
+  LanList* list = list_pointer;
+  if (!list || index >= list->length) return 0;
+  *output = load_list_value(list, index);
   return 1;
 }
 
@@ -389,7 +458,7 @@ void* lan_table_row(void* record, uint64_t row, int32_t* status) {
     if (row >= column->length) {
       *status = -2; lan_record_release(result); free(entries); return NULL;
     }
-    LanValue value = column->elements[row];
+    LanValue value = load_list_value(column, row);
     void* updated = lan_record_assoc(result, entries[i].key,
                                      value.tag, value.number, value.pointer);
     lan_record_release(result);
@@ -407,7 +476,7 @@ int32_t lan_table_cell(void* record, const char* key, uint64_t row,
     return 0;
   LanList* list = column.pointer;
   if (row >= list->length) return 0;
-  *output = list->elements[row];
+  *output = load_list_value(list, row);
   return 1;
 }
 
@@ -416,11 +485,12 @@ void* lan_table_from_rows(void* rows_pointer, int32_t* status) {
   *status = 0;
   if (!rows) { *status = -1; return NULL; }
   if (rows->length == 0) return lan_record_empty();
-  if (rows->elements[0].tag != LAN_RECORD || !rows->elements[0].pointer) {
+  LanValue first_row = load_list_value(rows, 0);
+  if (first_row.tag != LAN_RECORD || !first_row.pointer) {
     *status = -2; return NULL;
   }
 
-  LanRecordNode* first = rows->elements[0].pointer;
+  LanRecordNode* first = first_row.pointer;
   uint32_t count = entry_count(first);
   LanEntry* schema = count ? malloc(count * sizeof(*schema)) : NULL;
   uint32_t schema_index = 0;
@@ -428,10 +498,9 @@ void* lan_table_from_rows(void* rows_pointer, int32_t* status) {
   void* result = lan_record_empty();
 
   for (uint32_t field = 0; field < count; ++field) {
-    LanList* column = make_list(rows->length);
     int32_t observed_tag = LAN_MISSING;
     for (uint64_t row = 0; row < rows->length; ++row) {
-      LanValue row_value = rows->elements[row];
+      LanValue row_value = load_list_value(rows, row);
       if (row_value.tag != LAN_RECORD || !row_value.pointer ||
           entry_count(row_value.pointer) != count) {
         *status = -3; free(schema); return NULL;
@@ -446,6 +515,12 @@ void* lan_table_from_rows(void* rows_pointer, int32_t* status) {
         }
         observed_tag = cell.tag;
       }
+    }
+    LanList* column = make_typed_list(rows->length, observed_tag);
+    for (uint64_t row = 0; row < rows->length; ++row) {
+      LanValue row_value = load_list_value(rows, row);
+      LanValue cell;
+      lan_record_lookup(row_value.pointer, schema[field].key, &cell);
       store_list_value(column, row, cell);
     }
     void* updated = lan_record_assoc(result, schema[field].key,
@@ -494,7 +569,7 @@ static int32_t aggregate_list(LanList* list, int32_t operation, double* output) 
   double result = 0.0;
   uint64_t present = 0;
   for (uint64_t i = 0; i < list->length; ++i) {
-    LanValue value = list->elements[i];
+    LanValue value = load_list_value(list, i);
     if (value.tag == LAN_MISSING) continue;
     if (operation == 4) {
       ++present;
@@ -619,7 +694,7 @@ static LanValue recursive_binary(LanValue a, uint32_t a_rank,
     LanList* result = make_list(source->length);
     for (uint64_t i = 0; i < source->length; ++i)
       store_list_value(result, i, recursive_binary(
-          source->elements[i], a_rank - 1, b, b_rank, operation, status));
+          load_list_value(source, i), a_rank - 1, b, b_rank, operation, status));
     return (LanValue){LAN_LIST, 0, result};
   }
   if (b_rank > a_rank) {
@@ -631,7 +706,7 @@ static LanValue recursive_binary(LanValue a, uint32_t a_rank,
     LanList* result = make_list(source->length);
     for (uint64_t i = 0; i < source->length; ++i)
       store_list_value(result, i, recursive_binary(
-          a, a_rank, source->elements[i], b_rank - 1, operation, status));
+          a, a_rank, load_list_value(source, i), b_rank - 1, operation, status));
     return (LanValue){LAN_LIST, 0, result};
   }
 
@@ -645,7 +720,7 @@ static LanValue recursive_binary(LanValue a, uint32_t a_rank,
     LanList* result = make_list(source->length);
     for (uint64_t i = 0; i < source->length; ++i)
       store_list_value(result, i, recursive_binary(
-          a, a_rank - 1, source->elements[i], b_rank - 1, operation, status));
+          a, a_rank - 1, load_list_value(source, i), b_rank - 1, operation, status));
     return (LanValue){LAN_LIST, 0, result};
   }
   if (b.tag == LAN_MISSING && a.tag != LAN_MISSING) {
@@ -656,7 +731,7 @@ static LanValue recursive_binary(LanValue a, uint32_t a_rank,
     LanList* result = make_list(source->length);
     for (uint64_t i = 0; i < source->length; ++i)
       store_list_value(result, i, recursive_binary(
-          source->elements[i], a_rank - 1, b, b_rank - 1, operation, status));
+          load_list_value(source, i), a_rank - 1, b, b_rank - 1, operation, status));
     return (LanValue){LAN_LIST, 0, result};
   }
   if (a.tag == LAN_MISSING || b.tag == LAN_MISSING)
@@ -670,7 +745,7 @@ static LanValue recursive_binary(LanValue a, uint32_t a_rank,
   LanList* result = make_list(length);
   for (uint64_t i = 0; i < length; ++i)
     store_list_value(result, i, recursive_binary(
-        left->elements[i], a_rank - 1, right->elements[i], b_rank - 1,
+        load_list_value(left, i), a_rank - 1, load_list_value(right, i), b_rank - 1,
         operation, status));
   return (LanValue){LAN_LIST, 0, result};
 }
@@ -685,6 +760,68 @@ void* lan_list_binary(int32_t a_tag, double a_number, void* a_pointer,
       (LanValue){b_tag, b_number, b_pointer}, b_rank, operation, status);
   if (*status || result.tag != LAN_LIST) return NULL;
   return result.pointer;
+}
+
+void* lan_number_list_binary(void* left_pointer, void* right_pointer,
+                             int32_t operation, int32_t* status) {
+  LanList* left = left_pointer;
+  LanList* right = right_pointer;
+  *status = 0;
+  if (!left || !right || left->storage_tag != LAN_NUMBER ||
+      right->storage_tag != LAN_NUMBER || operation < 0 || operation > 12 ||
+      operation == 10 || operation == 11) {
+    return lan_list_binary(LAN_LIST, 0, left_pointer, 1,
+                           LAN_LIST, 0, right_pointer, 1,
+                           operation, status);
+  }
+
+  uint64_t length = left->length < right->length
+      ? left->length : right->length;
+  int32_t result_tag = operation >= 4 && operation <= 9
+      ? LAN_BOOLEAN : LAN_NUMBER;
+  LanList* result = make_typed_list(length, result_tag);
+  const double* restrict left_values = left->elements;
+  const double* restrict right_values = right->elements;
+  const uint8_t* restrict left_presence = left->presence;
+  const uint8_t* restrict right_presence = right->presence;
+
+  if (result_tag == LAN_NUMBER) {
+    double* restrict values = result->elements;
+    uint8_t* restrict presence = result->presence;
+#pragma clang loop vectorize(enable)
+    for (uint64_t i = 0; i < length; ++i) {
+      uint8_t left_present = !left_presence || left_presence[i];
+      uint8_t right_present = !right_presence || right_presence[i];
+      double a = left_values[i];
+      double b = right_values[i];
+      if (operation == 12) {
+        presence[i] = left_present || right_present;
+        values[i] = left_present ? a : b;
+      } else {
+        presence[i] = left_present && right_present;
+        values[i] = operation == 0 ? a + b
+                  : operation == 1 ? a - b
+                  : operation == 2 ? a * b : a / b;
+      }
+    }
+    return result;
+  }
+
+  uint8_t* restrict values = result->elements;
+#pragma clang loop vectorize(enable)
+  for (uint64_t i = 0; i < length; ++i) {
+    uint8_t present = (!left_presence || left_presence[i]) &&
+                      (!right_presence || right_presence[i]);
+    double a = left_values[i];
+    double b = right_values[i];
+    int predicate = operation == 4 ? a == b
+                  : operation == 5 ? a != b
+                  : operation == 6 ? a < b
+                  : operation == 7 ? a > b
+                  : operation == 8 ? a <= b : a >= b;
+    values[i] = present ? (predicate ? 2 : 1) : 0;
+  }
+  return result;
 }
 
 static LanValue recursive_unary(LanValue value, uint32_t rank,
@@ -705,7 +842,7 @@ static LanValue recursive_unary(LanValue value, uint32_t rank,
   LanList* result = make_list(source->length);
   for (uint64_t i = 0; i < source->length; ++i)
     store_list_value(result, i, recursive_unary(
-        source->elements[i], rank - 1, operation, status));
+        load_list_value(source, i), rank - 1, operation, status));
   return (LanValue){LAN_LIST, 0, result};
 }
 
@@ -723,11 +860,11 @@ void* lan_list_fill_missing(void* list_pointer, int32_t tag, double number,
   *status = 0;
   if (!list || tag == LAN_MISSING) { *status = -1; return NULL; }
   LanValue replacement = {tag, number, pointer};
-  LanList* result = make_list(list->length);
+  LanList* result = make_typed_list(list->length, tag);
   int32_t observed = tag;
   for (uint64_t i = 0; i < list->length; ++i) {
-    LanValue value = list->elements[i].tag == LAN_MISSING
-        ? replacement : list->elements[i];
+    LanValue original = load_list_value(list, i);
+    LanValue value = original.tag == LAN_MISSING ? replacement : original;
     if (value.tag != LAN_MISSING && observed != value.tag) {
       *status = -2; return NULL;
     }
@@ -737,18 +874,19 @@ void* lan_list_fill_missing(void* list_pointer, int32_t tag, double number,
 }
 
 static LanList* slice_list(LanList* source, uint64_t start, uint64_t length) {
-  LanList* result = make_list(length);
+  LanList* result = make_typed_list(length, source->storage_tag);
   for (uint64_t i = 0; i < length; ++i)
-    store_list_value(result, i, source->elements[start + i]);
+    store_list_value(result, i, load_list_value(source, start + i));
   return result;
 }
 
 static LanList* filter_list(LanList* source, LanList* mask, uint64_t kept) {
-  LanList* result = make_list(kept);
+  LanList* result = make_typed_list(kept, source->storage_tag);
   uint64_t output = 0;
   for (uint64_t i = 0; i < source->length; ++i)
-    if (mask->elements[i].tag == LAN_BOOLEAN && mask->elements[i].number != 0)
-      store_list_value(result, output++, source->elements[i]);
+    if (load_list_value(mask, i).tag == LAN_BOOLEAN &&
+        load_list_value(mask, i).number != 0)
+      store_list_value(result, output++, load_list_value(source, i));
   return result;
 }
 
@@ -761,7 +899,7 @@ void* lan_list_filter(void* source_pointer, void* mask_pointer, int32_t* status)
   }
   uint64_t kept = 0;
   for (uint64_t i = 0; i < mask->length; ++i) {
-    LanValue value = mask->elements[i];
+    LanValue value = load_list_value(mask, i);
     if (value.tag != LAN_MISSING && value.tag != LAN_BOOLEAN) {
       *status = -2; return NULL;
     }
@@ -771,9 +909,9 @@ void* lan_list_filter(void* source_pointer, void* mask_pointer, int32_t* status)
 }
 
 static LanList* permute_list(LanList* source, const uint64_t* order) {
-  LanList* result = make_list(source->length);
+  LanList* result = make_typed_list(source->length, source->storage_tag);
   for (uint64_t i = 0; i < source->length; ++i)
-    store_list_value(result, i, source->elements[order[i]]);
+    store_list_value(result, i, load_list_value(source, order[i]));
   return result;
 }
 
@@ -806,7 +944,7 @@ void* lan_table_where(void* record, void* mask_pointer, int32_t* status) {
   if (!mask || mask->length != rows) { *status = -1; return NULL; }
   uint64_t kept = 0;
   for (uint64_t i = 0; i < rows; ++i) {
-    LanValue value = mask->elements[i];
+    LanValue value = load_list_value(mask, i);
     if (value.tag != LAN_MISSING && value.tag != LAN_BOOLEAN) {
       *status = -2; return NULL;
     }
@@ -839,7 +977,7 @@ void* lan_table_select_columns(void* record, void* names_pointer, int32_t* statu
   if (!names || names->length == 0) { *status = -1; return NULL; }
   void* result = lan_record_empty();
   for (uint64_t i = 0; i < names->length; ++i) {
-    LanValue name = names->elements[i];
+    LanValue name = load_list_value(names, i);
     LanValue column;
     if (name.tag != LAN_TEXT || !lan_record_lookup(record, name.pointer, &column)) {
       *status = -2; return NULL;
@@ -898,7 +1036,7 @@ void* lan_table_sort_by(void* record, const char* key, int32_t* status) {
   if (list->length && (!items || !order)) abort();
   int32_t observed = LAN_MISSING;
   for (uint64_t i = 0; i < list->length; ++i) {
-    LanValue value = list->elements[i];
+    LanValue value = load_list_value(list, i);
     if (value.tag != LAN_MISSING) {
       if (value.tag != LAN_NUMBER && value.tag != LAN_BOOLEAN && value.tag != LAN_TEXT) {
         *status = -2; free(items); free(order); return NULL;
@@ -948,7 +1086,7 @@ static void print_value(LanValue value) {
     printf("[");
     for (uint64_t i = 0; i < list->length; ++i) {
       if (i) printf(", ");
-      print_value(list->elements[i]);
+      print_value(load_list_value(list, i));
     }
     printf("]");
   }

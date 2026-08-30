@@ -530,6 +530,8 @@ Number、Boolean 和指针列提供紧凑数组及存在位，并向 LLVM 提供
 - [x] `map(.field)` 在 TableShape 证明列存在时直接复用底层 List。
 - [x] `map({...}) |> table()` 的相邻阶段融合；纯字段投影直接复用列，安全标量表达式在单个按行循环中直接写结果列。
 - [x] 含 `?`、函数调用或动态类型的融合候选保守回退，避免改变可观察的错误顺序。
-- [ ] 紧凑列 ABI、LLVM 循环向量化和 SIMD 验证。
+- [x] 编译期已知元素类型的紧凑列 ABI；Number 使用 `double` 与存在标记，Boolean 使用三态字节，指针列使用 null niche。
+- [x] 一维 Number 列间算术、比较和 `??` 的专用循环及 LLVM SIMD 验证。
+- [ ] 标量广播、Boolean/Text 运算和嵌套广播的紧凑结果与更广泛 SIMD lowering。
 - [ ] 用户函数接收整行时的跨函数字段需求分析；当前会退化为物化行 Record。
 - [ ] 带集合索引、Table 行号、字段路径和调用链的完整运行时诊断。

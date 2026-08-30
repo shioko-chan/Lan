@@ -199,6 +199,10 @@ class Inference {
     return resolved(listElement(expressions_.at(&expr), "列表"));
   }
 
+  Type expressionListElementType(const Expr& expr) {
+    return resolved(listElement(expressions_.at(&expr), "List 表达式"));
+  }
+
   unsigned expressionListRank(const Expr& expr) {
     return listRank(expressions_.at(&expr));
   }
@@ -1390,7 +1394,8 @@ struct CodeGenerator::Impl {
   llvm::StructType* listValueType() {
     if (!listType) {
       listType = llvm::StructType::create(context, "lan.list");
-      listType->setBody({builder.getInt64Ty(), llvmType(Type::Text)});
+      listType->setBody({builder.getInt64Ty(), llvmType(Type::Text),
+                         builder.getInt32Ty(), llvmType(Type::Text)});
     }
     return listType;
   }
@@ -1618,22 +1623,76 @@ struct CodeGenerator::Impl {
     return emitListLookup(list.value, index, expected);
   }
 
-  std::pair<llvm::Value*, llvm::Value*> allocateListStorage(llvm::Value* length,
-                                                             const std::string& name) {
+  struct ListAllocation {
+    llvm::Value* list;
+    llvm::Value* data;
+    llvm::Value* presence;
+    Type elementType;
+  };
+
+  ListAllocation allocateListStorage(llvm::Value* length,
+                                    const std::string& name,
+                                    Type elementType = Type::Dynamic) {
     auto* listStorage = listValueType();
-    auto* elementStorage = taggedValueType();
     auto* list = allocate(llvm::ConstantExpr::getSizeOf(listStorage), name);
     builder.CreateStore(length, builder.CreateStructGEP(listStorage, list, 0));
+    Type storageType = elementType == Type::Table ? Type::Record : elementType;
+    llvm::Type* elementStorage = taggedValueType();
+    if (storageType == Type::Number) elementStorage = builder.getDoubleTy();
+    else if (storageType == Type::Boolean) elementStorage = builder.getInt8Ty();
+    else if (storageType == Type::Text || storageType == Type::List ||
+             storageType == Type::Record)
+      elementStorage = llvmType(Type::Text);
+    else
+      storageType = Type::Dynamic;
     auto* bytes = builder.CreateMul(length,
                                     llvm::ConstantExpr::getSizeOf(elementStorage));
     auto* data = allocate(bytes, name + ".elements");
     builder.CreateStore(data, builder.CreateStructGEP(listStorage, list, 1));
-    return {list, data};
+    builder.CreateStore(builder.getInt32(storageType == Type::Dynamic
+                                             ? 0 : tagFor(storageType)),
+                        builder.CreateStructGEP(listStorage, list, 2));
+    llvm::Value* presence = llvm::ConstantPointerNull::get(
+        llvm::cast<llvm::PointerType>(llvmType(Type::Text)));
+    if (storageType == Type::Number)
+      presence = allocate(length, name + ".presence");
+    builder.CreateStore(
+        presence,
+        builder.CreateStructGEP(listStorage, list, 3));
+    return {list, data, presence, storageType};
   }
 
-  void storeListElement(llvm::Value* data, llvm::Value* index,
+  void storeListElement(const ListAllocation& storage, llvm::Value* index,
                         const TypedValue& value) {
-    auto* slot = builder.CreateGEP(taggedValueType(), data, index, "element.output");
+    if (storage.elementType == Type::Number) {
+      auto* slot = builder.CreateGEP(builder.getDoubleTy(), storage.data, index,
+                                     "number.output");
+      builder.CreateStore(rawPayload(value), slot);
+      auto* present = builder.CreateGEP(builder.getInt8Ty(), storage.presence,
+                                        index, "number.present");
+      builder.CreateStore(builder.CreateZExt(presentFlag(value), builder.getInt8Ty()),
+                          present);
+      return;
+    }
+    if (storage.elementType == Type::Boolean) {
+      auto* slot = builder.CreateGEP(builder.getInt8Ty(), storage.data, index,
+                                     "boolean.output");
+      auto* encoded = builder.CreateAdd(
+          builder.CreateZExt(rawPayload(value), builder.getInt8Ty()),
+          builder.getInt8(1));
+      builder.CreateStore(builder.CreateSelect(presentFlag(value), encoded,
+                                               builder.getInt8(0)), slot);
+      return;
+    }
+    if (storage.elementType == Type::Text || storage.elementType == Type::List ||
+        storage.elementType == Type::Record) {
+      auto* slot = builder.CreateGEP(llvmType(Type::Text), storage.data, index,
+                                     "pointer.output");
+      builder.CreateStore(rawPayload(value), slot);
+      return;
+    }
+    auto* slot = builder.CreateGEP(taggedValueType(), storage.data, index,
+                                   "element.output");
     auto parts = dynamicParts(value);
     builder.CreateStore(parts[0], builder.CreateStructGEP(taggedValueType(), slot, 0));
     builder.CreateStore(parts[1], builder.CreateStructGEP(taggedValueType(), slot, 1));
@@ -1642,12 +1701,14 @@ struct CodeGenerator::Impl {
 
   TypedValue loadListElement(llvm::Value* list, llvm::Value* index,
                              Type expected) {
-    auto* data = builder.CreateLoad(
-        llvmType(Type::Text), builder.CreateStructGEP(listValueType(), list, 1),
-        "element.data");
-    auto* slot = builder.CreateGEP(taggedValueType(), data, index, "element.input");
-    auto* dynamic = builder.CreateLoad(taggedValueType(), slot, "element.value");
-    return decodeLookupValue(builder.getTrue(), dynamic, expected);
+    auto* storage = builder.CreateAlloca(taggedValueType(), nullptr, "element.value");
+    auto lookupFn = external("lan_list_lookup_at", builder.getInt32Ty(),
+                             {llvmType(Type::List), builder.getInt64Ty(),
+                              llvm::PointerType::get(context, 0)});
+    auto* found = builder.CreateICmpNE(
+        builder.CreateCall(lookupFn, {list, index, storage}), builder.getInt32(0));
+    auto* dynamic = builder.CreateLoad(taggedValueType(), storage);
+    return decodeLookupValue(found, dynamic, expected);
   }
 
   TypedValue emitElementBoundary(const Expr& expression) {
@@ -1769,7 +1830,10 @@ struct CodeGenerator::Impl {
   TypedValue emitMappedCollection(const CollectionExpr& expression,
                                   const TypedValue& receiver) {
     auto* length = collectionLength(receiver);
-    auto [mapped, data] = allocateListStorage(length, "collection.map");
+    Type mappedType = expression.operation == CollectionOperation::Filter
+        ? Type::Boolean : inference->expressionType(*expression.body);
+    auto mappedStorage = allocateListStorage(length, "collection.map", mappedType);
+    auto* mapped = mappedStorage.list;
     auto* function = builder.GetInsertBlock()->getParent();
     auto* start = builder.GetInsertBlock();
     auto* check = llvm::BasicBlock::Create(context, "collection.check", function);
@@ -1814,7 +1878,7 @@ struct CodeGenerator::Impl {
                                 : "replace 只能替换已有字段");
       mappedValue = {merged, Type::Record, kPresent};
     }
-    storeListElement(data, index, mappedValue);
+    storeListElement(mappedStorage, index, mappedValue);
     auto* next = builder.CreateAdd(index, builder.getInt64(1), "next.index");
     builder.CreateStore(next, indexAddress);
     builder.CreateBr(check);
@@ -2060,14 +2124,12 @@ struct CodeGenerator::Impl {
                                  "Table 计算投影的输入");
     auto* record = static_cast<const RecordExpr*>(map.body.get());
     auto* length = collectionLength(source);
-    std::vector<llvm::Value*> columns;
-    std::vector<llvm::Value*> data;
+    std::vector<ListAllocation> columns;
     columns.reserve(record->fields.size());
-    data.reserve(record->fields.size());
     for (std::size_t field = 0; field < record->fields.size(); ++field) {
-      auto storage = allocateListStorage(length, "projection.computed");
-      columns.push_back(storage.first);
-      data.push_back(storage.second);
+      columns.push_back(allocateListStorage(
+          length, "projection.computed",
+          inference->expressionType(*record->fields[field].value)));
     }
 
     auto* function = builder.GetInsertBlock()->getParent();
@@ -2087,7 +2149,7 @@ struct CodeGenerator::Impl {
     for (std::size_t field = 0; field < record->fields.size(); ++field) {
       auto value = emitElementExpression(map, *record->fields[field].value,
                                          source, index);
-      storeListElement(data[field], index, value);
+      storeListElement(columns[field], index, value);
     }
     auto* next = builder.CreateAdd(index, builder.getInt64(1),
                                    "projection.next");
@@ -2108,7 +2170,7 @@ struct CodeGenerator::Impl {
           assocFn,
           {result, builder.CreateGlobalString(record->fields[field].name),
            builder.getInt32(tagFor(Type::List)),
-           llvm::ConstantFP::get(builder.getDoubleTy(), 0.0), columns[field]},
+           llvm::ConstantFP::get(builder.getDoubleTy(), 0.0), columns[field].list},
           "projection.result.column");
       builder.CreateCall(releaseFn, {result});
       result = updated;
@@ -2276,6 +2338,24 @@ struct CodeGenerator::Impl {
                   : binary.op == "and" ? 10 : binary.op == "or" ? 11 : 12;
     auto* status = builder.CreateAlloca(builder.getInt32Ty(), nullptr,
                                         "list.operation.status");
+    unsigned leftRank = inference->expressionListRank(*binary.lhs);
+    unsigned rightRank = inference->expressionListRank(*binary.rhs);
+    bool compactNumberPair = leftRank == 1 && rightRank == 1 &&
+        inference->expressionListElementType(*binary.lhs) == Type::Number &&
+        inference->expressionListElementType(*binary.rhs) == Type::Number &&
+        operation != 10 && operation != 11;
+    if (compactNumberPair) {
+      auto operationFn = external(
+          "lan_number_list_binary", llvmType(Type::List),
+          {llvmType(Type::List), llvmType(Type::List), builder.getInt32Ty(),
+           llvm::PointerType::get(context, 0)});
+      auto* result = builder.CreateCall(
+          operationFn, {left.value, right.value, builder.getInt32(operation), status},
+          "number.list.operation");
+      requireRuntimeSuccess(builder.CreateLoad(builder.getInt32Ty(), status),
+                            "整列数字运算要求 Number 元素");
+      return {result, Type::List, kPresent};
+    }
     auto operationFn = external(
         "lan_list_binary", llvmType(Type::List),
         {builder.getInt32Ty(), builder.getDoubleTy(), llvmType(Type::Text),
@@ -2285,9 +2365,9 @@ struct CodeGenerator::Impl {
     auto* result = builder.CreateCall(
         operationFn,
         {leftParts[0], leftParts[1], leftParts[2],
-         builder.getInt32(inference->expressionListRank(*binary.lhs)),
+         builder.getInt32(leftRank),
          rightParts[0], rightParts[1], rightParts[2],
-         builder.getInt32(inference->expressionListRank(*binary.rhs)),
+         builder.getInt32(rightRank),
          builder.getInt32(operation), status},
         "list.operation");
     requireRuntimeSuccess(builder.CreateLoad(builder.getInt32Ty(), status),
@@ -2390,24 +2470,12 @@ struct CodeGenerator::Impl {
   }
 
   llvm::Value* emitList(const ListExpr& list) {
-    auto* listStorage = listValueType();
-    auto* elementStorage = taggedValueType();
-    auto* listMemory = allocate(llvm::ConstantExpr::getSizeOf(listStorage), "list");
-    auto* lengthAddress = builder.CreateStructGEP(listStorage, listMemory, 0);
-    builder.CreateStore(builder.getInt64(list.elements.size()), lengthAddress);
-
-    llvm::Value* dataMemory = llvm::ConstantPointerNull::get(
-        llvm::cast<llvm::PointerType>(llvmType(Type::Text)));
-    if (!list.elements.empty()) {
-      auto* bytes = builder.CreateMul(builder.getInt64(list.elements.size()),
-                                      llvm::ConstantExpr::getSizeOf(elementStorage));
-      dataMemory = allocate(bytes, "list.elements");
-    }
-    auto* dataAddress = builder.CreateStructGEP(listStorage, listMemory, 1);
-    builder.CreateStore(dataMemory, dataAddress);
+    Type elementType = inference->listElementType(list);
+    auto storage = allocateListStorage(builder.getInt64(list.elements.size()),
+                                       "list", elementType);
 
     llvm::AllocaInst* observedTag = nullptr;
-    if (inference->listElementType(list) == Type::Dynamic) {
+    if (elementType == Type::Dynamic) {
       observedTag = builder.CreateAlloca(builder.getInt32Ty(), nullptr,
                                          "list.element.type");
       builder.CreateStore(builder.getInt32(0), observedTag);
@@ -2415,10 +2483,8 @@ struct CodeGenerator::Impl {
 
     for (std::size_t i = 0; i < list.elements.size(); ++i) {
       auto element = emitExpr(*list.elements[i]);
-      auto* slot = builder.CreateGEP(elementStorage, dataMemory, builder.getInt64(i),
-                                     "list.element");
-      auto parts = dynamicParts(element);
       if (observedTag) {
+        auto parts = dynamicParts(element);
         auto* previous = builder.CreateLoad(builder.getInt32Ty(), observedTag,
                                             "list.previous.type");
         auto* isMissing = builder.CreateICmpEQ(parts[0], builder.getInt32(0));
@@ -2441,11 +2507,9 @@ struct CodeGenerator::Impl {
         auto* discovered = builder.CreateSelect(hasNoType, parts[0], previous);
         builder.CreateStore(discovered, observedTag);
       }
-      builder.CreateStore(parts[0], builder.CreateStructGEP(elementStorage, slot, 0));
-      builder.CreateStore(parts[1], builder.CreateStructGEP(elementStorage, slot, 1));
-      builder.CreateStore(parts[2], builder.CreateStructGEP(elementStorage, slot, 2));
+      storeListElement(storage, builder.getInt64(i), element);
     }
-    return listMemory;
+    return storage.list;
   }
 
   void declarePrintHelpers() {
@@ -2531,8 +2595,6 @@ struct CodeGenerator::Impl {
     builder.CreateCall(printfFn, {builder.CreateGlobalString("[")});
     auto* length = builder.CreateLoad(
         builder.getInt64Ty(), builder.CreateStructGEP(listStorage, list, 0), "length");
-    auto* data = builder.CreateLoad(
-        pointer, builder.CreateStructGEP(listStorage, list, 1), "elements");
     builder.CreateBr(check);
 
     builder.SetInsertPoint(check);
@@ -2550,13 +2612,15 @@ struct CodeGenerator::Impl {
     builder.CreateBr(display);
 
     builder.SetInsertPoint(display);
-    auto* slot = builder.CreateGEP(elementStorage, data, index, "value");
-    auto* tag = builder.CreateLoad(
-        builder.getInt32Ty(), builder.CreateStructGEP(elementStorage, slot, 0));
-    auto* number = builder.CreateLoad(
-        builder.getDoubleTy(), builder.CreateStructGEP(elementStorage, slot, 1));
-    auto* payload = builder.CreateLoad(
-        pointer, builder.CreateStructGEP(elementStorage, slot, 2));
+    auto* storage = builder.CreateAlloca(elementStorage, nullptr, "value");
+    auto lookupFn = external("lan_list_lookup_at", builder.getInt32Ty(),
+                             {llvmType(Type::List), builder.getInt64Ty(),
+                              llvm::PointerType::get(context, 0)});
+    builder.CreateCall(lookupFn, {list, index, storage});
+    auto* dynamic = builder.CreateLoad(elementStorage, storage);
+    auto* tag = builder.CreateExtractValue(dynamic, 0);
+    auto* number = builder.CreateExtractValue(dynamic, 1);
+    auto* payload = builder.CreateExtractValue(dynamic, 2);
     builder.CreateCall(printValueFunction, {tag, number, payload});
     auto* next = builder.CreateAdd(index, builder.getInt64(1), "next");
     builder.CreateBr(check);

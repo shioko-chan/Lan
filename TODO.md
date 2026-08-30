@@ -74,10 +74,13 @@
 - [x] ~~支持 List 的 `sum`、`average`、`min`、`max` 和 `count` 聚合。~~
 - [x] ~~使用统一的 `value |> function(arguments)` 管道，并要求函数名和括号完整出现。~~
 - [x] ~~移除无 `|>`、无括号的旧流式语法。~~
-- [ ] 将当前逐元素标签 ABI 改为按 `T` 生成的紧凑连续数组。
-- [ ] 为 `List<Number>` 使用紧凑数字数组和存在位。
-- [ ] 为 `List<Boolean>` 使用紧凑 `i2` 数组。
-- [ ] 为 `List<Text>`、`List<Record>` 和嵌套 List 使用指针数组及空指针 niche。
+- [x] ~~将编译期已知元素类型的 List ABI 改为按 `T` 生成的紧凑连续数组，并保留动态标签回退。~~
+- [x] ~~为 `List<Number>` 使用连续 `double` 数组和逐元素存在标记。~~
+- [x] ~~为 `List<Boolean>` 使用紧凑三态编码：0 missing、1 false、2 true。~~
+- [x] ~~为 `List<Text>`、`List<Record>` 和嵌套 List 使用指针数组及空指针 niche。~~
+- [x] ~~为一维 `List<Number>` 列间算术、比较和 `??` 提供专用循环，并验证 LLVM SIMD 向量化。~~
+- [ ] 将 Number 存在标记和 Boolean 三态编码进一步按位打包；仅在不妨碍向量化时采用。
+- [ ] 扩大紧凑运行时结果覆盖面：标量广播、Text 连接、Boolean 运算和嵌套 List 当前仍可退回动态标签布局。
 - [x] ~~支持 `first(list)`、`last(list)` 及 `items |> first()`、`items |> last()`。~~
 - [x] ~~在集合元素表达式中支持 `.`、`.field`、`.(key)` 和受限的 `name => expression`。~~
 - [x] ~~支持 List/Table 的 `map`、`filter`、`find`、`any` 和 `all`。~~
