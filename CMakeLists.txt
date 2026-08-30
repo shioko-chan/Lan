@@ -66,6 +66,12 @@ add_test(NAME table_lazy_row_lowering
           -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/table_lowering.lan
           -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/table_lowering.ll
           -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_table_lowering.cmake)
+add_test(NAME table_function_field_demand
+  COMMAND ${CMAKE_COMMAND}
+          -DLANC=$<TARGET_FILE:lanc>
+          -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/table_function_field_demand.lan
+          -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/table_function_field_demand.ll
+          -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_table_function_field_demand.cmake)
 add_test(NAME table_shape_call_intersection
   COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/table_shape_intersection.lan)
 set_tests_properties(table_shape_call_intersection PROPERTIES
@@ -84,6 +90,33 @@ add_test(NAME compact_list_abi
           -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/compact_list_abi.lan
           -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/compact_list_abi.ll
           -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_compact_list_abi.cmake)
+add_test(NAME division_semantics
+  COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/division_semantics.lan)
+set_tests_properties(division_semantics PROPERTIES PASS_REGULAR_EXPRESSION
+  [=[\{broadcast: \[5, missing\], missing_skips_division: \[missing, 5\], propagated: missing, truncated: \[5\]\}]=])
+foreach(division_error scalar_division_zero scalar_division_negative_zero
+                       list_division_zero list_scalar_division_zero
+                       nested_division_zero)
+  unset(expected_index_argument)
+  if(division_error STREQUAL "list_division_zero")
+    set(expected_index_argument -DEXPECTED_INDEX=1)
+  elseif(division_error STREQUAL "list_scalar_division_zero" OR
+         division_error STREQUAL "nested_division_zero")
+    set(expected_index_argument -DEXPECTED_INDEX=0)
+  endif()
+  add_test(NAME reject_${division_error}
+    COMMAND ${CMAKE_COMMAND}
+            -DLANC=$<TARGET_FILE:lanc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/${division_error}_error.lan
+            -DEXPECTED=除数不能为零
+            ${expected_index_argument}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_runtime_error.cmake)
+endforeach()
+add_test(NAME structured_runtime_diagnostic
+  COMMAND ${CMAKE_COMMAND}
+          -DLANC=$<TARGET_FILE:lanc>
+          -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/runtime_diagnostic.lan
+          -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_runtime_diagnostic.cmake)
 add_test(NAME confirmed_new_syntax
   COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/confirmed_syntax.lan)
 set_tests_properties(confirmed_new_syntax PROPERTIES

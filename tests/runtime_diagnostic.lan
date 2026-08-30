@@ -1,0 +1,10 @@
+ratio(person) = person.score / person.divisor
+
+report() =
+  people = table({
+    score: [10, 20, 30],
+    divisor: [2, 0, 5]
+  })
+  people |> map(ratio(.))
+
+report()

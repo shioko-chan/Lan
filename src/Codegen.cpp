@@ -20,6 +20,7 @@
 #include <array>
 #include <stdexcept>
 #include <functional>
+#include <optional>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -1216,6 +1217,11 @@ struct CodeGenerator::Impl {
     std::string binding;
   };
   std::vector<LazyTableRow> lazyTableRows;
+  struct DiagnosticCollection {
+    llvm::Value* index;
+    bool table;
+  };
+  std::vector<DiagnosticCollection> diagnosticCollections;
   std::unordered_map<std::string, const Function*> declarations;
   llvm::StructType* taggedType = nullptr;
   llvm::StructType* listType = nullptr;
@@ -1224,6 +1230,8 @@ struct CodeGenerator::Impl {
   llvm::Function* printListFunction = nullptr;
   llvm::BasicBlock* currentMissingTarget = nullptr;
   llvm::BasicBlock* rootMissingTarget = nullptr;
+  const Expr* currentDiagnosticExpression = nullptr;
+  std::string sourcePath;
 
   Impl() : module(std::make_unique<llvm::Module>("lan_module", context)) {}
 
@@ -1346,13 +1354,67 @@ struct CodeGenerator::Impl {
     return {value.value, value.type, target};
   }
 
-  void emitMissingError(const std::string& contextName) {
-    auto putsFn = external("puts", builder.getInt32Ty(), {llvmType(Type::Text)});
-    auto exitFn = external("exit", builder.getVoidTy(), {builder.getInt32Ty()});
+  std::string diagnosticFieldPath(const Expr* expression) const {
+    if (!expression) return {};
+    if (auto* field = dynamic_cast<const FieldExpr*>(expression)) {
+      auto prefix = diagnosticFieldPath(field->record.get());
+      return prefix + (field->key ? ".(动态字段)" : "." + field->name);
+    }
+    if (auto* binary = dynamic_cast<const BinaryExpr*>(expression)) {
+      auto left = diagnosticFieldPath(binary->lhs.get());
+      return left.empty() ? diagnosticFieldPath(binary->rhs.get()) : left;
+    }
+    if (auto* unary = dynamic_cast<const UnaryExpr*>(expression))
+      return diagnosticFieldPath(unary->operand.get());
+    return {};
+  }
+
+  void emitRuntimeError(const std::string& message) {
+    auto failFn = external(
+        "lan_runtime_fail", builder.getVoidTy(),
+        {llvmType(Type::Text), llvmType(Type::Text), builder.getInt32Ty(),
+         builder.getInt32Ty(), builder.getInt64Ty(), builder.getInt64Ty(),
+         llvmType(Type::Text)});
+    llvm::Value* listIndex = builder.getInt64(-1);
+    llvm::Value* tableRow = builder.getInt64(-1);
+    if (!diagnosticCollections.empty()) {
+      const auto& collection = diagnosticCollections.back();
+      if (collection.table) tableRow = collection.index;
+      else listIndex = collection.index;
+    } else if (auto* binary = dynamic_cast<const BinaryExpr*>(
+                   currentDiagnosticExpression);
+               binary && inference->isVectorOperation(*binary)) {
+      auto indexFn = external("lan_diagnostic_error_index", builder.getInt64Ty(), {});
+      listIndex = builder.CreateCall(indexFn, {}, "error.list.index");
+    }
+    int line = currentDiagnosticExpression ? currentDiagnosticExpression->line : 0;
+    int column = currentDiagnosticExpression ? currentDiagnosticExpression->column : 0;
+    const Expr* fieldExpression = currentDiagnosticExpression;
+    if (message == "除数不能为零")
+      if (auto* binary = dynamic_cast<const BinaryExpr*>(fieldExpression))
+        fieldExpression = binary->rhs.get();
+    auto field = diagnosticFieldPath(fieldExpression);
     builder.CreateCall(
-        putsFn, {builder.CreateGlobalString("Lan 运行错误：" + contextName + "不能使用 missing")});
-    builder.CreateCall(exitFn, {builder.getInt32(1)});
+        failFn,
+        {builder.CreateGlobalString(message), builder.CreateGlobalString(sourcePath),
+         builder.getInt32(line), builder.getInt32(column), listIndex, tableRow,
+         builder.CreateGlobalString(field)});
     builder.CreateUnreachable();
+  }
+
+  void emitMissingError(const std::string& contextName) {
+    emitRuntimeError(contextName + "不能使用 missing");
+  }
+
+  void emitDiagnosticPush(const std::string& name) {
+    auto push = external("lan_diagnostic_push", builder.getVoidTy(),
+                         {llvmType(Type::Text)});
+    builder.CreateCall(push, {builder.CreateGlobalString(name)});
+  }
+
+  void emitDiagnosticPop() {
+    auto pop = external("lan_diagnostic_pop", builder.getVoidTy(), {});
+    builder.CreateCall(pop, {});
   }
 
   TypedValue requirePresent(const TypedValue& value, const std::string& contextName) {
@@ -1479,13 +1541,7 @@ struct CodeGenerator::Impl {
   }
 
   void emitFieldTypeError(Type expected) {
-    auto putsFn = external("puts", builder.getInt32Ty(), {llvmType(Type::Text)});
-    auto exitFn = external("exit", builder.getVoidTy(), {builder.getInt32Ty()});
-    builder.CreateCall(
-        putsFn, {builder.CreateGlobalString("Lan 运行错误：读取到的值不是" +
-                                           std::string(typeName(expected)))});
-    builder.CreateCall(exitFn, {builder.getInt32(1)});
-    builder.CreateUnreachable();
+    emitRuntimeError("读取到的值不是" + std::string(typeName(expected)));
   }
 
   TypedValue decodeLookupValue(llvm::Value* found, llvm::Value* dynamic,
@@ -1809,7 +1865,9 @@ struct CodeGenerator::Impl {
       if (!expression.binding.empty())
         scopes.back().emplace(expression.binding, *element);
     }
+    diagnosticCollections.push_back({index, receiver.type == Type::Table});
     auto value = emitElementBoundary(body);
+    diagnosticCollections.pop_back();
     if (receiver.type == Type::Table) lazyTableRows.pop_back();
     scopes.pop_back();
     return value;
@@ -2031,11 +2089,7 @@ struct CodeGenerator::Impl {
   }
 
   void emitTableError(const std::string& message) {
-    auto putsFn = external("puts", builder.getInt32Ty(), {llvmType(Type::Text)});
-    auto exitFn = external("exit", builder.getVoidTy(), {builder.getInt32Ty()});
-    builder.CreateCall(putsFn, {builder.CreateGlobalString("Lan 运行错误：" + message)});
-    builder.CreateCall(exitFn, {builder.getInt32(1)});
-    builder.CreateUnreachable();
+    emitRuntimeError(message);
   }
 
   bool projectionField(const CollectionExpr& map, const Expr& expression,
@@ -2318,14 +2372,28 @@ struct CodeGenerator::Impl {
             Type::Boolean, kPresent};
   }
 
-  void requireRuntimeSuccess(llvm::Value* status, const std::string& message) {
+  void requireRuntimeSuccess(llvm::Value* status, const std::string& message,
+                             bool distinguishDivisionByZero = false) {
     auto* function = builder.GetInsertBlock()->getParent();
     auto* validBlock = llvm::BasicBlock::Create(context, "operation.valid", function);
     auto* errorBlock = llvm::BasicBlock::Create(context, "operation.invalid", function);
     builder.CreateCondBr(builder.CreateICmpEQ(status, builder.getInt32(0)),
                          validBlock, errorBlock);
     builder.SetInsertPoint(errorBlock);
-    emitTableError(message);
+    if (!distinguishDivisionByZero) {
+      emitTableError(message);
+    } else {
+      auto* zeroBlock = llvm::BasicBlock::Create(
+          context, "division.by.zero", function);
+      auto* otherErrorBlock = llvm::BasicBlock::Create(
+          context, "operation.type.invalid", function);
+      builder.CreateCondBr(builder.CreateICmpEQ(status, builder.getInt32(-4)),
+                           zeroBlock, otherErrorBlock);
+      builder.SetInsertPoint(zeroBlock);
+      emitTableError("除数不能为零");
+      builder.SetInsertPoint(otherErrorBlock);
+      emitTableError(message);
+    }
     builder.SetInsertPoint(validBlock);
   }
 
@@ -2360,7 +2428,7 @@ struct CodeGenerator::Impl {
           operationFn, {left.value, right.value, builder.getInt32(operation), status},
           "number.list.operation");
       requireRuntimeSuccess(builder.CreateLoad(builder.getInt32Ty(), status),
-                            "整列数字运算要求 Number 元素");
+                            "整列数字运算要求 Number 元素", binary.op == "/");
       return {result, Type::List, kPresent};
     }
     auto leafType = [&](const Expr& expression, unsigned rank) {
@@ -2369,6 +2437,26 @@ struct CodeGenerator::Impl {
     };
     Type leftLeaf = leafType(*binary.lhs, leftRank);
     Type rightLeaf = leafType(*binary.rhs, rightRank);
+    bool compactNumberScalar = std::max(leftRank, rightRank) == 1 &&
+        std::min(leftRank, rightRank) == 0 && leftLeaf == Type::Number &&
+        rightLeaf == Type::Number && operation <= 3;
+    if (compactNumberScalar) {
+      bool listOnLeft = leftRank == 1;
+      auto list = listOnLeft ? left : right;
+      auto scalar = listOnLeft ? right : left;
+      auto operationFn = external(
+          "lan_number_list_scalar_binary", llvmType(Type::List),
+          {llvmType(Type::List), builder.getDoubleTy(), builder.getInt32Ty(),
+           builder.getInt32Ty(), llvm::PointerType::get(context, 0)});
+      auto* result = builder.CreateCall(
+          operationFn,
+          {list.value, rawPayload(scalar), builder.getInt32(listOnLeft ? 1 : 0),
+           builder.getInt32(operation), status},
+          "number.list.scalar.operation");
+      requireRuntimeSuccess(builder.CreateLoad(builder.getInt32Ty(), status),
+                            "整列数字广播要求 Number 元素", binary.op == "/");
+      return {result, Type::List, kPresent};
+    }
     auto compactLeaf = [](Type type) {
       return type == Type::Number || type == Type::Boolean || type == Type::Text;
     };
@@ -2388,7 +2476,7 @@ struct CodeGenerator::Impl {
            builder.getInt32(operation), status},
           "flat.list.operation");
       requireRuntimeSuccess(builder.CreateLoad(builder.getInt32Ty(), status),
-                            "紧凑整列运算的元素类型不正确");
+                            "紧凑整列运算的元素类型不正确", binary.op == "/");
       return {result, Type::List, kPresent};
     }
     auto operationFn = external(
@@ -2406,7 +2494,7 @@ struct CodeGenerator::Impl {
          builder.getInt32(operation), status},
         "list.operation");
     requireRuntimeSuccess(builder.CreateLoad(builder.getInt32Ty(), status),
-                          "整列运算要求元素类型正确");
+                          "整列运算要求元素类型正确", binary.op == "/");
     return {result, Type::List, kPresent};
   }
 
@@ -2876,6 +2964,15 @@ struct CodeGenerator::Impl {
   }
 
   TypedValue emitExpr(const Expr& expr) {
+    struct DiagnosticExpressionScope {
+      const Expr*& current;
+      const Expr* previous;
+      DiagnosticExpressionScope(const Expr*& slot, const Expr& expression)
+          : current(slot), previous(slot) {
+        current = &expression;
+      }
+      ~DiagnosticExpressionScope() { current = previous; }
+    } diagnosticScope(currentDiagnosticExpression, expr);
     Type type = inference->expressionType(expr);
     Presence presence = inference->expressionPresence(expr);
     if (auto* number = dynamic_cast<const NumberExpr*>(&expr))
@@ -2981,7 +3078,22 @@ struct CodeGenerator::Impl {
         if (op == "+") return builder.CreateFAdd(left, right, "sum");
         if (op == "-") return builder.CreateFSub(left, right, "difference");
         if (op == "*") return builder.CreateFMul(left, right, "product");
-        if (op == "/") return builder.CreateFDiv(left, right, "quotient");
+        if (op == "/") {
+          auto* function = builder.GetInsertBlock()->getParent();
+          auto* divideBlock = llvm::BasicBlock::Create(
+              context, "division.valid", function);
+          auto* zeroBlock = llvm::BasicBlock::Create(
+              context, "division.by.zero", function);
+          builder.CreateCondBr(
+              builder.CreateFCmpOEQ(
+                  right, llvm::ConstantFP::get(builder.getDoubleTy(), 0.0),
+                  "divisor.is.zero"),
+              zeroBlock, divideBlock);
+          builder.SetInsertPoint(zeroBlock);
+          emitTableError("除数不能为零");
+          builder.SetInsertPoint(divideBlock);
+          return builder.CreateFDiv(left, right, "quotient");
+        }
         if (op == "<") return builder.CreateFCmpOLT(left, right, "less");
         if (op == ">") return builder.CreateFCmpOGT(left, right, "greater");
         if (op == "<=") return builder.CreateFCmpOLE(left, right, "at.most");
@@ -3023,19 +3135,46 @@ struct CodeGenerator::Impl {
       }
       if (call->callee == "first") return emitListEndpoint(*call, false, type);
       if (call->callee == "last") return emitListEndpoint(*call, true, type);
-      std::vector<llvm::Value*> args;
       const auto& target = *declarations.at(call->callee);
       auto targetPresences = inference->parameterPresences(target);
-      std::vector<TypedValue> supplied;
-      for (const auto& argument : call->args) supplied.push_back(emitExpr(*argument));
+      std::vector<std::optional<TypedValue>> supplied(call->args.size());
+      std::vector<std::optional<LazyTableRow>> suppliedRows(call->args.size());
+      bool hasLazyRowArgument = false;
+      for (std::size_t i = 0; i < call->args.size(); ++i) {
+        auto* variable = dynamic_cast<const VariableExpr*>(call->args[i].get());
+        auto* row = variable ? lazyTableRow(variable->name) : nullptr;
+        if (row) {
+          suppliedRows[i] = *row;
+          hasLazyRowArgument = true;
+        } else {
+          supplied[i] = emitExpr(*call->args[i]);
+        }
+      }
       auto slots = emittedArgumentSlots(*call, target);
       scopes.emplace_back();
+      std::size_t inlinedRows = 0;
+      std::vector<llvm::Value*> args;
       for (std::size_t i = 0; i < target.params.size(); ++i) {
-        auto argument = slots[i] >= 0 ? supplied[slots[i]]
-            : emitExpr(*target.params[i].defaultValue);
+        if (slots[i] >= 0 && suppliedRows[slots[i]]) {
+          const auto& row = *suppliedRows[slots[i]];
+          lazyTableRows.push_back(
+              {scopes.size() - 1, row.table, row.index, target.params[i].name});
+          ++inlinedRows;
+          continue;
+        }
+        auto argument = slots[i] >= 0 ? *supplied[slots[i]]
+                                      : emitExpr(*target.params[i].defaultValue);
         argument = convertPresence(argument, targetPresences[i]);
         scopes.back().emplace(target.params[i].name, argument);
         args.push_back(argument.value);
+      }
+      if (hasLazyRowArgument) {
+        emitDiagnosticPush(target.name);
+        auto returned = emitElementBoundary(*target.body);
+        emitDiagnosticPop();
+        for (std::size_t i = 0; i < inlinedRows; ++i) lazyTableRows.pop_back();
+        scopes.pop_back();
+        return convertPresence(returned, presence);
       }
       scopes.pop_back();
       auto returnedPresence = inference->resultPresence(target);
@@ -3070,6 +3209,7 @@ struct CodeGenerator::Impl {
     builder.SetInsertPoint(llvm::BasicBlock::Create(context, "start", generated));
     currentMissingTarget = nullptr;
     rootMissingTarget = nullptr;
+    emitDiagnosticPush(function.name);
     auto types = inference->parameterTypes(function);
     auto presences = inference->parameterPresences(function);
     std::size_t index = 0;
@@ -3080,9 +3220,11 @@ struct CodeGenerator::Impl {
     }
     auto result = emitExpr(*function.body);
     result = convertPresence(result, inference->resultPresence(function));
+    emitDiagnosticPop();
     builder.CreateRet(result.value);
     if (rootMissingTarget) {
       builder.SetInsertPoint(rootMissingTarget);
+      emitDiagnosticPop();
       builder.CreateRet(missingValue(inference->resultType(function)));
     }
     currentMissingTarget = nullptr;
@@ -3131,14 +3273,17 @@ struct CodeGenerator::Impl {
     scopes.emplace_back();
     currentMissingTarget = nullptr;
     rootMissingTarget = nullptr;
+    emitDiagnosticPush("程序");
     auto* pointer = llvmType(Type::Text);
     auto printfFn = external("printf", builder.getInt32Ty(), {pointer}, true);
     auto result = requirePresent(emitExpr(*program.result), "程序最终结果");
     displayPresent(result, printfFn);
+    emitDiagnosticPop();
     builder.CreateRet(builder.getInt32(0));
     if (rootMissingTarget) {
       builder.SetInsertPoint(rootMissingTarget);
       builder.CreateCall(printfFn, {builder.CreateGlobalString("missing\n")});
+      emitDiagnosticPop();
       builder.CreateRet(builder.getInt32(0));
     }
     currentMissingTarget = nullptr;
@@ -3153,6 +3298,7 @@ bool CodeGenerator::generate(const Program& program, std::string& error) {
   try {
     if (!program.result) throw std::runtime_error("程序最后需要有一个要计算或显示的内容");
     impl_->inference = std::make_unique<Inference>(program);
+    impl_->sourcePath = program.sourcePath;
     impl_->loadRecordRuntime();
     impl_->declarePrintHelpers();
     for (const auto& function : program.functions) impl_->declareFunction(*function);

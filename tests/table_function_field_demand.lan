@@ -1,0 +1,15 @@
+adult(person) = person.age >= 18
+display_name(person, suffix = "!") = person.name + suffix
+
+demo() =
+  people = table({
+    age: [20, 15],
+    name: ["Alice", "Bob"],
+    unused: [100, 200]
+  })
+  {
+    adults: people |> map(adult(.)),
+    names: people |> map(display_name(., suffix = "?"))
+  }
+
+demo()

@@ -13,6 +13,19 @@
 #define YY_DECL int yylex_impl(void)
 #define YY_USER_INIT BEGIN(INDENT_SCAN);
 
+static int sourceLine = 1;
+static int sourceColumn = 1;
+#define YY_USER_ACTION do { \
+  yylloc.first_line = sourceLine; \
+  yylloc.first_column = sourceColumn; \
+  for (int locationIndex = 0; locationIndex < yyleng; ++locationIndex) { \
+    if (yytext[locationIndex] == '\n') { ++sourceLine; sourceColumn = 1; } \
+    else { ++sourceColumn; } \
+  } \
+  yylloc.last_line = sourceLine; \
+  yylloc.last_column = sourceColumn; \
+} while (0);
+
 static std::vector<int> indentation{0};
 static int pendingDedents = 0;
 static int braceDepth = 0;
@@ -24,6 +37,7 @@ static bool ifAwaitingLayout = false;
 struct BufferedToken {
   int token;
   YYSTYPE value;
+  YYLTYPE location;
 };
 
 static std::deque<BufferedToken> bufferedTokens;
@@ -170,6 +184,7 @@ int yylex(void) {
     BufferedToken buffered{};
     buffered.token = token;
     buffered.value = yylval;
+    buffered.location = yylloc;
     bufferedTokens.push_back(buffered);
   };
 
@@ -189,32 +204,33 @@ int yylex(void) {
       if (next == BAD_INDENT) return BAD_INDENT;
 
       YYSTYPE nextValue = yylval;
+      YYLTYPE nextLocation = yylloc;
       std::deque<BufferedToken> lineTokens;
       if (opensLayout) {
         int enclosing = layoutDepths.empty() ? 0 : layoutDepths.back();
         if (rawIndentDepth <= enclosing || next == 0) return BAD_INDENT;
         layoutDepths.push_back(rawIndentDepth);
-        lineTokens.push_back({VIRTUAL_OPEN, {}});
+        lineTokens.push_back({VIRTUAL_OPEN, {}, nextLocation});
       } else {
         while (!layoutDepths.empty() && rawIndentDepth < layoutDepths.back()) {
           layoutDepths.pop_back();
-          lineTokens.push_back({VIRTUAL_CLOSE, {}});
+          lineTokens.push_back({VIRTUAL_CLOSE, {}, nextLocation});
         }
         if (next != ELSE) {
           if (!layoutDepths.empty() && rawIndentDepth == layoutDepths.back() &&
               next != 0)
-            lineTokens.push_back({VIRTUAL_SEMICOLON, {}});
+            lineTokens.push_back({VIRTUAL_SEMICOLON, {}, nextLocation});
           else if (layoutDepths.empty())
-            lineTokens.push_back({NEWLINE, {}});
+            lineTokens.push_back({NEWLINE, {}, nextLocation});
         }
       }
-      if (next != 0) lineTokens.push_back({next, nextValue});
+      if (next != 0) lineTokens.push_back({next, nextValue, nextLocation});
       else {
         while (!layoutDepths.empty()) {
           layoutDepths.pop_back();
-          lineTokens.push_back({VIRTUAL_CLOSE, {}});
+          lineTokens.push_back({VIRTUAL_CLOSE, {}, nextLocation});
         }
-        lineTokens.push_back({0, {}});
+        lineTokens.push_back({0, {}, nextLocation});
       }
       bufferedTokens.insert(bufferedTokens.end(), lineTokens.begin(), lineTokens.end());
       continue;
@@ -224,7 +240,7 @@ int yylex(void) {
       rawIndentDepth += token == INDENT ? 1 : -1;
       while (!layoutDepths.empty() && rawIndentDepth < layoutDepths.back()) {
         layoutDepths.pop_back();
-        bufferedTokens.push_back({VIRTUAL_CLOSE, {}});
+        bufferedTokens.push_back({VIRTUAL_CLOSE, {}, yylloc});
       }
       continue;
     }
@@ -232,9 +248,9 @@ int yylex(void) {
     if (token == 0) {
       while (!layoutDepths.empty()) {
         layoutDepths.pop_back();
-        bufferedTokens.push_back({VIRTUAL_CLOSE, {}});
+        bufferedTokens.push_back({VIRTUAL_CLOSE, {}, yylloc});
       }
-      bufferedTokens.push_back({0, {}});
+      bufferedTokens.push_back({0, {}, yylloc});
       continue;
     }
 
@@ -245,6 +261,7 @@ int yylex(void) {
   bufferedTokens.pop_front();
   int token = buffered.token;
   yylval = buffered.value;
+  yylloc = buffered.location;
 
   if (token == IF) ifAwaitingLayout = true;
   if (token == '{' && ifAwaitingLayout) ifAwaitingLayout = false;

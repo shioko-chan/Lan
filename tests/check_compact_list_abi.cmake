@@ -60,11 +60,20 @@ endif()
 if(NOT main_ir MATCHES "call ptr @lan_number_list_binary\\(")
   message(FATAL_ERROR "flat Number operation used the dynamic recursive path")
 endif()
+if(NOT main_ir MATCHES "call ptr @lan_number_list_scalar_binary\\(")
+  message(FATAL_ERROR "Number scalar broadcast used the dynamic flat path")
+endif()
+string(REGEX MATCH
+       "define [^\n]*@lan_number_list_scalar_binary\\([^\n]*\\)[^{]*\\{.*\n\\}"
+       scalar_loop_ir "${ir}")
+if(NOT scalar_loop_ir MATCHES "fadd <[0-9]+ x double>")
+  message(FATAL_ERROR "Number scalar broadcast loop was not SIMD-vectorized")
+endif()
 string(REGEX MATCHALL "call ptr @lan_flat_list_binary\\(" flat_calls "${main_ir}")
 list(LENGTH flat_calls flat_count)
-if(flat_count LESS 3)
+if(flat_count LESS 2)
   message(FATAL_ERROR
-          "expected Number/Boolean/Text scalar broadcasts to use the flat compact path")
+          "expected Boolean/Text scalar broadcasts to use the flat compact path")
 endif()
 if(NOT ir MATCHES "load <[0-9]+ x double>" OR
    NOT ir MATCHES "llvm.loop.isvectorized")

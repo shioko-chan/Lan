@@ -13,6 +13,12 @@ extern std::string lan_parse_error;
 
 static constexpr const char* kCurrentElement = "$lan_current_element";
 
+static lan::Expr* located(lan::Expr* expression, int line, int column) {
+  expression->line = line;
+  expression->column = column;
+  return expression;
+}
+
 static void collectRecordPath(lan::Expr* target, std::string& rootName,
                               std::vector<lan::RecordPathPart>& path) {
   auto* field = dynamic_cast<lan::FieldExpr*>(target);
@@ -67,7 +73,10 @@ static lan::Expr* makeBinding(lan::Expr* target, lan::Expr* expression,
     return nullptr;
   }
   delete target;
-  return new lan::LetExpr(bindingName, value, body);
+  auto* result = new lan::LetExpr(bindingName, value, body);
+  result->line = value->line;
+  result->column = value->column;
+  return result;
 }
 
 static lan::Expr* makePipelineStage(lan::Expr* receiver, const char* name,
@@ -86,7 +95,10 @@ static lan::Expr* makePipelineStage(lan::Expr* receiver, const char* name,
 
   if (!isCollection) {
     arguments->insert(arguments->begin(), lan::CallArgument(receiver));
-    return new lan::CallExpr(name, arguments);
+    auto* result = new lan::CallExpr(name, arguments);
+    result->line = receiver->line;
+    result->column = receiver->column;
+    return result;
   }
   if (arguments->size() != 1 || !arguments->front().name.empty()) {
     lan_parse_error = "第 " + std::to_string(yylineno) + " 行：集合操作“" +
@@ -103,7 +115,10 @@ static lan::Expr* makePipelineStage(lan::Expr* receiver, const char* name,
     delete elementBinding;
   }
   delete arguments;
-  return new lan::CollectionExpr(operation, receiver, body, binding);
+  auto* result = new lan::CollectionExpr(operation, receiver, body, binding);
+  result->line = receiver->line;
+  result->column = receiver->column;
+  return result;
 }
 
 static lan::Expr* makeRecordWith(lan::Expr* record,
@@ -122,6 +137,7 @@ static lan::Expr* makeRecordWith(lan::Expr* record,
 %}
 
 %parse-param { lan::Program** out }
+%locations
 
 %union {
   double number;
@@ -220,55 +236,55 @@ block_items
 
 expression
   : IF expression block ELSE block
-    { $$ = new lan::IfExpr($2, $3, $5); }
+    { $$ = located(new lan::IfExpr($2, $3, $5), @1.first_line, @1.first_column); }
   | pipeline { $$ = $1; }
   ;
 
 coalesce
-  : logical_or COALESCE coalesce { $$ = new lan::BinaryExpr("??", $1, $3); }
+  : logical_or COALESCE coalesce { $$ = located(new lan::BinaryExpr("??", $1, $3), @2.first_line, @2.first_column); }
   | logical_or { $$ = $1; }
   ;
 
 logical_or
-  : logical_or OR logical_and { $$ = new lan::BinaryExpr("or", $1, $3); }
+  : logical_or OR logical_and { $$ = located(new lan::BinaryExpr("or", $1, $3), @2.first_line, @2.first_column); }
   | logical_and { $$ = $1; }
   ;
 
 logical_and
-  : logical_and AND equality { $$ = new lan::BinaryExpr("and", $1, $3); }
+  : logical_and AND equality { $$ = located(new lan::BinaryExpr("and", $1, $3), @2.first_line, @2.first_column); }
   | equality { $$ = $1; }
   ;
 
 equality
-  : equality EQ comparison { $$ = new lan::BinaryExpr("==", $1, $3); }
-  | equality NE comparison { $$ = new lan::BinaryExpr("!=", $1, $3); }
+  : equality EQ comparison { $$ = located(new lan::BinaryExpr("==", $1, $3), @2.first_line, @2.first_column); }
+  | equality NE comparison { $$ = located(new lan::BinaryExpr("!=", $1, $3), @2.first_line, @2.first_column); }
   | comparison { $$ = $1; }
   ;
 
 comparison
-  : comparison '<' additive { $$ = new lan::BinaryExpr("<", $1, $3); }
-  | comparison '>' additive { $$ = new lan::BinaryExpr(">", $1, $3); }
-  | comparison LE additive { $$ = new lan::BinaryExpr("<=", $1, $3); }
-  | comparison GE additive { $$ = new lan::BinaryExpr(">=", $1, $3); }
+  : comparison '<' additive { $$ = located(new lan::BinaryExpr("<", $1, $3), @2.first_line, @2.first_column); }
+  | comparison '>' additive { $$ = located(new lan::BinaryExpr(">", $1, $3), @2.first_line, @2.first_column); }
+  | comparison LE additive { $$ = located(new lan::BinaryExpr("<=", $1, $3), @2.first_line, @2.first_column); }
+  | comparison GE additive { $$ = located(new lan::BinaryExpr(">=", $1, $3), @2.first_line, @2.first_column); }
   | additive { $$ = $1; }
   ;
 
 additive
-  : additive '+' multiplicative { $$ = new lan::BinaryExpr("+", $1, $3); }
-  | additive '-' multiplicative { $$ = new lan::BinaryExpr("-", $1, $3); }
+  : additive '+' multiplicative { $$ = located(new lan::BinaryExpr("+", $1, $3), @2.first_line, @2.first_column); }
+  | additive '-' multiplicative { $$ = located(new lan::BinaryExpr("-", $1, $3), @2.first_line, @2.first_column); }
   | multiplicative { $$ = $1; }
   ;
 
 multiplicative
-  : multiplicative '*' unary { $$ = new lan::BinaryExpr("*", $1, $3); }
-  | multiplicative '/' unary { $$ = new lan::BinaryExpr("/", $1, $3); }
+  : multiplicative '*' unary { $$ = located(new lan::BinaryExpr("*", $1, $3), @2.first_line, @2.first_column); }
+  | multiplicative '/' unary { $$ = located(new lan::BinaryExpr("/", $1, $3), @2.first_line, @2.first_column); }
   | unary { $$ = $1; }
   ;
 
 unary
-  : '-' unary { $$ = new lan::UnaryExpr('-', $2); }
-  | '!' unary { $$ = new lan::UnaryExpr('!', $2); }
-  | NOT unary { $$ = new lan::UnaryExpr('!', $2); }
+  : '-' unary { $$ = located(new lan::UnaryExpr('-', $2), @1.first_line, @1.first_column); }
+  | '!' unary { $$ = located(new lan::UnaryExpr('!', $2), @1.first_line, @1.first_column); }
+  | NOT unary { $$ = located(new lan::UnaryExpr('!', $2), @1.first_line, @1.first_column); }
   | postfix { $$ = $1; }
   ;
 
@@ -283,33 +299,37 @@ pipeline
   ;
 
 postfix
-  : postfix '?' { $$ = new lan::PropagateExpr($1); }
-  | postfix '.' field_name { $$ = new lan::FieldExpr($1, $3); free($3); }
-  | postfix INDEX { $$ = new lan::FieldExpr($1, new lan::NumberExpr($2)); }
-  | postfix '.' '(' expression ')' { $$ = new lan::FieldExpr($1, $4); }
+  : postfix '?' { $$ = located(new lan::PropagateExpr($1), @2.first_line, @2.first_column); }
+  | postfix '.' field_name { $$ = located(new lan::FieldExpr($1, $3), @2.first_line, @2.first_column); free($3); }
+  | postfix INDEX { $$ = located(new lan::FieldExpr($1, located(new lan::NumberExpr($2), @2.first_line, @2.first_column)), @2.first_line, @2.first_column); }
+  | postfix '.' '(' expression ')' { $$ = located(new lan::FieldExpr($1, $4), @2.first_line, @2.first_column); }
   | postfix WITH '{' record_fields '}' { $$ = makeRecordWith($1, $4); }
   | primary { $$ = $1; }
   ;
 
 primary
-  : NUMBER { $$ = new lan::NumberExpr($1); }
-  | TEXT { $$ = new lan::TextExpr($1); free($1); }
-  | MISSING { $$ = new lan::MissingExpr(); }
-  | '[' arguments ']' { $$ = new lan::ListExpr($2); }
-  | '{' record_fields '}' { $$ = new lan::RecordExpr($2); }
-  | TRUE { $$ = new lan::BooleanExpr(true); }
-  | FALSE { $$ = new lan::BooleanExpr(false); }
-  | IDENTIFIER { $$ = new lan::VariableExpr($1); free($1); }
-  | '.' { $$ = new lan::VariableExpr(kCurrentElement); }
+  : NUMBER { $$ = located(new lan::NumberExpr($1), @1.first_line, @1.first_column); }
+  | TEXT { $$ = located(new lan::TextExpr($1), @1.first_line, @1.first_column); free($1); }
+  | MISSING { $$ = located(new lan::MissingExpr(), @1.first_line, @1.first_column); }
+  | '[' arguments ']' { $$ = located(new lan::ListExpr($2), @1.first_line, @1.first_column); }
+  | '{' record_fields '}' { $$ = located(new lan::RecordExpr($2), @1.first_line, @1.first_column); }
+  | TRUE { $$ = located(new lan::BooleanExpr(true), @1.first_line, @1.first_column); }
+  | FALSE { $$ = located(new lan::BooleanExpr(false), @1.first_line, @1.first_column); }
+  | IDENTIFIER { $$ = located(new lan::VariableExpr($1), @1.first_line, @1.first_column); free($1); }
+  | '.' { $$ = located(new lan::VariableExpr(kCurrentElement), @1.first_line, @1.first_column); }
   | '.' field_name
     {
-      $$ = new lan::FieldExpr(new lan::VariableExpr(kCurrentElement), $2);
+      $$ = located(new lan::FieldExpr(
+          located(new lan::VariableExpr(kCurrentElement), @1.first_line, @1.first_column),
+          $2), @1.first_line, @1.first_column);
       free($2);
     }
   | '.' '(' expression ')'
-    { $$ = new lan::FieldExpr(new lan::VariableExpr(kCurrentElement), $3); }
+    { $$ = located(new lan::FieldExpr(
+          located(new lan::VariableExpr(kCurrentElement), @1.first_line, @1.first_column),
+          $3), @1.first_line, @1.first_column); }
   | CALL_IDENTIFIER '(' call_arguments ')'
-    { $$ = new lan::CallExpr($1, $3); free($1); }
+    { $$ = located(new lan::CallExpr($1, $3), @1.first_line, @1.first_column); free($1); }
   | '(' expression ')' { $$ = $2; }
   | block { $$ = $1; }
   ;

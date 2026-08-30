@@ -13,6 +13,8 @@ enum class Type { Unknown, Number, Boolean, Text, List, Record, Table, Dynamic }
 
 struct Expr {
   virtual ~Expr() = default;
+  int line = 0;
+  int column = 0;
 };
 
 struct NumberExpr final : Expr {
@@ -226,6 +228,7 @@ struct Function {
 };
 
 struct Program {
+  std::string sourcePath;
   std::vector<std::unique_ptr<Function>> functions;
   std::unique_ptr<Expr> result;
 };

@@ -1,0 +1,8 @@
+skip_division() = missing? / 0
+
+{
+  broadcast: [10, missing] / 2,
+  missing_skips_division: [missing, 10] / [0, 2],
+  propagated: skip_division(),
+  truncated: [10] / [2, 0]
+}

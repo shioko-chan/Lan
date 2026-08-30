@@ -21,6 +21,43 @@ enum { LAN_BRANCH = 1, LAN_LEAF = 2, LAN_COLLISION = 3 };
 enum { LAN_MISSING = 0, LAN_NUMBER = 1, LAN_BOOLEAN = 2,
        LAN_TEXT = 3, LAN_LIST = 4, LAN_RECORD = 5 };
 
+static const char* diagnostic_frames[128];
+static uint32_t diagnostic_frame_count = 0;
+static int64_t diagnostic_error_index = -1;
+
+void lan_diagnostic_push(const char* function) {
+  if (diagnostic_frame_count < 128)
+    diagnostic_frames[diagnostic_frame_count++] = function;
+}
+
+void lan_diagnostic_pop(void) {
+  if (diagnostic_frame_count) --diagnostic_frame_count;
+}
+
+int64_t lan_diagnostic_error_index(void) {
+  return diagnostic_error_index;
+}
+
+_Noreturn void lan_runtime_fail(const char* message, const char* source,
+                                int32_t line, int32_t column,
+                                int64_t list_index, int64_t table_row,
+                                const char* field) {
+  printf("Lan 运行错误：%s\n", message);
+  if (source && line > 0)
+    printf("位置：%s:%d:%d\n", source, line, column > 0 ? column : 1);
+  if (table_row >= 0) printf("Table 行号：%lld\n", (long long)table_row);
+  else if (list_index >= 0)
+    printf("List 元素索引：%lld\n", (long long)list_index);
+  if (field && *field) printf("字段路径：%s\n", field);
+  if (diagnostic_frame_count) {
+    printf("调用链：");
+    for (uint32_t i = 0; i < diagnostic_frame_count; ++i)
+      printf("%s%s", i ? " -> " : "", diagnostic_frames[i]);
+    putchar('\n');
+  }
+  exit(1);
+}
+
 struct LanRecordNode {
   uint32_t references;
   uint32_t kind;
@@ -648,6 +685,10 @@ static LanValue scalar_binary(LanValue a, LanValue b, int32_t operation,
       *status = -3;
       return (LanValue){LAN_MISSING, 0, NULL};
     }
+    if (operation == 3 && b.number == 0.0) {
+      *status = -4;
+      return (LanValue){LAN_MISSING, 0, NULL};
+    }
     value.number = operation == 0 ? a.number + b.number
                  : operation == 1 ? a.number - b.number
                  : operation == 2 ? a.number * b.number : a.number / b.number;
@@ -700,6 +741,19 @@ static int32_t binary_result_storage_tag(LanValue a, uint32_t a_rank,
 
 static LanValue recursive_binary(LanValue a, uint32_t a_rank,
                                  LanValue b, uint32_t b_rank,
+                                 int32_t operation, int32_t* status);
+
+static LanValue indexed_recursive_binary(
+    LanValue a, uint32_t a_rank, LanValue b, uint32_t b_rank,
+    int32_t operation, int32_t* status, uint64_t index) {
+  LanValue value = recursive_binary(a, a_rank, b, b_rank, operation, status);
+  if (*status && diagnostic_error_index < 0)
+    diagnostic_error_index = (int64_t)index;
+  return value;
+}
+
+static LanValue recursive_binary(LanValue a, uint32_t a_rank,
+                                 LanValue b, uint32_t b_rank,
                                  int32_t operation, int32_t* status) {
   if (*status) return (LanValue){LAN_MISSING, 0, NULL};
   if (a_rank == 0 && b_rank == 0) return scalar_binary(a, b, operation, status);
@@ -719,8 +773,8 @@ static LanValue recursive_binary(LanValue a, uint32_t a_rank,
         source->length,
         binary_result_storage_tag(a, a_rank, b, b_rank, operation));
     for (uint64_t i = 0; i < source->length; ++i)
-      store_list_value(result, i, recursive_binary(
-          load_list_value(source, i), a_rank - 1, b, b_rank, operation, status));
+      store_list_value(result, i, indexed_recursive_binary(
+          load_list_value(source, i), a_rank - 1, b, b_rank, operation, status, i));
     return (LanValue){LAN_LIST, 0, result};
   }
   if (b_rank > a_rank) {
@@ -733,8 +787,8 @@ static LanValue recursive_binary(LanValue a, uint32_t a_rank,
         source->length,
         binary_result_storage_tag(a, a_rank, b, b_rank, operation));
     for (uint64_t i = 0; i < source->length; ++i)
-      store_list_value(result, i, recursive_binary(
-          a, a_rank, load_list_value(source, i), b_rank - 1, operation, status));
+      store_list_value(result, i, indexed_recursive_binary(
+          a, a_rank, load_list_value(source, i), b_rank - 1, operation, status, i));
     return (LanValue){LAN_LIST, 0, result};
   }
 
@@ -749,8 +803,8 @@ static LanValue recursive_binary(LanValue a, uint32_t a_rank,
         source->length,
         binary_result_storage_tag(a, a_rank, b, b_rank, operation));
     for (uint64_t i = 0; i < source->length; ++i)
-      store_list_value(result, i, recursive_binary(
-          a, a_rank - 1, load_list_value(source, i), b_rank - 1, operation, status));
+      store_list_value(result, i, indexed_recursive_binary(
+          a, a_rank - 1, load_list_value(source, i), b_rank - 1, operation, status, i));
     return (LanValue){LAN_LIST, 0, result};
   }
   if (b.tag == LAN_MISSING && a.tag != LAN_MISSING) {
@@ -762,8 +816,8 @@ static LanValue recursive_binary(LanValue a, uint32_t a_rank,
         source->length,
         binary_result_storage_tag(a, a_rank, b, b_rank, operation));
     for (uint64_t i = 0; i < source->length; ++i)
-      store_list_value(result, i, recursive_binary(
-          load_list_value(source, i), a_rank - 1, b, b_rank - 1, operation, status));
+      store_list_value(result, i, indexed_recursive_binary(
+          load_list_value(source, i), a_rank - 1, b, b_rank - 1, operation, status, i));
     return (LanValue){LAN_LIST, 0, result};
   }
   if (a.tag == LAN_MISSING || b.tag == LAN_MISSING)
@@ -777,9 +831,9 @@ static LanValue recursive_binary(LanValue a, uint32_t a_rank,
   LanList* result = make_typed_list(
       length, binary_result_storage_tag(a, a_rank, b, b_rank, operation));
   for (uint64_t i = 0; i < length; ++i)
-    store_list_value(result, i, recursive_binary(
+    store_list_value(result, i, indexed_recursive_binary(
         load_list_value(left, i), a_rank - 1, load_list_value(right, i), b_rank - 1,
-        operation, status));
+        operation, status, i));
   return (LanValue){LAN_LIST, 0, result};
 }
 
@@ -788,6 +842,7 @@ void* lan_list_binary(int32_t a_tag, double a_number, void* a_pointer,
                       void* b_pointer, uint32_t b_rank,
                       int32_t operation, int32_t* status) {
   *status = 0;
+  diagnostic_error_index = -1;
   LanValue result = recursive_binary(
       (LanValue){a_tag, a_number, a_pointer}, a_rank,
       (LanValue){b_tag, b_number, b_pointer}, b_rank, operation, status);
@@ -802,6 +857,7 @@ void* lan_flat_list_binary(int32_t a_tag, double a_number, void* a_pointer,
   LanValue a = {a_tag, a_number, a_pointer};
   LanValue b = {b_tag, b_number, b_pointer};
   *status = 0;
+  diagnostic_error_index = -1;
   if ((a_rank > 1 || b_rank > 1) || (a_rank == 0 && b_rank == 0)) {
     *status = -3;
     return NULL;
@@ -827,6 +883,20 @@ void* lan_flat_list_binary(int32_t a_tag, double a_number, void* a_pointer,
     return NULL;
   }
 
+
+  if (operation == 3) {
+    for (uint64_t i = 0; i < length; ++i) {
+      LanValue left_value = left ? load_list_value(left, i) : a;
+      LanValue right_value = right ? load_list_value(right, i) : b;
+      if (left_value.tag == LAN_NUMBER && right_value.tag == LAN_NUMBER &&
+          right_value.number == 0.0) {
+        *status = -4;
+        diagnostic_error_index = (int64_t)i;
+        return NULL;
+      }
+    }
+  }
+
   LanList* result = make_typed_list(length, storage_tag);
   for (uint64_t i = 0; i < length; ++i) {
     LanValue left_value = left ? load_list_value(left, i) : a;
@@ -843,6 +913,7 @@ void* lan_number_list_binary(void* left_pointer, void* right_pointer,
   LanList* left = left_pointer;
   LanList* right = right_pointer;
   *status = 0;
+  diagnostic_error_index = -1;
   if (!left || !right || left->storage_tag != LAN_NUMBER ||
       right->storage_tag != LAN_NUMBER || operation < 0 || operation > 12 ||
       operation == 10 || operation == 11) {
@@ -854,11 +925,24 @@ void* lan_number_list_binary(void* left_pointer, void* right_pointer,
       ? left->length : right->length;
   int32_t result_tag = operation >= 4 && operation <= 9
       ? LAN_BOOLEAN : LAN_NUMBER;
-  LanList* result = make_typed_list(length, result_tag);
   const double* restrict left_values = left->elements;
   const double* restrict right_values = right->elements;
   const uint8_t* restrict left_presence = left->presence;
   const uint8_t* restrict right_presence = right->presence;
+
+  if (operation == 3) {
+    for (uint64_t i = 0; i < length; ++i) {
+      uint8_t left_present = !left_presence || left_presence[i];
+      uint8_t right_present = !right_presence || right_presence[i];
+      if (left_present && right_present && right_values[i] == 0.0) {
+        *status = -4;
+        diagnostic_error_index = (int64_t)i;
+        return NULL;
+      }
+    }
+  }
+
+  LanList* result = make_typed_list(length, result_tag);
 
   if (result_tag == LAN_NUMBER) {
     double* restrict values = result->elements;
@@ -895,6 +979,70 @@ void* lan_number_list_binary(void* left_pointer, void* right_pointer,
                   : operation == 7 ? a > b
                   : operation == 8 ? a <= b : a >= b;
     values[i] = present ? (predicate ? 2 : 1) : 0;
+  }
+  return result;
+}
+
+void* lan_number_list_scalar_binary(void* list_pointer, double scalar,
+                                    int32_t list_on_left, int32_t operation,
+                                    int32_t* status) {
+  LanList* source = list_pointer;
+  *status = 0;
+  diagnostic_error_index = -1;
+  if (!source || source->storage_tag != LAN_NUMBER ||
+      (source->length && !source->presence) || operation < 0 || operation > 3) {
+    *status = -3;
+    return NULL;
+  }
+
+  const double* restrict source_values = source->elements;
+  const uint8_t* restrict source_presence = source->presence;
+  uint64_t length = source->length;
+  if (operation == 3) {
+    for (uint64_t i = 0; i < length; ++i) {
+      uint8_t present = source_presence[i];
+      double divisor = list_on_left ? scalar : source_values[i];
+      if (present && divisor == 0.0) {
+        *status = -4;
+        diagnostic_error_index = (int64_t)i;
+        return NULL;
+      }
+    }
+  }
+
+  LanList* result = make_typed_list(length, LAN_NUMBER);
+  double* restrict values = result->elements;
+  uint8_t* restrict presence = result->presence;
+  if (operation == 0) {
+#pragma clang loop vectorize(enable)
+    for (uint64_t i = 0; i < length; ++i) {
+      presence[i] = source_presence[i];
+      values[i] = source_values[i] + scalar;
+    }
+    return result;
+  }
+  if (operation == 1) {
+#pragma clang loop vectorize(enable)
+    for (uint64_t i = 0; i < length; ++i) {
+      presence[i] = source_presence[i];
+      values[i] = list_on_left ? source_values[i] - scalar
+                               : scalar - source_values[i];
+    }
+    return result;
+  }
+  if (operation == 2) {
+#pragma clang loop vectorize(enable)
+    for (uint64_t i = 0; i < length; ++i) {
+      presence[i] = source_presence[i];
+      values[i] = source_values[i] * scalar;
+    }
+    return result;
+  }
+#pragma clang loop vectorize(enable)
+  for (uint64_t i = 0; i < length; ++i) {
+    presence[i] = source_presence[i];
+    values[i] = list_on_left ? source_values[i] / scalar
+                             : scalar / source_values[i];
   }
   return result;
 }

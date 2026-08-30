@@ -92,6 +92,7 @@ int main(int argc, char** argv) {
     std::cerr << "Lan：" << lan_parse_error << "\n";
     return 1;
   }
+  program->sourcePath = inputPath;
 
   lan::CodeGenerator generator;
   std::string error;
