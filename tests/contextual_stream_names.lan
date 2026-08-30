@@ -10,7 +10,7 @@ where = 6;
 values = [10, missing, 20];
 stats = {count: count, min: min, add: add, replace: replace, where: where};
 {
-  aggregate: values count,
+  aggregate: values |> count(),
   fields: stats.count + stats.min + stats.add + stats.replace + stats.where,
   parameters: combine(count, min, max, add, replace, where)
 }}

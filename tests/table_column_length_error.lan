@@ -1,2 +1,2 @@
 {people = table({name: ["A", "B"], age: [10, 20]});
-people add score: [1]}
+people |> add(1)}

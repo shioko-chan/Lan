@@ -1,0 +1,3 @@
+identity(value) = value
+
+identity(item => item)

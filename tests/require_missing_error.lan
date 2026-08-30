@@ -1,0 +1,7 @@
+choose(found) =
+  if found
+    10
+  else
+    missing
+
+require(choose(false))

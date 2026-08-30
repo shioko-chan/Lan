@@ -289,65 +289,53 @@ count([10, missing, 20])     # 2
 `count` 接受任意单类型 List。列表本身为 missing 时仍遵循普通参数规则并运行时拒绝。
 
 `first(list)` 和 `last(list)` 分别读取第一个和最后一个元素，空列表返回 `missing`。
-它们也支持流式写法：`items first` 和 `items last`。
 
-聚合也提供接收值在前的流式语法糖：
+### 集合管道与元素表达式
 
-```lan
-numbers sum                         # sum(numbers)
-numbers average                     # average(numbers)
-people sum "score"                 # sum(people, "score")
-people count "score"               # count(people, "score")
-```
-
-五个聚合名称都支持这种写法。流式形式只改变阅读顺序，在 AST 中立即降低为普通内置
-函数调用，因此类型检查、missing 和运行时行为完全相同。复杂的动态列名可以加括号：
-`people sum (chosen_column)`。
-
-列表和表格转换也可以把接收值写在前面，并且可以连续连接：
+所有管道阶段都必须使用 `|>`，并写出函数名和括号：
 
 ```lan
-values fill_missing 0                         # fill_missing(values, 0)
-values length                                 # length(values)
-people where .age >= 18                       # where(people, people.age >= 18)
-people add adult: .age >= 18
-people replace score: .score ?? 0
-people select_columns ["name", "score"]
-people sort_by "score" take 10
-people drop 5
-people row_count
+numbers |> sum()                    # sum(numbers)
+people |> take(10)                  # take(people, 10)
+people |> sort_by("score")          # sort_by(people, "score")
 ```
 
-流式链可以使用更深缩进跨行书写，不需要括号或续行符：
+不支持 `numbers sum`、`people take 10` 等省略 `|>` 或括号的旧写法。
+
+`map`、`filter`、`find`、`any` 和 `all` 建立元素上下文。在其中，`.` 是当前逻辑元素，
+`.name` 和 `.(key)` 分别读取当前元素的固定或动态字段：
 
 ```lan
-result = people
-  where .age >= 18
-  sort_by "score"
-  take 10
-  select_columns ["name", "score"]
+numbers |> map(. * 2)
+users |> map(.name)
+users |> filter(.age? >= 18)
+users |> find(.name == "Alice")
+users |> any(.active)
+users |> all(.age? >= 0)
 ```
 
-流式操作的最后一个参数读取后面的完整表达式，直到表达式边界或下一个流式关键字，
-因此算术、比较、逻辑和 `??` 不需要额外括号。`add` 只允许新列，`replace` 只允许已有
-列；列名写在冒号前，列值必须是与表格行数一致的 List。`same` 和 `table` 仍只使用
-普通函数调用。这些形式都会立即降低为普通内置调用，不引入方法调用或可变对象。
-
-流式参数中的 `.age` 表示当前步骤左侧整体值的 `age` 字段，不是当前行或 List 元素。
-每一步都会重新确定这个接收值，并且左侧表达式只求值一次。在流式参数之外单独使用
-`.age` 会在编译期报错。
-
-流式操作名称是上下文名称，不是保留关键字。只有当名称出现在一个完整值后面的流式
-位置时，才会被识别为操作；在其他位置仍可作为变量、参数或 Record 字段：
+`.` 在 List 上表示当前 List 元素，在 Table 上表示当前逻辑行 Record。它不是管道左侧
+整体值；元素上下文之外使用 `.` 或 `.field` 会编译报错。需要名称时使用受限元素绑定：
 
 ```lan
-count = 10
-increase(count) = count + 1
-stats = {count: count}
-actual = values count
+users |> filter(user => user.active and user.age >= 18)
 ```
 
-内置函数本身仍不能被同名用户函数重新定义，但不会占用普通值名称。
+`name => expression` 只允许作为上述集合操作的唯一元素表达式；它不是 lambda，不会
+产生函数对象。表达式可以读取外层不可变绑定，也可以调用普通具名函数。
+
+普通函数不会因为收到 List 而自动广播：
+
+```lan
+adult(age) = age >= 18
+
+adult(ages)                  # ages 是 List 时编译错误
+ages |> map(adult(.))        # 明确逐元素调用
+```
+
+`map` 总是返回 List；`filter` 保留 List 或 Table 的容器种类；`find` 返回第一个匹配元素
+或 `missing`。`filter` 和 `find` 把最终 predicate 的 `missing` 当作不匹配。`any` 与
+`all` 使用三值逻辑并从左到右短路。多行管道可以继续使用更深缩进排版。
 
 ## Table 与整列计算
 
@@ -435,18 +423,18 @@ Table 按底层 `Record<List<T>>` 结构比较。
 以下操作返回新的 Table，输入 Table 保持不变：
 
 ```lan
-people where people.age >= 18                     # missing 条件视为 false
-people add adult: people.age >= 18                # 只添加新列
-people replace score: people.score ?? 0           # 只替换已有列
-select_columns(people, ["name", "score"])
-take(people, 10)
-drop(people, 10)
-sort_by(people, "score")                           # 稳定升序，missing 放末尾
+people |> filter(.age? >= 18)
+people |> select({name: .name, adult: .age? >= 18})
+people |> add({adult: .age? >= 18})
+people |> replace({score: .score ?? 0})
+people |> select_columns(["name", "score"])
+people |> take(10)
+people |> drop(10)
+people |> sort_by("score")                         # 稳定升序，missing 放末尾
 ```
 
-`add` 和 `replace` 要求新列与现有列长度相同；空 Table 可以由 `add` 的第一列确定行数。
-`add` 遇到同名列会运行时拒绝，`replace` 遇到不存在的列也会运行时拒绝。
-`where` 的条件必须是同长度的 Boolean 列。`take` 和 `drop` 的行数必须是非负整数，
+`select` 的元素表达式必须产生 Record，并总是返回 Table。`add` 遇到同名字段会运行时
+拒绝，`replace` 遇到不存在的字段也会运行时拒绝。`take` 和 `drop` 的行数必须是非负整数，
 超过总行数时会截到表格边界。`select_columns` 遇到不存在的列会运行时拒绝。
 列名列表不能为空，因为当前的 `Record<List<T>>` 表示无法为零列表格单独保存行数。
 
@@ -591,8 +579,19 @@ normalize(value) = value ?? 0
 normalize(missing)  # 0
 ```
 
-逻辑运算保持自身的短路：`false and missing` 是 `false`，因为右侧没有求值；
-`true and missing` 会报运行错误，而 `true and missing?` 会显式得到 `missing`。
+`and`、`or` 和 `not` 使用三值逻辑：`false and missing` 是 `false`，
+`true and missing` 是 `missing`，`true or missing` 是 `true`，
+`false or missing` 是 `missing`，而 `not missing` 仍是 `missing`。求值顺序保持从左到右；
+左侧已经决定结果时不会求值右侧，左侧为 missing 时则继续查看右侧是否能决定结果。
+
+还可以显式检查或要求值存在：
+
+```lan
+is_missing(value)  # 总是返回 Boolean
+require(value)     # missing 时运行时拒绝，否则返回原值
+```
+
+简单的 `if not is_missing(value)` 会把 then 分支中的 `value` 细化为确定存在。
 程序最终结果如果可能缺失，也必须使用 `?` 明确允许显示 `missing`。
 
 “所有值可缺失”是语言语义，不代表所有值都在运行时装箱。编译器同时推断值是否
@@ -623,8 +622,8 @@ normalize(missing)  # 0
 repeat(value) = repeat(value)  # 编译错误
 ```
 
-这个限制也适用于默认参数中的函数调用。当前版本还没有 `for`、`while` 或集合迭代；
-后续会加入保证有限的列表遍历作为重复计算的替代方式。
+这个限制也适用于默认参数中的函数调用。语言没有通用 `for` 或 `while`；集合管道使用
+输入容器的有限长度执行 `map`、`filter`、`find`、`any` 和 `all`。
 
 `if` 只计算被选择的一边，`and`、`or`、`??` 和显式 `?` 传播也采用各自的短路规则。
 

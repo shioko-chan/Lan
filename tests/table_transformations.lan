@@ -5,9 +5,9 @@
 });
 raised = people.score + 5;
 filled = fill_missing(raised, 0);
-adults = where(people, people.age >= 18);
-extended = people add adjusted: filled;
-selected = select_columns(extended, ["name", "adjusted"]);
+adults = people |> filter(.age >= 18);
+extended = people |> add({adjusted: (.score? + 5) ?? 0});
+selected = extended |> select_columns(["name", "adjusted"]);
 {
   arithmetic: filled,
   list_arithmetic: people.age * [2, 2, 2, 2],

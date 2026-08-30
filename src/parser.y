@@ -2,6 +2,7 @@
 #include "lan/AST.h"
 #include <algorithm>
 #include <cstdlib>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -10,7 +11,7 @@ void yyerror(lan::Program** out, const char* message);
 extern int yylineno;
 extern std::string lan_parse_error;
 
-static constexpr const char* kStreamReceiver = "$lan_stream_receiver";
+static constexpr const char* kCurrentElement = "$lan_current_element";
 
 static void collectRecordPath(lan::Expr* target, std::string& rootName,
                               std::vector<lan::RecordPathPart>& path) {
@@ -69,15 +70,40 @@ static lan::Expr* makeBinding(lan::Expr* target, lan::Expr* expression,
   return new lan::LetExpr(bindingName, value, body);
 }
 
-static lan::Expr* makeStreamCall(lan::Expr* receiver, const char* name,
-                                 lan::Expr* first = nullptr,
-                                 lan::Expr* second = nullptr) {
-  auto* arguments = new std::vector<lan::Expr*>();
-  arguments->push_back(new lan::VariableExpr(kStreamReceiver));
-  if (first) arguments->push_back(first);
-  if (second) arguments->push_back(second);
-  return new lan::LetExpr(kStreamReceiver, receiver,
-                          new lan::CallExpr(name, arguments));
+static lan::Expr* makePipelineStage(lan::Expr* receiver, const char* name,
+                                    std::vector<lan::CallArgument>* arguments) {
+  auto operation = lan::CollectionOperation::Map;
+  bool isCollection = true;
+  if (std::strcmp(name, "map") == 0) operation = lan::CollectionOperation::Map;
+  else if (std::strcmp(name, "filter") == 0) operation = lan::CollectionOperation::Filter;
+  else if (std::strcmp(name, "select") == 0) operation = lan::CollectionOperation::Select;
+  else if (std::strcmp(name, "add") == 0) operation = lan::CollectionOperation::Add;
+  else if (std::strcmp(name, "replace") == 0) operation = lan::CollectionOperation::Replace;
+  else if (std::strcmp(name, "find") == 0) operation = lan::CollectionOperation::Find;
+  else if (std::strcmp(name, "any") == 0) operation = lan::CollectionOperation::Any;
+  else if (std::strcmp(name, "all") == 0) operation = lan::CollectionOperation::All;
+  else isCollection = false;
+
+  if (!isCollection) {
+    arguments->insert(arguments->begin(), lan::CallArgument(receiver));
+    return new lan::CallExpr(name, arguments);
+  }
+  if (arguments->size() != 1 || !arguments->front().name.empty()) {
+    lan_parse_error = "第 " + std::to_string(yylineno) + " 行：集合操作“" +
+                      name + "”需要一个元素表达式";
+    delete receiver;
+    delete arguments;
+    return nullptr;
+  }
+  lan::Expr* body = arguments->front().value.release();
+  std::string binding;
+  if (auto* elementBinding = dynamic_cast<lan::ElementBindingExpr*>(body)) {
+    binding = elementBinding->name;
+    body = elementBinding->body.release();
+    delete elementBinding;
+  }
+  delete arguments;
+  return new lan::CollectionExpr(operation, receiver, body, binding);
 }
 
 static lan::Expr* makeRecordWith(lan::Expr* record,
@@ -110,7 +136,7 @@ static lan::Expr* makeRecordWith(lan::Expr* record,
   std::vector<lan::RecordField>* fields;
 }
 
-%token IF ELSE TRUE FALSE MISSING WITH
+%token IF ELSE TRUE FALSE MISSING WITH PIPE_ARROW FAT_ARROW
 %token NEWLINE INDENT DEDENT
 %token VIRTUAL_SEMICOLON VIRTUAL_CLOSE
 %token BAD_INDENT
@@ -118,22 +144,16 @@ static lan::Expr* makeRecordWith(lan::Expr* record,
 %token <text> TEXT IDENTIFIER CALL_IDENTIFIER FUNCTION_NAME
 %token EQ NE LE GE AND OR NOT COALESCE
 %nonassoc VIRTUAL_OPEN
-%nonassoc SUM AVERAGE MIN MAX COUNT
-%nonassoc LENGTH ROW_COUNT FIRST LAST FILL_MISSING WHERE SELECT_COLUMNS
-%nonassoc TAKE DROP SORT_BY
-%nonassoc ADD REPLACE
-%nonassoc STREAM_AGGREGATE_END
 %nonassoc '{'
 
 %type <expr> expression coalesce logical_or logical_and equality comparison additive
-%type <expr> multiplicative unary stream postfix primary block block_items
+%type <expr> multiplicative unary pipeline postfix primary block block_items
 %type <exprs> arguments argument_list
 %type <call_args> call_arguments call_argument_list
 %type <params> parameters parameter_list
 %type <fields> record_fields record_field_list
 %type <parameter> parameter
-%type <text> aggregate_name zero_stream_name one_stream_name
-%type <text> builtin_name field_name
+%type <text> field_name
 %type <function> function
 %type <program> functions
 
@@ -201,7 +221,7 @@ block_items
 expression
   : IF expression block ELSE block
     { $$ = new lan::IfExpr($2, $3, $5); }
-  | stream { $$ = $1; }
+  | pipeline { $$ = $1; }
   ;
 
 coalesce
@@ -252,25 +272,13 @@ unary
   | postfix { $$ = $1; }
   ;
 
-stream
+pipeline
   : coalesce { $$ = $1; }
-  | stream aggregate_name %prec STREAM_AGGREGATE_END
-    { $$ = makeStreamCall($1, $2); free($2); }
-  | stream aggregate_name coalesce
-    { $$ = makeStreamCall($1, $2, $3); free($2); }
-  | stream zero_stream_name
-    { $$ = makeStreamCall($1, $2); free($2); }
-  | stream one_stream_name coalesce
-    { $$ = makeStreamCall($1, $2, $3); free($2); }
-  | stream ADD field_name ':' coalesce
+  | pipeline PIPE_ARROW CALL_IDENTIFIER '(' call_arguments ')'
     {
-      $$ = makeStreamCall($1, "add_column", new lan::TextExpr($3), $5);
+      $$ = makePipelineStage($1, $3, $5);
       free($3);
-    }
-  | stream REPLACE field_name ':' coalesce
-    {
-      $$ = makeStreamCall($1, "replace_column", new lan::TextExpr($3), $5);
-      free($3);
+      if (!$$) YYERROR;
     }
   ;
 
@@ -292,14 +300,15 @@ primary
   | TRUE { $$ = new lan::BooleanExpr(true); }
   | FALSE { $$ = new lan::BooleanExpr(false); }
   | IDENTIFIER { $$ = new lan::VariableExpr($1); free($1); }
+  | '.' { $$ = new lan::VariableExpr(kCurrentElement); }
   | '.' field_name
     {
-      $$ = new lan::FieldExpr(new lan::VariableExpr(kStreamReceiver), $2);
+      $$ = new lan::FieldExpr(new lan::VariableExpr(kCurrentElement), $2);
       free($2);
     }
+  | '.' '(' expression ')'
+    { $$ = new lan::FieldExpr(new lan::VariableExpr(kCurrentElement), $3); }
   | CALL_IDENTIFIER '(' call_arguments ')'
-    { $$ = new lan::CallExpr($1, $3); free($1); }
-  | builtin_name '(' call_arguments ')'
     { $$ = new lan::CallExpr($1, $3); free($1); }
   | '(' expression ')' { $$ = $2; }
   | block { $$ = $1; }
@@ -337,40 +346,6 @@ record_field_list
 
 field_name
   : IDENTIFIER { $$ = $1; }
-  | builtin_name { $$ = $1; }
-  | ADD { $$ = strdup("add"); }
-  | REPLACE { $$ = strdup("replace"); }
-  | WITH { $$ = strdup("with"); }
-  ;
-
-builtin_name
-  : aggregate_name { $$ = $1; }
-  | zero_stream_name { $$ = $1; }
-  | one_stream_name { $$ = $1; }
-  ;
-
-aggregate_name
-  : SUM { $$ = strdup("sum"); }
-  | AVERAGE { $$ = strdup("average"); }
-  | MIN { $$ = strdup("min"); }
-  | MAX { $$ = strdup("max"); }
-  | COUNT { $$ = strdup("count"); }
-  ;
-
-zero_stream_name
-  : LENGTH { $$ = strdup("length"); }
-  | ROW_COUNT { $$ = strdup("row_count"); }
-  | FIRST { $$ = strdup("first"); }
-  | LAST { $$ = strdup("last"); }
-  ;
-
-one_stream_name
-  : FILL_MISSING { $$ = strdup("fill_missing"); }
-  | WHERE { $$ = strdup("where"); }
-  | SELECT_COLUMNS { $$ = strdup("select_columns"); }
-  | TAKE { $$ = strdup("take"); }
-  | DROP { $$ = strdup("drop"); }
-  | SORT_BY { $$ = strdup("sort_by"); }
   ;
 
 arguments
@@ -402,6 +377,12 @@ call_argument_list
       $1->emplace_back($5, $3);
       free($3);
       $$ = $1;
+    }
+  | IDENTIFIER FAT_ARROW expression
+    {
+      $$ = new std::vector<lan::CallArgument>();
+      $$->emplace_back(new lan::ElementBindingExpr($1, $3));
+      free($1);
     }
   ;
 

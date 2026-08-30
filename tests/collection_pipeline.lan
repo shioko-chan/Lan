@@ -1,0 +1,56 @@
+adult(age) = age >= 18
+double(value) = value * 2
+positive(values) = values |> filter(.? > 0)
+as_table(rows) = table(rows)
+
+demo() =
+  numbers = [1, missing, -2, 3]
+  mapped = numbers |> map(value => double(value ?? 0))
+  filtered = numbers |> filter(.? > 0)
+  found = numbers |> find(.? > 1)
+  has_large = numbers |> any(.? > 2)
+  all_positive = numbers |> all(.? > 0)
+  no_match = numbers |> find(.? > 10)
+  empty_any = [] |> any(.)
+  empty_all = [] |> all(.)
+  missing_any = [missing, false] |> any(.)
+  missing_all = [missing, true] |> all(.)
+  people = table({
+    name: ["Alice", "Bob", "Carol"],
+    age: [20, missing, 17],
+    score: [10, 20, 30]
+  })
+  adults = people |> filter(.age? >= 18)
+  selected = adults |> select({
+    name: .name,
+    adult: adult(.age)
+  })
+  added = people |> add({adjusted: .score + 5})
+  replaced = added |> replace({score: .score + 1})
+  names = people |> map(person => person.name)
+  field = "score"
+  scores = people |> map(.(field))
+  alice = people |> find(.name == "Alice")
+  rows = as_table([{name: "A", age: 1}, {name: "B", age: 2}])
+  {
+    mapped: mapped,
+    filtered: filtered,
+    found: found,
+    has_large: has_large,
+    all_positive: all_positive,
+    generic_filter: positive(numbers),
+    no_match: no_match,
+    empty_any: empty_any,
+    empty_all: empty_all,
+    missing_any: missing_any,
+    missing_all: missing_all,
+    selected: selected,
+    added: added,
+    replaced: replaced,
+    names: names,
+    scores: scores,
+    alice: alice,
+    rows: rows
+  }
+
+demo()

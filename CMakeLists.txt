@@ -39,6 +39,26 @@ llvm_map_components_to_libnames(LLVM_LIBS Core Support Passes BitReader Linker)
 target_link_libraries(lanc PRIVATE ${LLVM_LIBS})
 
 enable_testing()
+add_test(NAME collection_pipeline_semantics
+  COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/collection_pipeline.lan)
+set_tests_properties(collection_pipeline_semantics PROPERTIES
+  PASS_REGULAR_EXPRESSION [=[all_positive: false.*filtered: \[1, 3\].*found: 3.*has_large: true.*mapped: \[2, 0, -4, 6\].*names: \["Alice", "Bob", "Carol"\]]=])
+add_test(NAME boolean_three_value_logic
+  COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/three_value_logic.lan)
+set_tests_properties(boolean_three_value_logic PROPERTIES
+  PASS_REGULAR_EXPRESSION [=[missing_and_false: false.*missing_or_true: true.*refined: 5]=])
+foreach(error_case
+    normal_function_broadcast
+    element_binding_outside
+    pipeline_parentheses
+    old_stream_syntax)
+  add_test(NAME reject_${error_case}
+    COMMAND lanc ${CMAKE_CURRENT_SOURCE_DIR}/tests/${error_case}_error.lan)
+  set_tests_properties(reject_${error_case} PROPERTIES WILL_FAIL TRUE)
+endforeach()
+add_test(NAME reject_require_missing
+  COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/require_missing_error.lan)
+set_tests_properties(reject_require_missing PROPERTIES WILL_FAIL TRUE)
 add_test(NAME confirmed_new_syntax
   COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/confirmed_syntax.lan)
 set_tests_properties(confirmed_new_syntax PROPERTIES

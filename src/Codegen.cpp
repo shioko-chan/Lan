@@ -73,7 +73,11 @@ class Inference {
           function->name == "select_columns" || function->name == "take" ||
           function->name == "drop" || function->name == "sort_by" ||
           function->name == "same" || function->name == "first" ||
-          function->name == "last")
+          function->name == "last" || function->name == "map" ||
+          function->name == "filter" || function->name == "select" ||
+          function->name == "find" || function->name == "any" ||
+          function->name == "all" || function->name == "is_missing" ||
+          function->name == "require")
         fail("“" + function->name + "”由语言保留，请换一个函数名");
       if (functions_.count(function->name))
         fail("函数“" + function->name + "”定义了不止一次");
@@ -126,6 +130,35 @@ class Inference {
       }
     }
 
+    for (const auto& constraint : collectionConstraints_) {
+      Type collectionType = resolved(constraint.collection);
+      if (collectionType == Type::Unknown) {
+        bind(constraint.collection, Type::List, "集合操作的输入");
+        collectionType = Type::List;
+      }
+      if (collectionType == Type::List) {
+        unify(constraint.element,
+              listElement(constraint.collection, "集合操作的 List 输入"),
+              "集合元素");
+      } else if (collectionType == Type::Table) {
+        bind(constraint.element, Type::Record, "Table 的逻辑行");
+      } else {
+        fail("集合操作需要 List 或 Table，但这里得到的是" +
+             std::string(typeName(collectionType)));
+      }
+    }
+    for (int input : tableInputConstraints_) {
+      Type inputType = resolved(input);
+      if (inputType == Type::Unknown) {
+        bind(input, Type::Record, "table 的输入");
+      } else if (inputType == Type::List) {
+        bind(listElement(input, "table 的行列表"), Type::Record,
+             "table 的每一行");
+      } else if (inputType != Type::Record) {
+        fail("table 需要 Record<List<T>> 或 List<Record>");
+      }
+    }
+
     for (int variable : plusVariables_) {
       Type type = resolved(variable);
       if (type == Type::Unknown) bind(variable, Type::Number, "加法");
@@ -166,6 +199,10 @@ class Inference {
 
   unsigned expressionListRank(const Expr& expr) {
     return listRank(expressions_.at(&expr));
+  }
+
+  Type collectionElementType(const CollectionExpr& expression) {
+    return resolved(collectionElements_.at(&expression));
   }
 
   std::vector<Type> parameterTypes(const Function& function) {
@@ -210,6 +247,13 @@ class Inference {
   std::vector<DynamicAccess> dynamicAccesses_;
   std::vector<int> tableColumnElements_;
   std::unordered_set<const BinaryExpr*> vectorOperations_;
+  struct CollectionConstraint {
+    int collection;
+    int element;
+  };
+  std::vector<CollectionConstraint> collectionConstraints_;
+  std::unordered_map<const CollectionExpr*, int> collectionElements_;
+  std::vector<int> tableInputConstraints_;
   std::unordered_map<const Expr*, Presence> presences_;
   std::unordered_map<std::string, std::vector<Presence>> parameterPresences_;
   std::unordered_map<std::string, Presence> resultPresences_;
@@ -248,6 +292,11 @@ class Inference {
     } else if (auto* call = dynamic_cast<const CallExpr*>(&expr)) {
       if (functions_.count(call->callee)) calls.insert(call->callee);
       for (const auto& argument : call->args) collectCalls(*argument, calls);
+    } else if (auto* collection = dynamic_cast<const CollectionExpr*>(&expr)) {
+      collectCalls(*collection->collection, calls);
+      collectCalls(*collection->body, calls);
+    } else if (auto* binding = dynamic_cast<const ElementBindingExpr*>(&expr)) {
+      collectCalls(*binding->body, calls);
     } else if (auto* let = dynamic_cast<const LetExpr*>(&expr)) {
       collectCalls(*let->value, calls);
       collectCalls(*let->body, calls);
@@ -448,8 +497,8 @@ class Inference {
           return result;
         }
       }
-      if (variable->name == "$lan_stream_receiver")
-        fail("“.字段”只能写在流式步骤的参数中");
+      if (variable->name == "$lan_current_element")
+        fail("当前元素“.”只能写在集合操作的元素表达式中");
       fail("找不到名称“" + variable->name + "”，请检查拼写或先给它一个值");
     }
     if (auto* let = dynamic_cast<const LetExpr*>(&expr)) {
@@ -579,6 +628,48 @@ class Inference {
       }
       return result;
     }
+    if (auto* collection = dynamic_cast<const CollectionExpr*>(&expr)) {
+      int input = infer(*collection->collection);
+      int element = newVariable();
+      collectionElements_.emplace(collection, element);
+      scopes_.emplace_back();
+      scopes_.back().emplace("$lan_current_element", element);
+      if (!collection->binding.empty())
+        scopes_.back().emplace(collection->binding, element);
+      int body = infer(*collection->body);
+      scopes_.pop_back();
+
+      switch (collection->operation) {
+        case CollectionOperation::Map:
+          unify(listElement(result, "map 的结果"), body, "map 的元素结果");
+          break;
+        case CollectionOperation::Filter:
+          bind(body, Type::Boolean, "filter 的条件");
+          unify(result, input, "filter 保留输入容器类型");
+          break;
+        case CollectionOperation::Find:
+          bind(body, Type::Boolean, "find 的条件");
+          unify(result, element, "find 的结果");
+          break;
+        case CollectionOperation::Any:
+        case CollectionOperation::All:
+          bind(body, Type::Boolean, "any/all 的条件");
+          bind(result, Type::Boolean, "any/all 的结果");
+          break;
+        case CollectionOperation::Select:
+        case CollectionOperation::Add:
+        case CollectionOperation::Replace:
+          bind(input, Type::Table, "Table schema 操作的输入");
+          bind(element, Type::Record, "Table 的逻辑行");
+          bind(body, Type::Record, "Table schema 操作的字段表达式");
+          bind(result, Type::Table, "Table schema 操作的结果");
+          break;
+      }
+      collectionConstraints_.push_back({input, element});
+      return result;
+    }
+    if (dynamic_cast<const ElementBindingExpr*>(&expr))
+      fail("元素绑定“=>”只能写在集合操作中");
     if (auto* call = dynamic_cast<const CallExpr*>(&expr)) {
       bool hasNamed = std::any_of(call->argNames.begin(), call->argNames.end(),
                                   [](const std::string& name) { return !name.empty(); });
@@ -588,8 +679,26 @@ class Inference {
         if (call->args.size() != 1)
           fail("table 需要 1 个 Record，但这里给了 " +
                std::to_string(call->args.size()) + " 个值");
-        bind(infer(*call->args[0]), Type::Record, "table 的输入");
+        int input = infer(*call->args[0]);
+        if (resolved(input) == Type::List)
+          bind(listElement(input, "table 的行列表"), Type::Record,
+               "table 的每一行");
+        else if (resolved(input) == Type::Record)
+          bind(input, Type::Record, "table 的输入");
+        else
+          tableInputConstraints_.push_back(input);
         bind(result, Type::Table, "table 的结果");
+        return result;
+      }
+      if (call->callee == "is_missing") {
+        if (call->args.size() != 1) fail("is_missing 需要 1 个值");
+        infer(*call->args[0]);
+        bind(result, Type::Boolean, "is_missing 的结果");
+        return result;
+      }
+      if (call->callee == "require") {
+        if (call->args.size() != 1) fail("require 需要 1 个值");
+        unify(result, infer(*call->args[0]), "require 的结果");
         return result;
       }
       if (call->callee == "row_count") {
@@ -756,8 +865,35 @@ class Inference {
       presenceScopes_.pop_back();
     } else if (auto* conditional = dynamic_cast<const IfExpr*>(&expr)) {
       Presence condition = presenceOf(*conditional->condition);
-      Presence branches = presenceOf(*conditional->thenValue) |
-                          presenceOf(*conditional->elseValue);
+      const VariableExpr* refined = nullptr;
+      bool presentInThen = false;
+      const Expr* test = conditional->condition.get();
+      if (auto* negated = dynamic_cast<const UnaryExpr*>(test);
+          negated && negated->op == '!') {
+        test = negated->operand.get();
+        presentInThen = true;
+      }
+      if (auto* call = dynamic_cast<const CallExpr*>(test);
+          call && call->callee == "is_missing" && call->args.size() == 1)
+        refined = dynamic_cast<const VariableExpr*>(call->args[0].get());
+      Presence thenPresence;
+      Presence elsePresence;
+      if (refined) {
+        presenceScopes_.emplace_back();
+        presenceScopes_.back().emplace(
+            refined->name, presentInThen ? kPresent : kMissing);
+        thenPresence = presenceOf(*conditional->thenValue);
+        presenceScopes_.pop_back();
+        presenceScopes_.emplace_back();
+        presenceScopes_.back().emplace(
+            refined->name, presentInThen ? kMissing : kPresent);
+        elsePresence = presenceOf(*conditional->elseValue);
+        presenceScopes_.pop_back();
+      } else {
+        thenPresence = presenceOf(*conditional->thenValue);
+        elsePresence = presenceOf(*conditional->elseValue);
+      }
+      Presence branches = thenPresence | elsePresence;
       if (condition & kPresent) result |= branches;
       if (condition & kMissing) result |= kMissing;
     } else if (auto* unary = dynamic_cast<const UnaryExpr*>(&expr)) {
@@ -784,11 +920,7 @@ class Inference {
       Presence rhs = presenceOf(*binary->rhs);
       if (binary->op == "??") result = coalescePresence(lhs, rhs);
       else if (binary->op == "and" || binary->op == "or") {
-        if (lhs & kMissing) result |= kMissing;
-        if (lhs & kPresent) {
-          result |= kPresent;
-          if (rhs & kMissing) result |= kMissing;
-        }
+        result = lhs == kPresent && rhs == kPresent ? kPresent : kMaybeMissing;
       } else {
         result = propagate(lhs, rhs);
       }
@@ -796,6 +928,12 @@ class Inference {
       if (call->callee == "length" || call->callee == "table" ||
           call->callee == "row_count") {
         result = presenceOf(*call->args[0]);
+      } else if (call->callee == "is_missing") {
+        presenceOf(*call->args[0]);
+        result = kPresent;
+      } else if (call->callee == "require") {
+        presenceOf(*call->args[0]);
+        result = kPresent;
       } else if (call->callee == "first" || call->callee == "last") {
         presenceOf(*call->args[0]);
         result = kMaybeMissing;
@@ -830,6 +968,25 @@ class Inference {
             arguments[slot] = presenceOf(*call->args[slots[slot]]);
         result = analyzeFunctionPresence(definition, std::move(arguments));
       }
+    } else if (auto* collection = dynamic_cast<const CollectionExpr*>(&expr)) {
+      Presence input = presenceOf(*collection->collection);
+      presenceScopes_.emplace_back();
+      Presence element = expressionType(*collection->collection) == Type::Table
+          ? kPresent : kMaybeMissing;
+      presenceScopes_.back().emplace("$lan_current_element", element);
+      if (!collection->binding.empty())
+        presenceScopes_.back().emplace(collection->binding, element);
+      Presence body = presenceOf(*collection->body);
+      presenceScopes_.pop_back();
+      if (collection->operation == CollectionOperation::Find)
+        result = kMaybeMissing;
+      else if (collection->operation == CollectionOperation::Any ||
+               collection->operation == CollectionOperation::All)
+        result = body & kMissing ? kMaybeMissing : kPresent;
+      else
+        result = input;
+    } else if (dynamic_cast<const ElementBindingExpr*>(&expr)) {
+      result = kNoPresence;
     }
     presences_[&expr] |= result;
     return result;
@@ -969,6 +1126,12 @@ struct CodeGenerator::Impl {
     if (type == Type::Boolean) return llvm::ConstantInt::get(builder.getIntNTy(2), 0);
     return llvm::ConstantPointerNull::get(
         llvm::cast<llvm::PointerType>(llvmType(type)));
+  }
+
+  llvm::Value* missingValue(Type type, Presence presence) {
+    if (presence == kPresent)
+      return llvm::UndefValue::get(encodedType(type, presence));
+    return missingValue(type);
   }
 
   llvm::Value* encodePresent(llvm::Value* raw, Type type, Presence target) {
@@ -1305,6 +1468,274 @@ struct CodeGenerator::Impl {
     return emitListLookup(list.value, index, expected);
   }
 
+  std::pair<llvm::Value*, llvm::Value*> allocateListStorage(llvm::Value* length,
+                                                             const std::string& name) {
+    auto* listStorage = listValueType();
+    auto* elementStorage = taggedValueType();
+    auto* list = allocate(llvm::ConstantExpr::getSizeOf(listStorage), name);
+    builder.CreateStore(length, builder.CreateStructGEP(listStorage, list, 0));
+    auto* bytes = builder.CreateMul(length,
+                                    llvm::ConstantExpr::getSizeOf(elementStorage));
+    auto* data = allocate(bytes, name + ".elements");
+    builder.CreateStore(data, builder.CreateStructGEP(listStorage, list, 1));
+    return {list, data};
+  }
+
+  void storeListElement(llvm::Value* data, llvm::Value* index,
+                        const TypedValue& value) {
+    auto* slot = builder.CreateGEP(taggedValueType(), data, index, "element.output");
+    auto parts = dynamicParts(value);
+    builder.CreateStore(parts[0], builder.CreateStructGEP(taggedValueType(), slot, 0));
+    builder.CreateStore(parts[1], builder.CreateStructGEP(taggedValueType(), slot, 1));
+    builder.CreateStore(parts[2], builder.CreateStructGEP(taggedValueType(), slot, 2));
+  }
+
+  TypedValue loadListElement(llvm::Value* list, llvm::Value* index,
+                             Type expected) {
+    auto* data = builder.CreateLoad(
+        llvmType(Type::Text), builder.CreateStructGEP(listValueType(), list, 1),
+        "element.data");
+    auto* slot = builder.CreateGEP(taggedValueType(), data, index, "element.input");
+    auto* dynamic = builder.CreateLoad(taggedValueType(), slot, "element.value");
+    return decodeLookupValue(builder.getTrue(), dynamic, expected);
+  }
+
+  TypedValue emitElementBoundary(const Expr& expression) {
+    Type type = inference->expressionType(expression);
+    Presence presence = inference->expressionPresence(expression);
+    auto* function = builder.GetInsertBlock()->getParent();
+    auto* missingBlock = llvm::BasicBlock::Create(context, "element.missing", function);
+    auto* previousTarget = currentMissingTarget;
+    currentMissingTarget = missingBlock;
+    auto value = emitExpr(expression);
+    currentMissingTarget = previousTarget;
+    if (missingBlock->use_empty()) {
+      missingBlock->eraseFromParent();
+      return value;
+    }
+
+    auto* valueBlock = builder.GetInsertBlock();
+    auto* mergeBlock = llvm::BasicBlock::Create(context, "element.result", function);
+    auto presentValue = convertPresence(value, presence);
+    builder.CreateBr(mergeBlock);
+    builder.SetInsertPoint(missingBlock);
+    auto* absentValue = missingValue(type);
+    builder.CreateBr(mergeBlock);
+    builder.SetInsertPoint(mergeBlock);
+    auto* phi = builder.CreatePHI(encodedType(type, presence), 2, "element.expression");
+    phi->addIncoming(presentValue.value, valueBlock);
+    phi->addIncoming(absentValue, missingBlock);
+    return {phi, type, presence};
+  }
+
+  TypedValue tableRowElement(llvm::Value* table, llvm::Value* index) {
+    auto* status = builder.CreateAlloca(builder.getInt32Ty(), nullptr, "row.status");
+    auto rowFn = external("lan_table_row", llvmType(Type::Record),
+                          {llvmType(Type::Table), builder.getInt64Ty(),
+                           llvm::PointerType::get(context, 0)});
+    auto* row = builder.CreateCall(rowFn, {table, index, status}, "table.row");
+    requireRuntimeSuccess(builder.CreateLoad(builder.getInt32Ty(), status),
+                          "无法读取 Table 行");
+    return {row, Type::Record, kPresent};
+  }
+
+  TypedValue emitCollectionElement(const CollectionExpr& expression,
+                                   const TypedValue& receiver,
+                                   llvm::Value* index) {
+    if (receiver.type == Type::Table) return tableRowElement(receiver.value, index);
+    return loadListElement(receiver.value, index,
+                           inference->collectionElementType(expression));
+  }
+
+  TypedValue emitElementBody(const CollectionExpr& expression,
+                             const TypedValue& element) {
+    scopes.emplace_back();
+    scopes.back().emplace("$lan_current_element", element);
+    if (!expression.binding.empty())
+      scopes.back().emplace(expression.binding, element);
+    auto value = emitElementBoundary(*expression.body);
+    scopes.pop_back();
+    return value;
+  }
+
+  llvm::Value* collectionLength(const TypedValue& receiver) {
+    if (receiver.type == Type::Table) {
+      auto rowCount = external("lan_table_row_count", builder.getInt64Ty(),
+                               {llvmType(Type::Table)});
+      return builder.CreateCall(rowCount, {receiver.value}, "collection.length");
+    }
+    return builder.CreateLoad(
+        builder.getInt64Ty(),
+        builder.CreateStructGEP(listValueType(), receiver.value, 0),
+        "collection.length");
+  }
+
+  TypedValue emitMappedCollection(const CollectionExpr& expression,
+                                  const TypedValue& receiver) {
+    auto* length = collectionLength(receiver);
+    auto [mapped, data] = allocateListStorage(length, "collection.map");
+    auto* function = builder.GetInsertBlock()->getParent();
+    auto* start = builder.GetInsertBlock();
+    auto* check = llvm::BasicBlock::Create(context, "collection.check", function);
+    auto* body = llvm::BasicBlock::Create(context, "collection.body", function);
+    auto* done = llvm::BasicBlock::Create(context, "collection.done", function);
+    auto* indexAddress = builder.CreateAlloca(builder.getInt64Ty(), nullptr,
+                                              "collection.index");
+    builder.CreateStore(builder.getInt64(0), indexAddress);
+    builder.CreateBr(check);
+
+    builder.SetInsertPoint(check);
+    auto* index = builder.CreateLoad(builder.getInt64Ty(), indexAddress, "index");
+    builder.CreateCondBr(builder.CreateICmpULT(index, length), body, done);
+
+    builder.SetInsertPoint(body);
+    auto element = emitCollectionElement(expression, receiver, index);
+    auto mappedValue = emitElementBody(expression, element);
+    if (expression.operation == CollectionOperation::Add ||
+        expression.operation == CollectionOperation::Replace) {
+      auto changes = requirePresent(mappedValue, "add/replace 的字段 Record");
+      auto* status = builder.CreateAlloca(builder.getInt32Ty(), nullptr,
+                                          "record.merge.status");
+      auto mergeFn = external("lan_record_merge_checked", llvmType(Type::Record),
+                              {llvmType(Type::Record), llvmType(Type::Record),
+                               builder.getInt32Ty(),
+                               llvm::PointerType::get(context, 0)});
+      auto* merged = builder.CreateCall(
+          mergeFn,
+          {element.value, changes.value,
+           builder.getInt32(expression.operation == CollectionOperation::Replace),
+           status},
+          "row.updated");
+      requireRuntimeSuccess(builder.CreateLoad(builder.getInt32Ty(), status),
+                            expression.operation == CollectionOperation::Add
+                                ? "add 不能添加已经存在的字段"
+                                : "replace 只能替换已有字段");
+      mappedValue = {merged, Type::Record, kPresent};
+    }
+    storeListElement(data, index, mappedValue);
+    auto* next = builder.CreateAdd(index, builder.getInt64(1), "next.index");
+    builder.CreateStore(next, indexAddress);
+    builder.CreateBr(check);
+    builder.SetInsertPoint(done);
+    (void)start;
+
+    if (expression.operation == CollectionOperation::Map)
+      return {mapped, Type::List, kPresent};
+    if (expression.operation == CollectionOperation::Filter) {
+      auto* status = builder.CreateAlloca(builder.getInt32Ty(), nullptr,
+                                          "filter.status");
+      llvm::FunctionCallee filterFn;
+      if (receiver.type == Type::Table)
+        filterFn = external("lan_table_where", llvmType(Type::Table),
+                            {llvmType(Type::Table), llvmType(Type::List),
+                             llvm::PointerType::get(context, 0)});
+      else
+        filterFn = external("lan_list_filter", llvmType(Type::List),
+                            {llvmType(Type::List), llvmType(Type::List),
+                             llvm::PointerType::get(context, 0)});
+      auto* filtered = builder.CreateCall(filterFn,
+          {receiver.value, mapped, status}, "collection.filtered");
+      requireRuntimeSuccess(builder.CreateLoad(builder.getInt32Ty(), status),
+                            "filter 条件必须产生 Boolean 或 missing");
+      return {filtered, receiver.type, kPresent};
+    }
+
+    auto* status = builder.CreateAlloca(builder.getInt32Ty(), nullptr,
+                                        "rows.to.table.status");
+    auto tableFn = external("lan_table_from_rows", llvmType(Type::Table),
+                            {llvmType(Type::List),
+                             llvm::PointerType::get(context, 0)});
+    auto* table = builder.CreateCall(tableFn, {mapped, status}, "rows.to.table");
+    requireRuntimeSuccess(builder.CreateLoad(builder.getInt32Ty(), status),
+                          "Table 的所有行必须具有相同字段和列类型");
+    return {table, Type::Table, kPresent};
+  }
+
+  TypedValue emitShortCircuitCollection(const CollectionExpr& expression,
+                                        const TypedValue& receiver) {
+    auto* length = collectionLength(receiver);
+    auto* function = builder.GetInsertBlock()->getParent();
+    auto* check = llvm::BasicBlock::Create(context, "search.check", function);
+    auto* body = llvm::BasicBlock::Create(context, "search.body", function);
+    auto* keepGoing = llvm::BasicBlock::Create(context, "search.next", function);
+    auto* matched = llvm::BasicBlock::Create(context, "search.matched", function);
+    auto* done = llvm::BasicBlock::Create(context, "search.done", function);
+    auto* indexAddress = builder.CreateAlloca(builder.getInt64Ty(), nullptr,
+                                              "search.index");
+    builder.CreateStore(builder.getInt64(0), indexAddress);
+
+    bool isFind = expression.operation == CollectionOperation::Find;
+    bool isAny = expression.operation == CollectionOperation::Any;
+    Type resultType = isFind ? inference->expressionType(expression) : Type::Boolean;
+    Presence resultPresence = inference->expressionPresence(expression);
+    auto* resultAddress = builder.CreateAlloca(
+        encodedType(resultType, resultPresence), nullptr, "search.result");
+    if (isFind)
+      builder.CreateStore(missingValue(resultType), resultAddress);
+    else
+      builder.CreateStore(
+          encodePresent(builder.getInt1(!isAny), Type::Boolean, resultPresence),
+          resultAddress);
+    builder.CreateBr(check);
+
+    builder.SetInsertPoint(check);
+    auto* index = builder.CreateLoad(builder.getInt64Ty(), indexAddress, "index");
+    builder.CreateCondBr(builder.CreateICmpULT(index, length), body, done);
+
+    builder.SetInsertPoint(body);
+    auto element = emitCollectionElement(expression, receiver, index);
+    auto predicate = emitElementBody(expression, element);
+    auto* predicatePresent = presentFlag(predicate);
+    auto* predicateTrue = builder.CreateAnd(predicatePresent, rawPayload(predicate));
+    llvm::Value* shouldStop = nullptr;
+    if (isFind || isAny) shouldStop = predicateTrue;
+    else shouldStop = builder.CreateAnd(predicatePresent,
+                                        builder.CreateNot(rawPayload(predicate)));
+
+    if (isFind)
+      shouldStop = builder.CreateAnd(shouldStop, presentFlag(element));
+    if (!isFind) {
+      auto* recordMissing = llvm::BasicBlock::Create(context, "search.missing", function);
+      auto* decide = llvm::BasicBlock::Create(context, "search.decide", function);
+      builder.CreateCondBr(predicatePresent, decide, recordMissing);
+      builder.SetInsertPoint(recordMissing);
+      builder.CreateStore(missingValue(Type::Boolean, resultPresence), resultAddress);
+      builder.CreateBr(keepGoing);
+      builder.SetInsertPoint(decide);
+    }
+    builder.CreateCondBr(shouldStop, matched, keepGoing);
+
+    builder.SetInsertPoint(matched);
+    if (isFind) {
+      auto found = convertPresence(element, resultPresence);
+      builder.CreateStore(found.value, resultAddress);
+    } else {
+      builder.CreateStore(
+          encodePresent(builder.getInt1(isAny), Type::Boolean, resultPresence),
+          resultAddress);
+    }
+    builder.CreateBr(done);
+
+    builder.SetInsertPoint(keepGoing);
+    auto* next = builder.CreateAdd(index, builder.getInt64(1), "next.index");
+    builder.CreateStore(next, indexAddress);
+    builder.CreateBr(check);
+
+    builder.SetInsertPoint(done);
+    return {builder.CreateLoad(encodedType(resultType, resultPresence), resultAddress),
+            resultType, resultPresence};
+  }
+
+  TypedValue emitCollection(const CollectionExpr& expression) {
+    auto receiver = requirePresent(emitExpr(*expression.collection),
+                                   "集合管道的输入");
+    if (expression.operation == CollectionOperation::Find ||
+        expression.operation == CollectionOperation::Any ||
+        expression.operation == CollectionOperation::All)
+      return emitShortCircuitCollection(expression, receiver);
+    return emitMappedCollection(expression, receiver);
+  }
+
   void emitTableError(const std::string& message) {
     auto putsFn = external("puts", builder.getInt32Ty(), {llvmType(Type::Text)});
     auto exitFn = external("exit", builder.getVoidTy(), {builder.getInt32Ty()});
@@ -1314,7 +1745,20 @@ struct CodeGenerator::Impl {
   }
 
   TypedValue emitTableValidation(const CallExpr& call) {
-    auto record = requirePresent(emitExpr(*call.args[0]), "table 的输入");
+    auto input = requirePresent(emitExpr(*call.args[0]), "table 的输入");
+    if (input.type == Type::List) {
+      auto* status = builder.CreateAlloca(builder.getInt32Ty(), nullptr,
+                                          "table.rows.status");
+      auto convertFn = external("lan_table_from_rows", llvmType(Type::Table),
+                                {llvmType(Type::List),
+                                 llvm::PointerType::get(context, 0)});
+      auto* table = builder.CreateCall(convertFn, {input.value, status},
+                                       "table.from.rows");
+      requireRuntimeSuccess(builder.CreateLoad(builder.getInt32Ty(), status),
+                            "table 的所有行必须具有相同字段和列类型");
+      return {table, Type::Table, kPresent};
+    }
+    auto record = input;
     auto* rows = builder.CreateAlloca(builder.getInt64Ty(), nullptr, "table.rows");
     auto validateFn = external("lan_table_validate", builder.getInt32Ty(),
                                {llvmType(Type::Record),
@@ -1819,29 +2263,59 @@ struct CodeGenerator::Impl {
   }
 
   TypedValue emitLogical(const BinaryExpr& binary) {
-    auto lhs = requirePresent(emitExpr(*binary.lhs), "逻辑运算");
+    auto lhs = emitExpr(*binary.lhs);
     auto* function = builder.GetInsertBlock()->getParent();
+    auto* leftPresentBlock = llvm::BasicBlock::Create(context, "logic.left.value", function);
     auto* rhsBlock = llvm::BasicBlock::Create(context, "logic.next", function);
+    auto* missingRhsBlock = llvm::BasicBlock::Create(context, "logic.missing.next", function);
     auto* shortcutBlock = llvm::BasicBlock::Create(context, "logic.shortcut", function);
     auto* mergeBlock = llvm::BasicBlock::Create(context, "logic.result", function);
     const bool isAnd = binary.op == "and";
+    Presence resultPresence = inference->expressionPresence(binary);
+    auto* resultAddress = builder.CreateAlloca(
+        encodedType(Type::Boolean, resultPresence), nullptr, "logic.storage");
+
+    if (lhs.presence == kPresent) builder.CreateBr(leftPresentBlock);
+    else if (lhs.presence == kMissing) builder.CreateBr(missingRhsBlock);
+    else builder.CreateCondBr(presentFlag(lhs), leftPresentBlock, missingRhsBlock);
+
+    builder.SetInsertPoint(leftPresentBlock);
     if (isAnd) builder.CreateCondBr(rawPayload(lhs), rhsBlock, shortcutBlock);
     else builder.CreateCondBr(rawPayload(lhs), shortcutBlock, rhsBlock);
 
     builder.SetInsertPoint(rhsBlock);
-    auto rhs = requirePresent(emitExpr(*binary.rhs), "逻辑运算");
-    rhsBlock = builder.GetInsertBlock();
+    auto rhs = convertPresence(emitExpr(*binary.rhs), resultPresence);
+    builder.CreateStore(rhs.value, resultAddress);
     builder.CreateBr(mergeBlock);
 
     builder.SetInsertPoint(shortcutBlock);
-    auto* shortcut = builder.getInt1(!isAnd);
+    builder.CreateStore(
+        encodePresent(builder.getInt1(!isAnd), Type::Boolean, resultPresence),
+        resultAddress);
+    builder.CreateBr(mergeBlock);
+
+    builder.SetInsertPoint(missingRhsBlock);
+    auto missingRhs = emitExpr(*binary.rhs);
+    auto* rhsPresent = presentFlag(missingRhs);
+    auto* rhsDecides = builder.CreateAnd(
+        rhsPresent, isAnd ? builder.CreateNot(rawPayload(missingRhs))
+                          : rawPayload(missingRhs));
+    auto* decidedBlock = llvm::BasicBlock::Create(context, "logic.decided", function);
+    auto* remainsMissingBlock = llvm::BasicBlock::Create(context, "logic.missing", function);
+    builder.CreateCondBr(rhsDecides, decidedBlock, remainsMissingBlock);
+    builder.SetInsertPoint(decidedBlock);
+    builder.CreateStore(
+        encodePresent(builder.getInt1(!isAnd), Type::Boolean, resultPresence),
+        resultAddress);
+    builder.CreateBr(mergeBlock);
+    builder.SetInsertPoint(remainsMissingBlock);
+    builder.CreateStore(missingValue(Type::Boolean, resultPresence), resultAddress);
     builder.CreateBr(mergeBlock);
 
     builder.SetInsertPoint(mergeBlock);
-    auto* phi = builder.CreatePHI(llvmType(Type::Boolean), 2, "logic");
-    phi->addIncoming(shortcut, shortcutBlock);
-    phi->addIncoming(rawPayload(rhs), rhsBlock);
-    return {phi, Type::Boolean, kPresent};
+    return {builder.CreateLoad(encodedType(Type::Boolean, resultPresence),
+                               resultAddress, "logic"),
+            Type::Boolean, resultPresence};
   }
 
   TypedValue emitCoalesce(const BinaryExpr& binary) {
@@ -1968,10 +2442,19 @@ struct CodeGenerator::Impl {
     if (auto* unary = dynamic_cast<const UnaryExpr*>(&expr)) {
       if (type == Type::List) return emitListUnary(*unary);
       auto operand = emitExpr(*unary->operand);
+      if (unary->op == '!') {
+        if (operand.presence == kPresent)
+          return {builder.CreateNot(operand.value, "not"), Type::Boolean, kPresent};
+        Presence resultPresence = inference->expressionPresence(expr);
+        auto* inverted = builder.CreateNot(rawPayload(operand), "not.value");
+        auto* present = encodePresent(inverted, Type::Boolean, resultPresence);
+        return {builder.CreateSelect(presentFlag(operand), present,
+                                     missingValue(Type::Boolean), "not.option"),
+                Type::Boolean, resultPresence};
+      }
       return guarded({operand}, type, presence, [&]() {
         auto* raw = rawPayload(operand);
-        return unary->op == '!' ? builder.CreateNot(raw, "not")
-                                : builder.CreateFNeg(raw, "negative");
+        return builder.CreateFNeg(raw, "negative");
       });
     }
     if (auto* binary = dynamic_cast<const BinaryExpr*>(&expr)) {
@@ -2018,7 +2501,16 @@ struct CodeGenerator::Impl {
         return builder.CreateFCmpOGE(left, right, "at.least");
       });
     }
+    if (auto* collection = dynamic_cast<const CollectionExpr*>(&expr))
+      return emitCollection(*collection);
     if (auto* call = dynamic_cast<const CallExpr*>(&expr)) {
+      if (call->callee == "is_missing") {
+        auto value = emitExpr(*call->args[0]);
+        return {builder.CreateNot(presentFlag(value), "is.missing"),
+                Type::Boolean, kPresent};
+      }
+      if (call->callee == "require")
+        return requirePresent(emitExpr(*call->args[0]), "require 的输入");
       if (call->callee == "same") return emitSame(*call);
       if (call->callee == "table") return emitTableValidation(*call);
       if (call->callee == "row_count") return emitTableRowCount(*call);

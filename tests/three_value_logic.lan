@@ -1,0 +1,28 @@
+choose(flag) =
+  if flag
+    4
+  else
+    missing
+
+demo(flag) =
+  value = choose(flag)
+  refined = if not is_missing(value)
+    value + 1
+  else
+    0
+  {
+    not_missing: not missing,
+    false_and_missing: false and missing,
+    true_and_missing: true and missing,
+    missing_and_false: missing and false,
+    missing_and_true: missing and true,
+    true_or_missing: true or missing,
+    false_or_missing: false or missing,
+    missing_or_true: missing or true,
+    missing_or_false: missing or false,
+    parenthesized_coalesce: true and (missing ?? false),
+    refined: refined,
+    required: require(3)
+  }
+
+[demo(true), demo(false)]

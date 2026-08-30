@@ -371,6 +371,110 @@ uint64_t lan_table_row_count(void* record) {
   return rows;
 }
 
+void* lan_table_row(void* record, uint64_t row, int32_t* status) {
+  *status = 0;
+  uint64_t rows = lan_table_row_count(record);
+  if (row >= rows) { *status = -1; return NULL; }
+  LanRecordNode* root = record;
+  uint32_t count = entry_count(root);
+  LanEntry* entries = count ? malloc(count * sizeof(*entries)) : NULL;
+  uint32_t index = 0;
+  if (count) collect_entries(root, entries, &index);
+  void* result = lan_record_empty();
+  for (uint32_t i = 0; i < count; ++i) {
+    if (entries[i].value.tag != LAN_LIST || !entries[i].value.pointer) {
+      *status = -2; lan_record_release(result); free(entries); return NULL;
+    }
+    LanList* column = entries[i].value.pointer;
+    if (row >= column->length) {
+      *status = -2; lan_record_release(result); free(entries); return NULL;
+    }
+    LanValue value = column->elements[row];
+    void* updated = lan_record_assoc(result, entries[i].key,
+                                     value.tag, value.number, value.pointer);
+    lan_record_release(result);
+    result = updated;
+  }
+  free(entries);
+  return result;
+}
+
+void* lan_table_from_rows(void* rows_pointer, int32_t* status) {
+  LanList* rows = rows_pointer;
+  *status = 0;
+  if (!rows) { *status = -1; return NULL; }
+  if (rows->length == 0) return lan_record_empty();
+  if (rows->elements[0].tag != LAN_RECORD || !rows->elements[0].pointer) {
+    *status = -2; return NULL;
+  }
+
+  LanRecordNode* first = rows->elements[0].pointer;
+  uint32_t count = entry_count(first);
+  LanEntry* schema = count ? malloc(count * sizeof(*schema)) : NULL;
+  uint32_t schema_index = 0;
+  if (count) collect_entries(first, schema, &schema_index);
+  void* result = lan_record_empty();
+
+  for (uint32_t field = 0; field < count; ++field) {
+    LanList* column = make_list(rows->length);
+    int32_t observed_tag = LAN_MISSING;
+    for (uint64_t row = 0; row < rows->length; ++row) {
+      LanValue row_value = rows->elements[row];
+      if (row_value.tag != LAN_RECORD || !row_value.pointer ||
+          entry_count(row_value.pointer) != count) {
+        *status = -3; free(schema); return NULL;
+      }
+      LanValue cell;
+      if (!lan_record_lookup(row_value.pointer, schema[field].key, &cell)) {
+        *status = -3; free(schema); return NULL;
+      }
+      if (cell.tag != LAN_MISSING) {
+        if (observed_tag != LAN_MISSING && observed_tag != cell.tag) {
+          *status = -4; free(schema); return NULL;
+        }
+        observed_tag = cell.tag;
+      }
+      store_list_value(column, row, cell);
+    }
+    void* updated = lan_record_assoc(result, schema[field].key,
+                                     LAN_LIST, 0, column);
+    lan_record_release(result);
+    result = updated;
+  }
+  free(schema);
+  return result;
+}
+
+void* lan_record_merge_checked(void* base_pointer, void* changes_pointer,
+                               int32_t replace, int32_t* status) {
+  LanRecordNode* base = base_pointer;
+  LanRecordNode* changes = changes_pointer;
+  *status = 0;
+  uint32_t count = entry_count(changes);
+  LanEntry* entries = count ? malloc(count * sizeof(*entries)) : NULL;
+  uint32_t index = 0;
+  if (count) collect_entries(changes, entries, &index);
+  void* result = base;
+  lan_record_retain(result);
+  for (uint32_t i = 0; i < count; ++i) {
+    LanValue ignored;
+    int exists = lan_record_lookup(base, entries[i].key, &ignored);
+    if ((!replace && exists) || (replace && !exists)) {
+      *status = replace ? -2 : -1;
+      lan_record_release(result);
+      free(entries);
+      return NULL;
+    }
+    LanValue value = entries[i].value;
+    void* updated = lan_record_assoc(result, entries[i].key,
+                                     value.tag, value.number, value.pointer);
+    lan_record_release(result);
+    result = updated;
+  }
+  free(entries);
+  return result;
+}
+
 /* operation: 0 sum, 1 average, 2 minimum, 3 maximum, 4 present count.
    Returns -3 for a non-number numeric aggregate, 0 when no number exists,
    and 1 on success. */
@@ -634,6 +738,24 @@ static LanList* filter_list(LanList* source, LanList* mask, uint64_t kept) {
     if (mask->elements[i].tag == LAN_BOOLEAN && mask->elements[i].number != 0)
       store_list_value(result, output++, source->elements[i]);
   return result;
+}
+
+void* lan_list_filter(void* source_pointer, void* mask_pointer, int32_t* status) {
+  LanList* source = source_pointer;
+  LanList* mask = mask_pointer;
+  *status = 0;
+  if (!source || !mask || source->length != mask->length) {
+    *status = -1; return NULL;
+  }
+  uint64_t kept = 0;
+  for (uint64_t i = 0; i < mask->length; ++i) {
+    LanValue value = mask->elements[i];
+    if (value.tag != LAN_MISSING && value.tag != LAN_BOOLEAN) {
+      *status = -2; return NULL;
+    }
+    if (value.tag == LAN_BOOLEAN && value.number != 0) ++kept;
+  }
+  return filter_list(source, mask, kept);
 }
 
 static LanList* permute_list(LanList* source, const uint64_t* order) {

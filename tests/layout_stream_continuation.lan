@@ -3,11 +3,11 @@ report() =
   limit = 1
     + 1
   result = people
-    add adult: people.age >= 18
-    where people.age >= 18
-    sort_by "age"
-    take limit
-    select_columns ["name", "age", "adult"]
-  {rows: result row_count, names: result.name, adults: result.adult}
+    |> add({adult: .age >= 18})
+    |> filter(.age >= 18)
+    |> sort_by("age")
+    |> take(limit)
+    |> select_columns(["name", "age", "adult"])
+  {rows: result |> row_count(), names: result.name, adults: result.adult}
 
 report()

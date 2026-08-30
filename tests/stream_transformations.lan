@@ -3,16 +3,16 @@
   age: [20, 17, 30],
   score: [80, missing, 70]
 });
-filled = people.score fill_missing 1 + 1;
-adults = people where people.age >= 18;
-extended = adults add adjusted: adults.score ?? 0;
-replaced = extended replace adjusted: extended.adjusted + 1;
-selected = replaced select_columns ["name", "adjusted"];
-pipeline = selected sort_by "adjusted" take 1;
+filled = people.score |> fill_missing(1 + 1);
+adults = people |> filter(.age >= 18);
+extended = adults |> add({adjusted: .score ?? 0});
+replaced = extended |> replace({adjusted: .adjusted + 1});
+selected = replaced |> select_columns(["name", "adjusted"]);
+pipeline = selected |> sort_by("adjusted") |> take(1);
 {
-  length: filled length,
-  rows: pipeline row_count,
+  length: filled |> length(),
+  rows: pipeline |> row_count(),
   first_name: pipeline.name.0,
   first_score: pipeline.adjusted.0,
-  dropped_rows: selected drop 1 row_count
+  dropped_rows: selected |> drop(1) |> row_count()
 }}

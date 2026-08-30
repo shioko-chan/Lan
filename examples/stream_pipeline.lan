@@ -5,34 +5,36 @@
   active: [true, true, true, false, true, true]
 });
 
-clean_scores = people.score fill_missing 0;
-scored = people replace score: clean_scores;
+scored = people |> replace({score: .score ?? 0});
 
 enriched = scored
-  add adult: scored.age >= 18
-  add passed: scored.score >= 60;
+  |> add({
+    adult: (.age ?? 0) >= 18,
+    passed: .score >= 60
+  });
 
-adult_flags = enriched.adult ?? false;
-eligible_mask = enriched.active and adult_flags and enriched.passed;
-eligible = enriched where eligible_mask;
+eligible = enriched
+  |> filter(row => row.active and (row.adult ?? false) and row.passed);
 
 ranked = eligible
-  add label: eligible.name + "（入选）"
-  add order: -eligible.score;
+  |> add({
+    label: .name + "（入选）",
+    order: -.score
+  });
 
 top = ranked
-  sort_by "order"
-  take 3
-  select_columns ["name", "age", "score", "label"];
+  |> sort_by("order")
+  |> take(3)
+  |> select_columns(["name", "age", "score", "label"]);
 
 {
   result: top,
   summary: {
-    rows: top row_count,
-    score_count: top count "score",
-    score_sum: top sum "score",
-    score_average: top average "score",
-    score_min: top min "score",
-    score_max: top max "score"
+    rows: top |> row_count(),
+    score_count: top |> count("score"),
+    score_sum: top |> sum("score"),
+    score_average: top |> average("score"),
+    score_min: top |> min("score"),
+    score_max: top |> max("score")
   }
 }}

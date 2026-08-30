@@ -24,9 +24,9 @@ demo() =
     score: [1, 2, 3]
   })
   adults = people
-    where .age >= 18
-    add adult: .age >= 18
-    replace score: .score + 5
+    |> filter(.age >= 18)
+    |> add({adult: .age >= 18})
+    |> replace({score: .score + 5})
   {
     named: greeting("小明", excited = true),
     old_age: person.age,
@@ -34,10 +34,10 @@ demo() =
     dynamic_updated_age: dynamic_updated.age,
     nested_city: person.address.city,
     adults: adults,
-    first: [4, 5] first,
+    first: [4, 5] |> first(),
     last: last([4, 5]),
-    empty_first: [] first,
-    empty_last: [] last
+    empty_first: [] |> first(),
+    empty_last: [] |> last()
   }
 
 demo()

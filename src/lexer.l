@@ -16,7 +16,6 @@
 static std::vector<int> indentation{0};
 static int pendingDedents = 0;
 static int braceDepth = 0;
-static bool canBeginStream = false;
 static int rawIndentDepth = 0;
 static std::vector<int> layoutDepths;
 static int lastSourceToken = 0;
@@ -28,52 +27,6 @@ struct BufferedToken {
 };
 
 static std::deque<BufferedToken> bufferedTokens;
-
-static int contextualStreamToken(const char* name) {
-  if (std::strcmp(name, "sum") == 0) return SUM;
-  if (std::strcmp(name, "average") == 0) return AVERAGE;
-  if (std::strcmp(name, "min") == 0) return MIN;
-  if (std::strcmp(name, "max") == 0) return MAX;
-  if (std::strcmp(name, "count") == 0) return COUNT;
-  if (std::strcmp(name, "length") == 0) return LENGTH;
-  if (std::strcmp(name, "row_count") == 0) return ROW_COUNT;
-  if (std::strcmp(name, "first") == 0) return FIRST;
-  if (std::strcmp(name, "last") == 0) return LAST;
-  if (std::strcmp(name, "fill_missing") == 0) return FILL_MISSING;
-  if (std::strcmp(name, "where") == 0) return WHERE;
-  if (std::strcmp(name, "select_columns") == 0) return SELECT_COLUMNS;
-  if (std::strcmp(name, "take") == 0) return TAKE;
-  if (std::strcmp(name, "drop") == 0) return DROP;
-  if (std::strcmp(name, "sort_by") == 0) return SORT_BY;
-  if (std::strcmp(name, "add") == 0) return ADD;
-  if (std::strcmp(name, "replace") == 0) return REPLACE;
-  return 0;
-}
-
-static void rememberToken(int token) {
-  switch (token) {
-    case NUMBER:
-    case TEXT:
-    case IDENTIFIER:
-    case TRUE:
-    case FALSE:
-    case MISSING:
-    case INDEX:
-    case ')':
-    case ']':
-    case '}':
-    case '?':
-    case LENGTH:
-    case ROW_COUNT:
-    case FIRST:
-    case LAST:
-    case VIRTUAL_CLOSE:
-      canBeginStream = true;
-      return;
-    default:
-      canBeginStream = false;
-  }
-}
 
 static int applyIndentation(int width) {
   if (width > indentation.back()) {
@@ -146,6 +99,17 @@ ID [A-Za-z_\200-\377][A-Za-z0-9_\200-\377]*
 <INITIAL>"&&"       return AND;
 <INITIAL>"||"       return OR;
 <INITIAL>"??"       return COALESCE;
+<INITIAL>"|>"       return PIPE_ARROW;
+<INITIAL>"=>"       return FAT_ARROW;
+<INITIAL>"if"/[ ]*"("       return IF;
+<INITIAL>"else"/[ ]*"("     return ELSE;
+<INITIAL>"true"/[ ]*"("     return TRUE;
+<INITIAL>"false"/[ ]*"("    return FALSE;
+<INITIAL>"missing"/[ ]*"("  return MISSING;
+<INITIAL>"with"/[ ]*"("     return WITH;
+<INITIAL>"and"/[ ]*"("      return AND;
+<INITIAL>"or"/[ ]*"("       return OR;
+<INITIAL>"not"/[ ]*"("      return NOT;
 <INITIAL>{ID}/[ ]*"("[^\n]*")"[ ]*"="[^=] {
   yylval.text = strdup(yytext);
   return FUNCTION_NAME;
@@ -282,18 +246,10 @@ int yylex(void) {
   int token = buffered.token;
   yylval = buffered.value;
 
-  if (token == IDENTIFIER && canBeginStream) {
-    int contextual = contextualStreamToken(yylval.text);
-    if (contextual) {
-      free(yylval.text);
-      token = contextual;
-    }
-  }
   if (token == IF) ifAwaitingLayout = true;
   if (token == '{' && ifAwaitingLayout) ifAwaitingLayout = false;
   if (token != VIRTUAL_OPEN && token != VIRTUAL_SEMICOLON &&
       token != VIRTUAL_CLOSE && token != 0)
     lastSourceToken = token;
-  rememberToken(token);
   return token;
 }

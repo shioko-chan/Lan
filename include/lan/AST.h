@@ -134,6 +134,35 @@ struct CallArgument {
   std::unique_ptr<Expr> value;
 };
 
+struct ElementBindingExpr final : Expr {
+  ElementBindingExpr(std::string name, Expr* body)
+      : name(std::move(name)), body(body) {}
+  std::string name;
+  std::unique_ptr<Expr> body;
+};
+
+enum class CollectionOperation {
+  Map,
+  Filter,
+  Select,
+  Add,
+  Replace,
+  Find,
+  Any,
+  All
+};
+
+struct CollectionExpr final : Expr {
+  CollectionExpr(CollectionOperation operation, Expr* collection, Expr* body,
+                 std::string binding = {})
+      : operation(operation), collection(collection), body(body),
+        binding(std::move(binding)) {}
+  CollectionOperation operation;
+  std::unique_ptr<Expr> collection;
+  std::unique_ptr<Expr> body;
+  std::string binding;
+};
+
 struct CallExpr final : Expr {
   CallExpr(std::string callee, std::vector<Expr*>* args,
            std::vector<std::string>* argNames = nullptr)

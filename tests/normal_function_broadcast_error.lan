@@ -1,0 +1,3 @@
+adult(age) = age >= 18
+
+adult([17, 20])

@@ -50,6 +50,8 @@
 - [x] ~~普通运算消费 `missing` 时在运行时拒绝。~~
 - [x] ~~后缀 `?` 使当前表达式短路为 `missing`，不是函数提前返回。~~
 - [x] ~~`??` 延迟计算缺失值的回退表达式。~~
+- [x] ~~支持 `is_missing(value)`、`require(value)` 和简单分支存在性细化。~~
+- [x] ~~Boolean 的 `and`、`or`、`not` 使用从左到右短路的三值逻辑。~~
 - [x] ~~LLVM 优化可以消除恒定存在标志和无效 Option 包装。~~
 - [ ] 为运行时类型错误和 missing 错误附加精确源码位置。
 - [ ] 为 missing 的产生位置和传播路径提供可选调试信息。
@@ -70,15 +72,16 @@
 - [x] ~~支持嵌套 List 从末尾维度对齐、前置维度广播和同维逐层截短。~~
 - [x] ~~支持 `fill_missing(list, value)` 显式填充缺失单元格。~~
 - [x] ~~支持 List 的 `sum`、`average`、`min`、`max` 和 `count` 聚合。~~
-- [x] ~~支持 `numbers sum` 和 `people sum "column"` 形式的流式聚合语法糖。~~
-- [x] ~~为 List/Table 转换、长度和行数操作提供可连接的流式语法糖。~~
-- [x] ~~将流式操作名实现为上下文名称，不占用变量、参数和字段关键字。~~
+- [x] ~~使用统一的 `value |> function(arguments)` 管道，并要求函数名和括号完整出现。~~
+- [x] ~~移除无 `|>`、无括号的旧流式语法。~~
 - [ ] 将当前逐元素标签 ABI 改为按 `T` 生成的紧凑连续数组。
 - [ ] 为 `List<Number>` 使用紧凑数字数组和存在位。
 - [ ] 为 `List<Boolean>` 使用紧凑 `i2` 数组。
 - [ ] 为 `List<Text>`、`List<Record>` 和嵌套 List 使用指针数组及空指针 niche。
-- [x] ~~支持 `first(list)`、`last(list)` 及 `items first`、`items last`，空列表返回 missing。~~
-- [x] ~~流式参数中的 `.field` 读取当前步骤的整体接收值，且接收值只求值一次。~~
+- [x] ~~支持 `first(list)`、`last(list)` 及 `items |> first()`、`items |> last()`。~~
+- [x] ~~在集合元素表达式中支持 `.`、`.field`、`.(key)` 和受限的 `name => expression`。~~
+- [x] ~~支持 List/Table 的 `map`、`filter`、`find`、`any` 和 `all`。~~
+- [x] ~~普通用户函数不自动广播，逐元素调用必须显式写在集合操作中。~~
 - [ ] 设计保证有限的 `select`、`transform` 或列表推导能力。
 - [x] ~~使用 `same(left, right)` 支持 List 结构相等比较。~~
 
@@ -121,9 +124,11 @@
 - [x] ~~支持数字列的 `sum`、`average`、`min` 和 `max`。~~
 - [x] ~~支持任意列的非 missing `count`。~~
 - [x] ~~聚合忽略 missing；空列的 `average`、`min`、`max` 返回 missing。~~
-- [x] ~~支持 `where(table, mask)`，并将 mask 中的 missing 视为 false。~~
-- [x] ~~使用 `table add name: expression` 添加列，并拒绝同名列。~~
-- [x] ~~使用 `table replace name: expression` 替换列，并拒绝不存在的列。~~
+- [x] ~~支持 `filter`，并将最终 predicate 的 missing 视为 false。~~
+- [x] ~~使用 `table |> add({...})` 添加计算列，并拒绝同名列。~~
+- [x] ~~使用 `table |> replace({...})` 替换计算列，并拒绝不存在的列。~~
+- [x] ~~支持 `table |> select({...})` schema 投影和计算。~~
+- [x] ~~支持 `table(List<Record>)` 行转列。~~
 - [x] ~~支持 `select_columns(table, names)` 选择字段。~~
 - [x] ~~支持有界的 `take(table, n)` 和 `drop(table, n)`。~~
 - [x] ~~支持 `sort_by(table, name)` 稳定升序排序，missing 固定放在末尾。~~
@@ -166,7 +171,7 @@
 
 - [x] ~~项目可以成功构建。~~
 - [x] ~~`--build` 持久化保存 LLVM IR、目标文件和本地可执行文件，`--run` 构建后执行。~~
-- [x] ~~现有 89 项自动化测试全部通过。~~
+- [x] ~~现有 96 项自动化测试全部通过。~~
 - [x] ~~测试覆盖递归拒绝、遮蔽、默认参数、missing、短路、`List<T>`、Record 和 HAMT 更新。~~
 - [x] ~~测试覆盖 Table 零复制验证、整列聚合、空列和无效表格拒绝。~~
 - [x] ~~测试覆盖整列计算、缺失值填充、筛选、加列、选列、截取和稳定排序。~~
