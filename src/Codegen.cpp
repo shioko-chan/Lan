@@ -752,7 +752,7 @@ class Inference {
         unify(lhs, rhs, "“+”号");
         unify(result, lhs, "“+”号的结果");
         plusVariables_.push_back(result);
-      } else if (op == "-" || op == "*" || op == "/") {
+      } else if (op == "-" || op == "*" || op == "/" || op == "%") {
         bind(lhs, Type::Number, "“" + op + "”号左边");
         bind(rhs, Type::Number, "“" + op + "”号右边");
         bind(result, Type::Number, "计算结果");
@@ -2376,6 +2376,7 @@ struct CodeGenerator::Impl {
     auto rightParts = dynamicParts(right);
     int operation = binary.op == "+" ? 0 : binary.op == "-" ? 1
                   : binary.op == "*" ? 2 : binary.op == "/" ? 3
+                  : binary.op == "%" ? 13
                   : binary.op == "==" ? 4 : binary.op == "!=" ? 5
                   : binary.op == "<" ? 6 : binary.op == ">" ? 7
                   : binary.op == "<=" ? 8 : binary.op == ">=" ? 9
@@ -2446,12 +2447,13 @@ struct CodeGenerator::Impl {
           operationFn, {left.value, right.value, builder.getInt32(operation), status},
           "number.list.operation");
       requireRuntimeSuccess(builder.CreateLoad(builder.getInt32Ty(), status),
-                            "整列数字运算要求 Number 元素", binary.op == "/");
+                            "整列数字运算要求 Number 元素",
+                            binary.op == "/" || binary.op == "%");
       return {result, Type::List, kPresent};
     }
     bool compactNumberScalar = std::max(leftRank, rightRank) == 1 &&
         std::min(leftRank, rightRank) == 0 && leftLeaf == Type::Number &&
-        rightLeaf == Type::Number && operation <= 3;
+        rightLeaf == Type::Number && (operation <= 3 || operation == 13);
     if (compactNumberScalar) {
       bool listOnLeft = leftRank == 1;
       auto list = listOnLeft ? left : right;
@@ -2466,7 +2468,8 @@ struct CodeGenerator::Impl {
            builder.getInt32(operation), status},
           "number.list.scalar.operation");
       requireRuntimeSuccess(builder.CreateLoad(builder.getInt32Ty(), status),
-                            "整列数字广播要求 Number 元素", binary.op == "/");
+                            "整列数字广播要求 Number 元素",
+                            binary.op == "/" || binary.op == "%");
       return {result, Type::List, kPresent};
     }
     auto compactLeaf = [](Type type) {
@@ -2488,7 +2491,8 @@ struct CodeGenerator::Impl {
            builder.getInt32(operation), status},
           "flat.list.operation");
       requireRuntimeSuccess(builder.CreateLoad(builder.getInt32Ty(), status),
-                            "紧凑整列运算的元素类型不正确", binary.op == "/");
+                            "紧凑整列运算的元素类型不正确",
+                            binary.op == "/" || binary.op == "%");
       return {result, Type::List, kPresent};
     }
     auto operationFn = external(
@@ -2506,7 +2510,8 @@ struct CodeGenerator::Impl {
          builder.getInt32(operation), status},
         "list.operation");
     requireRuntimeSuccess(builder.CreateLoad(builder.getInt32Ty(), status),
-                          "整列运算要求元素类型正确", binary.op == "/");
+                          "整列运算要求元素类型正确",
+                          binary.op == "/" || binary.op == "%");
     return {result, Type::List, kPresent};
   }
 
@@ -2763,6 +2768,24 @@ struct CodeGenerator::Impl {
     builder.CreateCall(strcpyFn, {buffer, lhs});
     builder.CreateCall(strcatFn, {buffer, rhs});
     return buffer;
+  }
+
+  llvm::Value* floorModulo(llvm::Value* lhs, llvm::Value* rhs) {
+    auto* remainder = builder.CreateFRem(lhs, rhs, "modulo.remainder");
+    auto* zero = llvm::ConstantFP::get(builder.getDoubleTy(), 0.0);
+    auto* nonzero = builder.CreateFCmpONE(remainder, zero, "modulo.nonzero");
+    auto* remainderNegative = builder.CreateFCmpOLT(
+        remainder, zero, "modulo.remainder.negative");
+    auto* divisorNegative = builder.CreateFCmpOLT(
+        rhs, zero, "modulo.divisor.negative");
+    auto* adjust = builder.CreateAnd(
+        nonzero, builder.CreateXor(remainderNegative, divisorNegative),
+        "modulo.adjust");
+    auto* adjusted = builder.CreateSelect(
+        adjust, builder.CreateFAdd(remainder, rhs, "modulo.adjusted"), remainder,
+        "modulo.signed");
+    return builder.CreateSelect(builder.CreateFCmpOEQ(adjusted, zero), zero,
+                                adjusted, "modulo.normalized");
   }
 
   llvm::BasicBlock* missingTarget() {
@@ -3068,7 +3091,7 @@ struct CodeGenerator::Impl {
         if (op == "+") return builder.CreateFAdd(left, right, "sum");
         if (op == "-") return builder.CreateFSub(left, right, "difference");
         if (op == "*") return builder.CreateFMul(left, right, "product");
-        if (op == "/") {
+        if (op == "/" || op == "%") {
           auto* function = builder.GetInsertBlock()->getParent();
           auto* divideBlock = llvm::BasicBlock::Create(
               context, "division.valid", function);
@@ -3082,7 +3105,8 @@ struct CodeGenerator::Impl {
           builder.SetInsertPoint(zeroBlock);
           emitTableError("除数不能为零");
           builder.SetInsertPoint(divideBlock);
-          return builder.CreateFDiv(left, right, "quotient");
+          return op == "/" ? builder.CreateFDiv(left, right, "quotient")
+                           : floorModulo(left, right);
         }
         if (op == "<") return builder.CreateFCmpOLT(left, right, "less");
         if (op == ">") return builder.CreateFCmpOGT(left, right, "greater");

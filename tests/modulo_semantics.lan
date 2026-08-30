@@ -1,0 +1,15 @@
+propagated() = missing? % 0
+
+{
+  broadcast: [5, missing, -5] % 2,
+  fractional: 5.5 % 2,
+  mapped: [1, 2, 3, 4] |> map(if .%2 != 0 {100} else {200}),
+  missing_skips: [missing, 10] % [0, 3],
+  negative_divisor: 5 % -2,
+  negative_left: -5 % 2,
+  nested: [[5, -5], [5.5]] % 2,
+  positive: 5 % 2,
+  propagated: propagated(),
+  reverse_scalar: 5 % [2, -2],
+  truncated: [10] % [3, 0]
+}

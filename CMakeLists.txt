@@ -112,6 +112,24 @@ foreach(division_error scalar_division_zero scalar_division_negative_zero
             ${expected_index_argument}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_runtime_error.cmake)
 endforeach()
+add_test(NAME modulo_semantics
+  COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/modulo_semantics.lan)
+set_tests_properties(modulo_semantics PROPERTIES PASS_REGULAR_EXPRESSION
+  [=[\{broadcast: \[1, missing, 1\], fractional: 1.5, mapped: \[100, 200, 100, 200\], missing_skips: \[missing, 1\], negative_divisor: -1, negative_left: 1, nested: \[\[1, 1\], \[1.5\]\], positive: 1, propagated: missing, reverse_scalar: \[1, -1\], truncated: \[1\]\}]=])
+foreach(modulo_error scalar_modulo_zero scalar_modulo_negative_zero
+                     list_modulo_zero)
+  unset(expected_index_argument)
+  if(modulo_error STREQUAL "list_modulo_zero")
+    set(expected_index_argument -DEXPECTED_INDEX=1)
+  endif()
+  add_test(NAME reject_${modulo_error}
+    COMMAND ${CMAKE_COMMAND}
+            -DLANC=$<TARGET_FILE:lanc>
+            -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/${modulo_error}_error.lan
+            -DEXPECTED=除数不能为零
+            ${expected_index_argument}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_runtime_error.cmake)
+endforeach()
 add_test(NAME structured_runtime_diagnostic
   COMMAND ${CMAKE_COMMAND}
           -DLANC=$<TARGET_FILE:lanc>

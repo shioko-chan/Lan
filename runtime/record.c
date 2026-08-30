@@ -1,4 +1,5 @@
 #include <stdint.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -632,6 +633,12 @@ static int32_t aggregate_list(LanList* list, int32_t operation, double* output) 
   return 1;
 }
 
+static double floor_modulo(double dividend, double divisor) {
+  double result = fmod(dividend, divisor);
+  if (result != 0.0 && ((result < 0.0) != (divisor < 0.0))) result += divisor;
+  return result == 0.0 ? 0.0 : result;
+}
+
 int32_t lan_list_aggregate(void* list, int32_t operation, double* output) {
   if (!list) return -2;
   return aggregate_list(list, operation, output);
@@ -671,7 +678,7 @@ static LanValue scalar_binary(LanValue a, LanValue b, int32_t operation,
   if (a.tag == LAN_MISSING || b.tag == LAN_MISSING)
     return (LanValue){LAN_MISSING, 0, NULL};
   LanValue value = {LAN_NUMBER, 0, NULL};
-  if (operation <= 3) {
+  if (operation <= 3 || operation == 13) {
     if (operation == 0 && a.tag == LAN_TEXT && b.tag == LAN_TEXT) {
       size_t left = strlen(a.pointer);
       size_t right = strlen(b.pointer);
@@ -685,13 +692,15 @@ static LanValue scalar_binary(LanValue a, LanValue b, int32_t operation,
       *status = -3;
       return (LanValue){LAN_MISSING, 0, NULL};
     }
-    if (operation == 3 && b.number == 0.0) {
+    if ((operation == 3 || operation == 13) && b.number == 0.0) {
       *status = -4;
       return (LanValue){LAN_MISSING, 0, NULL};
     }
     value.number = operation == 0 ? a.number + b.number
                  : operation == 1 ? a.number - b.number
-                 : operation == 2 ? a.number * b.number : a.number / b.number;
+                 : operation == 2 ? a.number * b.number
+                 : operation == 3 ? a.number / b.number
+                                  : floor_modulo(a.number, b.number);
     return value;
   }
   if (a.tag != b.tag) {
@@ -884,7 +893,7 @@ void* lan_flat_list_binary(int32_t a_tag, double a_number, void* a_pointer,
   }
 
 
-  if (operation == 3) {
+  if (operation == 3 || operation == 13) {
     for (uint64_t i = 0; i < length; ++i) {
       LanValue left_value = left ? load_list_value(left, i) : a;
       LanValue right_value = right ? load_list_value(right, i) : b;
@@ -915,7 +924,7 @@ void* lan_number_list_binary(void* left_pointer, void* right_pointer,
   *status = 0;
   diagnostic_error_index = -1;
   if (!left || !right || left->storage_tag != LAN_NUMBER ||
-      right->storage_tag != LAN_NUMBER || operation < 0 || operation > 12 ||
+      right->storage_tag != LAN_NUMBER || operation < 0 || operation > 13 ||
       operation == 10 || operation == 11) {
     *status = -3;
     return NULL;
@@ -930,7 +939,7 @@ void* lan_number_list_binary(void* left_pointer, void* right_pointer,
   const uint8_t* restrict left_presence = left->presence;
   const uint8_t* restrict right_presence = right->presence;
 
-  if (operation == 3) {
+  if (operation == 3 || operation == 13) {
     for (uint64_t i = 0; i < length; ++i) {
       uint8_t left_present = !left_presence || left_presence[i];
       uint8_t right_present = !right_presence || right_presence[i];
@@ -947,6 +956,16 @@ void* lan_number_list_binary(void* left_pointer, void* right_pointer,
   if (result_tag == LAN_NUMBER) {
     double* restrict values = result->elements;
     uint8_t* restrict presence = result->presence;
+    if (operation == 13) {
+      for (uint64_t i = 0; i < length; ++i) {
+        uint8_t left_present = !left_presence || left_presence[i];
+        uint8_t right_present = !right_presence || right_presence[i];
+        presence[i] = left_present && right_present;
+        values[i] = presence[i]
+            ? floor_modulo(left_values[i], right_values[i]) : 0.0;
+      }
+      return result;
+    }
 #pragma clang loop vectorize(enable)
     for (uint64_t i = 0; i < length; ++i) {
       uint8_t left_present = !left_presence || left_presence[i];
@@ -1095,7 +1114,8 @@ void* lan_number_list_scalar_binary(void* list_pointer, double scalar,
   *status = 0;
   diagnostic_error_index = -1;
   if (!source || source->storage_tag != LAN_NUMBER ||
-      (source->length && !source->presence) || operation < 0 || operation > 3) {
+      (source->length && !source->presence) || operation < 0 ||
+      (operation > 3 && operation != 13)) {
     *status = -3;
     return NULL;
   }
@@ -1103,7 +1123,7 @@ void* lan_number_list_scalar_binary(void* list_pointer, double scalar,
   const double* restrict source_values = source->elements;
   const uint8_t* restrict source_presence = source->presence;
   uint64_t length = source->length;
-  if (operation == 3) {
+  if (operation == 3 || operation == 13) {
     for (uint64_t i = 0; i < length; ++i) {
       uint8_t present = source_presence[i];
       double divisor = list_on_left ? scalar : source_values[i];
@@ -1140,6 +1160,16 @@ void* lan_number_list_scalar_binary(void* list_pointer, double scalar,
     for (uint64_t i = 0; i < length; ++i) {
       presence[i] = source_presence[i];
       values[i] = source_values[i] * scalar;
+    }
+    return result;
+  }
+  if (operation == 13) {
+    for (uint64_t i = 0; i < length; ++i) {
+      presence[i] = source_presence[i];
+      values[i] = presence[i]
+          ? (list_on_left ? floor_modulo(source_values[i], scalar)
+                         : floor_modulo(scalar, source_values[i]))
+          : 0.0;
     }
     return result;
   }

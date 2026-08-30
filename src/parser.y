@@ -278,6 +278,7 @@ additive
 multiplicative
   : multiplicative '*' unary { $$ = located(new lan::BinaryExpr("*", $1, $3), @2.first_line, @2.first_column); }
   | multiplicative '/' unary { $$ = located(new lan::BinaryExpr("/", $1, $3), @2.first_line, @2.first_column); }
+  | multiplicative '%' unary { $$ = located(new lan::BinaryExpr("%", $1, $3), @2.first_line, @2.first_column); }
   | unary { $$ = $1; }
   ;
 
