@@ -1,0 +1,10 @@
+{flags = [true, false, missing];
+other = [false, true, missing];
+{
+  and_column: flags and other,
+  default_scalar: flags ?? false,
+  equal_column: flags == other,
+  equal_scalar: flags == true,
+  not_equal_column: flags != other,
+  or_column: flags or other
+}}

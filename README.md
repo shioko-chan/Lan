@@ -1,7 +1,18 @@
 # Lan
 
-Lan 是一门面向非程序员的纯函数式语言。写 Lan 程序很像写数学公式或电子表格公式：
-给事物起名字、描述计算关系，然后在文件最后写出想看到的结果。
+Lan 是一门简单、简洁、优雅的纯函数式 DSL，用于表达数据转换、业务规则和有限集合
+计算。它面向希望用较小语言快速完成领域任务的人，也适合由人描述意图、AI 生成代码、
+人再阅读和调整的协作方式。
+
+Lan 不试图成为自然语言、无代码工具或通用编程语言，也不假设完全没有编程经验的人会
+因为语法更简单而主动开始 coding。这里的“简单”指概念少、组合规则统一、行为可预测，
+而不是隐藏所有编程概念。Lan 程序仍然是需要阅读、验证和维护的代码。
+
+写 Lan 程序很像组织数学公式或数据处理管道：给事物起名字、描述计算关系，然后在文件
+最后写出想得到的结果。
+
+为了集中说明单项规则，部分代码块只展示函数或代码块内部的片段；其中出现的相关名称
+假定已经在外围定义。
 
 ## 五分钟入门
 
@@ -139,7 +150,12 @@ keep(missing) # missing
 调用也可以在位置参数之后使用命名参数，从而跳过前面带默认值的参数：
 
 ```lan
-greeting(name, punctuation = "!", excited = false) = ...
+greeting(name, punctuation = "!", excited = false) =
+  ending = if excited
+    punctuation + punctuation
+  else
+    punctuation
+  "你好，" + name + ending
 
 greeting("小明", excited = true)
 ```
@@ -302,6 +318,9 @@ people |> sort_by("score")          # sort_by(people, "score")
 
 不支持 `numbers sum`、`people take 10` 等省略 `|>` 或括号的旧写法。
 
+`map`、`filter`、`select`、`add`、`replace`、`find`、`any` 和 `all` 只在 `|>` 后作为
+集合操作名称；它们不是全局保留字，可以在普通调用位置定义成用户函数。
+
 `map`、`filter`、`find`、`any` 和 `all` 建立元素上下文。在其中，`.` 是当前逻辑元素，
 `.name` 和 `.(key)` 分别读取当前元素的固定或动态字段：
 
@@ -339,16 +358,32 @@ ages |> map(adult(.))        # 明确逐元素调用
 
 ## Table 与整列计算
 
-Table 没有独立的字面量语法，也不是新的运行时数据类型。使用内置的 `table(record)`
-验证一个 Record：它的每个字段都必须是 List，并且所有 List 长度相同。
+Table 没有独立的字面量语法，也不是新的运行时数据类型。内置 `table(value)` 接受两种
+输入形式。列式形式是 `Record<List<T>>`：每个字段都必须是 List，并且所有 List 长度
+相同。
 
 ```lan
-people = table({name: ["小明", "小兰", "小红"], age: [20, 17, missing], score: [80, 90, missing]})
+people() = table({
+  name: ["小明", "小兰", "小红"],
+  age: [20, 17, missing],
+  score: [80, 90, missing]
+})
+
+people()
 ```
 
-验证成功后返回原来的 Record 指针，不复制 Record 或任何 List。编译器把这个值静态
-细化为 Table；LLVM 和运行时仍使用 Record 指针。普通 Record 不能直接传给表格操作，
-必须先经过 `table(...)`。
+这种形式验证成功后返回原来的 Record 指针，不复制 Record 或任何 List。行式形式是
+`List<Record>`，`table` 会将各行转换成等长的列：
+
+```lan
+table([
+  {name: "小明", age: 20},
+  {name: "小兰", age: 17}
+])
+```
+
+编译器把结果静态细化为 Table；LLVM 和运行时都使用 `Record<List<T>>` 指针。普通
+Record 或 `List<Record>` 不能直接传给表格操作，必须先经过 `table(...)`。
 
 ```lan
 row_count(people)          # 3
@@ -483,8 +518,11 @@ read({name: "小明", age: 20})
 Record 字面量也允许由 Text 表达式提供动态字段名：
 
 ```lan
-field = "age"
-person = {name: "Alice", (field): 21}
+make_person() =
+  field = "age"
+  {name: "Alice", (field): 21}
+
+make_person()
 ```
 
 `{field: 21}` 的字段名固定为 `"field"`，而 `{(field): 21}` 使用变量 `field` 的值。
@@ -498,7 +536,7 @@ person.city ?? "未知"
 person.height + 1       # height 不存在时运行错误
 ```
 
-函数块中可以用符合初学者直觉的写法添加或替换字段：
+函数块中可以用简洁的更新写法添加或替换字段：
 
 ```lan
 birthday(person) =
@@ -515,10 +553,13 @@ birthday(person) =
 需要显式保留原绑定时，可以使用 `with` 一次添加或替换多个字段：
 
 ```lan
-updated = person with {
-  age: 21,
-  city: "Sydney"
-}
+move(person) =
+  person with {
+    age: 21,
+    city: "Sydney"
+  }
+
+move({name: "Alice", age: 20})
 ```
 
 更新块同样支持 `(field): value` 动态键。嵌套更新写成
@@ -555,10 +596,14 @@ lookup(false) ?? "没有找到"
 ```lan
 missing + 1       # 运行错误
 length(missing)  # 运行错误
-if missing
-       # 运行错误
-  1
-else  0
+
+choose_missing() =
+  if missing
+    1
+  else
+    0
+
+choose_missing()  # 运行错误
 ```
 
 后缀 `?` 明确允许当前表达式传播缺失。运算仍然从左到右求值；被 `?` 检查的值一旦
@@ -640,7 +685,9 @@ require(value)     # missing 时运行时拒绝，否则返回原值
 编译期已知元素类型的 List 运算也保持这种表示：Number/Boolean/Text 的标量广播、
 一元运算和嵌套广播不会重新退化为逐元素动态标签。嵌套 List 的外层是指针数组，叶层
 仍使用对应的紧凑数组。一维 Number 列之间的算术和比较使用专用循环，LLVM 可以在
-不改变 missing 语义时将其向量化。
+不改变 missing 语义时将其向量化。Boolean 三态列的列间和标量逻辑、相等比较及
+`??` 也直接在紧凑字节编码上执行专用循环；动态类型和需要分配 Text 的运算保持
+语义等价的标量路径。
 
 Table 元素表达式把整行传给普通具名函数时，编译器会在调用点分析并内联该函数体。
 函数实际读取的固定字段直接按列和行号取得，不会为了函数参数预先构造完整行 Record；

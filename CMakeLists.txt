@@ -305,7 +305,7 @@ set_tests_properties(stream_transformation_syntax PROPERTIES PASS_REGULAR_EXPRES
 add_test(NAME contextual_stream_names
   COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/contextual_stream_names.lan)
 set_tests_properties(contextual_stream_names PROPERTIES PASS_REGULAR_EXPRESSION
-  [=[\{aggregate: 2, fields: 18, parameters: 21\}]=])
+  [=[\{aggregate: 2, fields: 18, functions: 5, parameters: 21\}]=])
 add_test(NAME layout_stream_continuation
   COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/layout_stream_continuation.lan)
 set_tests_properties(layout_stream_continuation PROPERTIES PASS_REGULAR_EXPRESSION
@@ -325,6 +325,10 @@ add_test(NAME list_broadcast_operators
   COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/list_broadcast_operators.lan)
 set_tests_properties(list_broadcast_operators PROPERTIES PASS_REGULAR_EXPRESSION
   [=[\{and_false: \[false, false, false\], and_true: \[true, false, missing\], default_column: \[1, 2, 3\], default_scalar: \[1, 0, 3\], negated: \[false, true, missing\], numbers: \[-1, missing, 2\], or_false: \[true, false, missing\], or_true: \[true, true, true\], text_columns: \["A1", "B2"\], text_scalar: \["A!", missing, "C!"\]\}]=])
+add_test(NAME boolean_compact_operations
+  COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/boolean_compact_operations.lan)
+set_tests_properties(boolean_compact_operations PROPERTIES PASS_REGULAR_EXPRESSION
+  [=[\{and_column: \[false, false, missing\], default_scalar: \[true, false, false\], equal_column: \[false, false, missing\], equal_scalar: \[true, false, missing\], not_equal_column: \[true, true, missing\], or_column: \[true, true, missing\]\}]=])
 add_test(NAME reject_mixed_text_column_concat
   COMMAND lanc ${CMAKE_CURRENT_SOURCE_DIR}/tests/list_text_concat_type_error.lan)
 set_tests_properties(reject_mixed_text_column_concat PROPERTIES WILL_FAIL TRUE)
@@ -374,9 +378,9 @@ set_tests_properties(reject_adding_existing_table_column PROPERTIES WILL_FAIL TR
 add_test(NAME reject_replacing_missing_table_column
   COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/table_replace_missing_error.lan)
 set_tests_properties(reject_replacing_missing_table_column PROPERTIES WILL_FAIL TRUE)
-add_test(NAME reject_non_boolean_where_mask
-  COMMAND lanc ${CMAKE_CURRENT_SOURCE_DIR}/tests/table_where_type_error.lan)
-set_tests_properties(reject_non_boolean_where_mask PROPERTIES WILL_FAIL TRUE)
+add_test(NAME reject_obsolete_where_function
+  COMMAND lanc ${CMAKE_CURRENT_SOURCE_DIR}/tests/obsolete_where_function_error.lan)
+set_tests_properties(reject_obsolete_where_function PROPERTIES WILL_FAIL TRUE)
 add_test(NAME reject_empty_column_selection
   COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/table_empty_selection_error.lan)
 set_tests_properties(reject_empty_column_selection PROPERTIES WILL_FAIL TRUE)

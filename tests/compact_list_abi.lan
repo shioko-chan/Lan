@@ -6,6 +6,7 @@ calculated = numbers + [10, 20, 30];
 scaled = numbers + 10;
 scaled_again = scaled + [1, 2, 3];
 truths = flags and true;
+paired_truths = flags or [false, true, missing];
 labels = texts + "!";
 {
   calculated: calculated,
@@ -13,6 +14,7 @@ labels = texts + "!";
   flags: flags,
   texts: texts,
   nested: nested,
+  paired_truths: paired_truths,
   scaled: scaled,
   scaled_again: scaled_again,
   truths: truths,

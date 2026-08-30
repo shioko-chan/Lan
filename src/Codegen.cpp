@@ -68,16 +68,10 @@ class Inference {
           function->name == "sum" || function->name == "average" ||
           function->name == "min" || function->name == "max" ||
           function->name == "count" || function->name == "fill_missing" ||
-          function->name == "where" || function->name == "add_column" ||
-          function->name == "replace_column" ||
-          function->name == "add" || function->name == "replace" ||
           function->name == "select_columns" || function->name == "take" ||
           function->name == "drop" || function->name == "sort_by" ||
           function->name == "same" || function->name == "first" ||
-          function->name == "last" || function->name == "map" ||
-          function->name == "filter" || function->name == "select" ||
-          function->name == "find" || function->name == "any" ||
-          function->name == "all" || function->name == "is_missing" ||
+          function->name == "last" || function->name == "is_missing" ||
           function->name == "require")
         fail("“" + function->name + "”由语言保留，请换一个函数名");
       if (functions_.count(function->name))
@@ -827,7 +821,7 @@ class Inference {
         fail("内置函数“" + call->callee + "”暂不接受命名参数");
       if (call->callee == "table") {
         if (call->args.size() != 1)
-          fail("table 需要 1 个 Record，但这里给了 " +
+          fail("table 需要 1 个 Record 或 List<Record>，但这里给了 " +
                std::to_string(call->args.size()) + " 个值");
         int input = infer(*call->args[0]);
         if (resolved(input) == Type::List)
@@ -912,26 +906,6 @@ class Inference {
         int element = listElement(list, "fill_missing 的列表");
         unify(element, infer(*call->args[1]), "fill_missing 的替代值");
         unify(result, list, "fill_missing 的结果");
-        return result;
-      }
-      if (call->callee == "where") {
-        if (call->args.size() != 2) fail("where 需要一个 Table 和一个真假值列表");
-        bind(infer(*call->args[0]), Type::Table, "where 的输入");
-        int mask = infer(*call->args[1]);
-        bind(listElement(mask, "where 的筛选条件"), Type::Boolean,
-             "where 的筛选条件");
-        bind(result, Type::Table, "where 的结果");
-        shapeCopies_.push_back({expressions_.at(call->args[0].get()), result});
-        return result;
-      }
-      if (call->callee == "add_column" || call->callee == "replace_column") {
-        const std::string operation = call->callee == "add_column" ? "add" : "replace";
-        if (call->args.size() != 3)
-          fail(operation + " 需要一个 Table、列名和列表");
-        bind(infer(*call->args[0]), Type::Table, operation + " 的输入");
-        bind(infer(*call->args[1]), Type::Text, operation + " 的列名");
-        listElement(infer(*call->args[2]), operation + " 的新列");
-        bind(result, Type::Table, operation + " 的结果");
         return result;
       }
       if (call->callee == "select_columns") {
@@ -1105,15 +1079,10 @@ class Inference {
         presenceOf(*call->args[0]);
         if (call->args.size() == 2) presenceOf(*call->args[1]);
         result = kMaybeMissing;
-      } else if (call->callee == "fill_missing" || call->callee == "where" ||
+      } else if (call->callee == "fill_missing" ||
                  call->callee == "select_columns" || call->callee == "take" ||
                  call->callee == "drop" || call->callee == "sort_by") {
         result = propagate(presenceOf(*call->args[0]), presenceOf(*call->args[1]));
-      } else if (call->callee == "add_column" ||
-                 call->callee == "replace_column") {
-        result = propagate(propagate(presenceOf(*call->args[0]),
-                                    presenceOf(*call->args[1])),
-                           presenceOf(*call->args[2]));
       } else {
         const auto& definition = *definitions_.at(call->callee);
         auto slots = argumentSlots(*call, definition);
@@ -2415,9 +2384,58 @@ struct CodeGenerator::Impl {
                                         "list.operation.status");
     unsigned leftRank = inference->expressionListRank(*binary.lhs);
     unsigned rightRank = inference->expressionListRank(*binary.rhs);
+    auto leafType = [&](const Expr& expression, unsigned rank) {
+      return rank == 0 ? inference->expressionType(expression)
+                       : inference->expressionListElementType(expression);
+    };
+    Type leftLeaf = leafType(*binary.lhs, leftRank);
+    Type rightLeaf = leafType(*binary.rhs, rightRank);
+    bool compactBooleanPair = leftRank == 1 && rightRank == 1 &&
+        leftLeaf == Type::Boolean && rightLeaf == Type::Boolean &&
+        operation >= 4;
+    if (compactBooleanPair) {
+      auto operationFn = external(
+          "lan_boolean_list_binary", llvmType(Type::List),
+          {llvmType(Type::List), llvmType(Type::List), builder.getInt32Ty(),
+           llvm::PointerType::get(context, 0)});
+      auto* result = builder.CreateCall(
+          operationFn, {left.value, right.value, builder.getInt32(operation), status},
+          "boolean.list.operation");
+      requireRuntimeSuccess(builder.CreateLoad(builder.getInt32Ty(), status),
+                            "整列逻辑运算要求 Boolean 元素");
+      return {result, Type::List, kPresent};
+    }
+    bool compactBooleanScalar = std::max(leftRank, rightRank) == 1 &&
+        std::min(leftRank, rightRank) == 0 && leftLeaf == Type::Boolean &&
+        rightLeaf == Type::Boolean && operation >= 4;
+    if (compactBooleanScalar) {
+      bool listOnLeft = leftRank == 1;
+      auto list = listOnLeft ? left : right;
+      auto scalar = listOnLeft ? right : left;
+      llvm::Value* encodedScalar = nullptr;
+      if (scalar.presence == kPresent) {
+        encodedScalar = builder.CreateAdd(
+            builder.CreateZExt(rawPayload(scalar), builder.getInt32Ty()),
+            builder.getInt32(1), "boolean.scalar.encoded");
+      } else {
+        encodedScalar = builder.CreateZExt(scalar.value, builder.getInt32Ty(),
+                                           "boolean.scalar.encoded");
+      }
+      auto operationFn = external(
+          "lan_boolean_list_scalar_binary", llvmType(Type::List),
+          {llvmType(Type::List), builder.getInt32Ty(), builder.getInt32Ty(),
+           builder.getInt32Ty(), llvm::PointerType::get(context, 0)});
+      auto* result = builder.CreateCall(
+          operationFn,
+          {list.value, encodedScalar, builder.getInt32(listOnLeft ? 1 : 0),
+           builder.getInt32(operation), status},
+          "boolean.list.scalar.operation");
+      requireRuntimeSuccess(builder.CreateLoad(builder.getInt32Ty(), status),
+                            "整列逻辑广播要求 Boolean 元素");
+      return {result, Type::List, kPresent};
+    }
     bool compactNumberPair = leftRank == 1 && rightRank == 1 &&
-        inference->expressionListElementType(*binary.lhs) == Type::Number &&
-        inference->expressionListElementType(*binary.rhs) == Type::Number &&
+        leftLeaf == Type::Number && rightLeaf == Type::Number &&
         operation != 10 && operation != 11;
     if (compactNumberPair) {
       auto operationFn = external(
@@ -2431,12 +2449,6 @@ struct CodeGenerator::Impl {
                             "整列数字运算要求 Number 元素", binary.op == "/");
       return {result, Type::List, kPresent};
     }
-    auto leafType = [&](const Expr& expression, unsigned rank) {
-      return rank == 0 ? inference->expressionType(expression)
-                       : inference->expressionListElementType(expression);
-    };
-    Type leftLeaf = leafType(*binary.lhs, leftRank);
-    Type rightLeaf = leafType(*binary.rhs, rightRank);
     bool compactNumberScalar = std::max(leftRank, rightRank) == 1 &&
         std::min(leftRank, rightRank) == 0 && leftLeaf == Type::Number &&
         rightLeaf == Type::Number && operation <= 3;
@@ -2534,35 +2546,13 @@ struct CodeGenerator::Impl {
   }
 
   TypedValue emitTableTransform(const CallExpr& call) {
-    const std::string displayName = call.callee == "add_column" ? "add"
-                                  : call.callee == "replace_column" ? "replace"
-                                  : call.callee;
+    const std::string& displayName = call.callee;
     auto table = requirePresent(emitExpr(*call.args[0]),
                                 "操作“" + displayName + "”的 Table");
     auto* status = builder.CreateAlloca(builder.getInt32Ty(), nullptr,
                                         "table.operation.status");
     llvm::Value* result = nullptr;
-    if (call.callee == "where") {
-      auto mask = requirePresent(emitExpr(*call.args[1]), "where 的筛选条件");
-      auto function = external("lan_table_where", llvmType(Type::Table),
-          {llvmType(Type::Table), llvmType(Type::List),
-           llvm::PointerType::get(context, 0)});
-      result = builder.CreateCall(function, {table.value, mask.value, status},
-                                  "filtered.table");
-    } else if (call.callee == "add_column" ||
-               call.callee == "replace_column") {
-      const std::string operation = call.callee == "add_column" ? "add" : "replace";
-      auto name = requirePresent(emitExpr(*call.args[1]), operation + " 的列名");
-      auto column = requirePresent(emitExpr(*call.args[2]), operation + " 的新列");
-      auto function = external("lan_table_update_column", llvmType(Type::Table),
-          {llvmType(Type::Table), llvmType(Type::Text), llvmType(Type::List),
-           builder.getInt32Ty(),
-           llvm::PointerType::get(context, 0)});
-      result = builder.CreateCall(function,
-          {table.value, name.value, column.value,
-           builder.getInt32(call.callee == "replace_column"), status},
-          "table.updated.column");
-    } else if (call.callee == "select_columns") {
+    if (call.callee == "select_columns") {
       auto names = requirePresent(emitExpr(*call.args[1]),
                                   "select_columns 的列名列表");
       auto function = external("lan_table_select_columns", llvmType(Type::Table),
@@ -3119,9 +3109,7 @@ struct CodeGenerator::Impl {
         return call->args.size() == 1 ? emitListAggregate(*call)
                                       : emitTableAggregate(*call);
       if (call->callee == "fill_missing") return emitFillMissing(*call);
-      if (call->callee == "where" || call->callee == "add_column" ||
-          call->callee == "replace_column" ||
-          call->callee == "select_columns" || call->callee == "take" ||
+      if (call->callee == "select_columns" || call->callee == "take" ||
           call->callee == "drop" || call->callee == "sort_by")
         return emitTableTransform(*call);
       if (call->callee == "length") {

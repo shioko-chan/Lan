@@ -983,6 +983,111 @@ void* lan_number_list_binary(void* left_pointer, void* right_pointer,
   return result;
 }
 
+void* lan_boolean_list_binary(void* left_pointer, void* right_pointer,
+                              int32_t operation, int32_t* status) {
+  LanList* left = left_pointer;
+  LanList* right = right_pointer;
+  *status = 0;
+  diagnostic_error_index = -1;
+  if (!left || !right || left->storage_tag != LAN_BOOLEAN ||
+      right->storage_tag != LAN_BOOLEAN ||
+      (operation != 4 && operation != 5 && operation != 10 &&
+       operation != 11 && operation != 12)) {
+    *status = -3;
+    return NULL;
+  }
+
+  uint64_t length = left->length < right->length
+      ? left->length : right->length;
+  const uint8_t* restrict a = left->elements;
+  const uint8_t* restrict b = right->elements;
+  LanList* result = make_typed_list(length, LAN_BOOLEAN);
+  uint8_t* restrict values = result->elements;
+
+  if (operation == 4) {
+#pragma clang loop vectorize(enable)
+    for (uint64_t i = 0; i < length; ++i)
+      values[i] = a[i] && b[i] ? (a[i] == b[i] ? 2 : 1) : 0;
+    return result;
+  }
+  if (operation == 5) {
+#pragma clang loop vectorize(enable)
+    for (uint64_t i = 0; i < length; ++i)
+      values[i] = a[i] && b[i] ? (a[i] != b[i] ? 2 : 1) : 0;
+    return result;
+  }
+  if (operation == 10) {
+#pragma clang loop vectorize(enable)
+    for (uint64_t i = 0; i < length; ++i)
+      values[i] = a[i] == 1 || b[i] == 1
+          ? 1 : (a[i] == 0 || b[i] == 0 ? 0 : 2);
+    return result;
+  }
+  if (operation == 11) {
+#pragma clang loop vectorize(enable)
+    for (uint64_t i = 0; i < length; ++i)
+      values[i] = a[i] == 2 || b[i] == 2
+          ? 2 : (a[i] == 0 || b[i] == 0 ? 0 : 1);
+    return result;
+  }
+#pragma clang loop vectorize(enable)
+  for (uint64_t i = 0; i < length; ++i)
+    values[i] = a[i] ? a[i] : b[i];
+  return result;
+}
+
+void* lan_boolean_list_scalar_binary(void* list_pointer, int32_t scalar,
+                                     int32_t list_on_left, int32_t operation,
+                                     int32_t* status) {
+  LanList* source = list_pointer;
+  *status = 0;
+  diagnostic_error_index = -1;
+  if (!source || source->storage_tag != LAN_BOOLEAN || scalar < 0 || scalar > 2 ||
+      (operation != 4 && operation != 5 && operation != 10 &&
+       operation != 11 && operation != 12)) {
+    *status = -3;
+    return NULL;
+  }
+
+  uint64_t length = source->length;
+  const uint8_t* restrict input = source->elements;
+  LanList* result = make_typed_list(length, LAN_BOOLEAN);
+  uint8_t* restrict values = result->elements;
+
+  if (operation == 4) {
+#pragma clang loop vectorize(enable)
+    for (uint64_t i = 0; i < length; ++i)
+      values[i] = input[i] && scalar ? (input[i] == scalar ? 2 : 1) : 0;
+    return result;
+  }
+  if (operation == 5) {
+#pragma clang loop vectorize(enable)
+    for (uint64_t i = 0; i < length; ++i)
+      values[i] = input[i] && scalar ? (input[i] != scalar ? 2 : 1) : 0;
+    return result;
+  }
+  if (operation == 10) {
+#pragma clang loop vectorize(enable)
+    for (uint64_t i = 0; i < length; ++i)
+      values[i] = input[i] == 1 || scalar == 1
+          ? 1 : (input[i] == 0 || scalar == 0 ? 0 : 2);
+    return result;
+  }
+  if (operation == 11) {
+#pragma clang loop vectorize(enable)
+    for (uint64_t i = 0; i < length; ++i)
+      values[i] = input[i] == 2 || scalar == 2
+          ? 2 : (input[i] == 0 || scalar == 0 ? 0 : 1);
+    return result;
+  }
+#pragma clang loop vectorize(enable)
+  for (uint64_t i = 0; i < length; ++i)
+    values[i] = list_on_left
+        ? (input[i] ? input[i] : (uint8_t)scalar)
+        : (scalar ? (uint8_t)scalar : input[i]);
+  return result;
+}
+
 void* lan_number_list_scalar_binary(void* list_pointer, double scalar,
                                     int32_t list_on_left, int32_t operation,
                                     int32_t* status) {
@@ -1177,24 +1282,6 @@ void* lan_table_where(void* record, void* mask_pointer, int32_t* status) {
     if (value.tag == LAN_BOOLEAN && value.number != 0) ++kept;
   }
   return table_map_lists(record, 0, 0, mask, kept, NULL);
-}
-
-void* lan_table_update_column(void* record, const char* key, void* list_pointer,
-                              int32_t replace, int32_t* status) {
-  LanList* list = list_pointer;
-  uint64_t rows = 0;
-  int32_t has_column = 0;
-  LanValue existing;
-  *status = 0;
-  if (!list || !validate_table_node(record, &rows, &has_column) ||
-      (has_column && list->length != rows)) {
-    *status = -1; return NULL;
-  }
-  int32_t exists = lan_record_lookup(record, key, &existing);
-  if ((!replace && exists) || (replace && !exists)) {
-    *status = -2; return NULL;
-  }
-  return lan_record_assoc(record, key, LAN_LIST, 0, list);
 }
 
 void* lan_table_select_columns(void* record, void* names_pointer, int32_t* status) {

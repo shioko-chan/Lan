@@ -1,6 +1,9 @@
 combine(count, min, max, add, replace, where) =
   count + min + max + add + replace + where
 
+map(value) = value + 1
+where(value) = value + 2
+
 {count = 1;
 min = 2;
 max = 3;
@@ -12,5 +15,6 @@ stats = {count: count, min: min, add: add, replace: replace, where: where};
 {
   aggregate: values |> count(),
   fields: stats.count + stats.min + stats.add + stats.replace + stats.where,
+  functions: map(1) + where(1),
   parameters: combine(count, min, max, add, replace, where)
 }}
