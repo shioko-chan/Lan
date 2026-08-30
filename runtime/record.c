@@ -674,6 +674,30 @@ static LanValue scalar_binary(LanValue a, LanValue b, int32_t operation,
   return value;
 }
 
+static int32_t binary_leaf_tag(LanValue value, uint32_t rank) {
+  if (rank == 0) return value.tag;
+  if (value.tag != LAN_LIST || !value.pointer) return LAN_MISSING;
+  LanList* list = value.pointer;
+  return rank == 1 ? list->storage_tag : LAN_LIST;
+}
+
+static int32_t binary_result_storage_tag(LanValue a, uint32_t a_rank,
+                                         LanValue b, uint32_t b_rank,
+                                         int32_t operation) {
+  uint32_t result_rank = a_rank > b_rank ? a_rank : b_rank;
+  if (result_rank > 1) return LAN_LIST;
+  if (operation >= 4 && operation <= 11) return LAN_BOOLEAN;
+
+  int32_t a_tag = binary_leaf_tag(a, a_rank);
+  int32_t b_tag = binary_leaf_tag(b, b_rank);
+  int32_t element_tag = a_tag == LAN_MISSING ? b_tag : a_tag;
+  if (element_tag == LAN_NUMBER || element_tag == LAN_BOOLEAN ||
+      element_tag == LAN_TEXT || element_tag == LAN_LIST ||
+      element_tag == LAN_RECORD)
+    return element_tag;
+  return LAN_MISSING;
+}
+
 static LanValue recursive_binary(LanValue a, uint32_t a_rank,
                                  LanValue b, uint32_t b_rank,
                                  int32_t operation, int32_t* status) {
@@ -691,7 +715,9 @@ static LanValue recursive_binary(LanValue a, uint32_t a_rank,
       *status = -3; return (LanValue){LAN_MISSING, 0, NULL};
     }
     LanList* source = a.pointer;
-    LanList* result = make_list(source->length);
+    LanList* result = make_typed_list(
+        source->length,
+        binary_result_storage_tag(a, a_rank, b, b_rank, operation));
     for (uint64_t i = 0; i < source->length; ++i)
       store_list_value(result, i, recursive_binary(
           load_list_value(source, i), a_rank - 1, b, b_rank, operation, status));
@@ -703,7 +729,9 @@ static LanValue recursive_binary(LanValue a, uint32_t a_rank,
       *status = -3; return (LanValue){LAN_MISSING, 0, NULL};
     }
     LanList* source = b.pointer;
-    LanList* result = make_list(source->length);
+    LanList* result = make_typed_list(
+        source->length,
+        binary_result_storage_tag(a, a_rank, b, b_rank, operation));
     for (uint64_t i = 0; i < source->length; ++i)
       store_list_value(result, i, recursive_binary(
           a, a_rank, load_list_value(source, i), b_rank - 1, operation, status));
@@ -717,7 +745,9 @@ static LanValue recursive_binary(LanValue a, uint32_t a_rank,
       *status = -3; return (LanValue){LAN_MISSING, 0, NULL};
     }
     LanList* source = b.pointer;
-    LanList* result = make_list(source->length);
+    LanList* result = make_typed_list(
+        source->length,
+        binary_result_storage_tag(a, a_rank, b, b_rank, operation));
     for (uint64_t i = 0; i < source->length; ++i)
       store_list_value(result, i, recursive_binary(
           a, a_rank - 1, load_list_value(source, i), b_rank - 1, operation, status));
@@ -728,7 +758,9 @@ static LanValue recursive_binary(LanValue a, uint32_t a_rank,
       *status = -3; return (LanValue){LAN_MISSING, 0, NULL};
     }
     LanList* source = a.pointer;
-    LanList* result = make_list(source->length);
+    LanList* result = make_typed_list(
+        source->length,
+        binary_result_storage_tag(a, a_rank, b, b_rank, operation));
     for (uint64_t i = 0; i < source->length; ++i)
       store_list_value(result, i, recursive_binary(
           load_list_value(source, i), a_rank - 1, b, b_rank - 1, operation, status));
@@ -742,7 +774,8 @@ static LanValue recursive_binary(LanValue a, uint32_t a_rank,
   LanList* left = a.pointer;
   LanList* right = b.pointer;
   uint64_t length = left->length < right->length ? left->length : right->length;
-  LanList* result = make_list(length);
+  LanList* result = make_typed_list(
+      length, binary_result_storage_tag(a, a_rank, b, b_rank, operation));
   for (uint64_t i = 0; i < length; ++i)
     store_list_value(result, i, recursive_binary(
         load_list_value(left, i), a_rank - 1, load_list_value(right, i), b_rank - 1,
@@ -762,6 +795,49 @@ void* lan_list_binary(int32_t a_tag, double a_number, void* a_pointer,
   return result.pointer;
 }
 
+void* lan_flat_list_binary(int32_t a_tag, double a_number, void* a_pointer,
+                           uint32_t a_rank, int32_t b_tag, double b_number,
+                           void* b_pointer, uint32_t b_rank,
+                           int32_t operation, int32_t* status) {
+  LanValue a = {a_tag, a_number, a_pointer};
+  LanValue b = {b_tag, b_number, b_pointer};
+  *status = 0;
+  if ((a_rank > 1 || b_rank > 1) || (a_rank == 0 && b_rank == 0)) {
+    *status = -3;
+    return NULL;
+  }
+
+  LanList* left = a_rank == 1 ? a.pointer : NULL;
+  LanList* right = b_rank == 1 ? b.pointer : NULL;
+  if ((left && left->storage_tag == LAN_MISSING) ||
+      (right && right->storage_tag == LAN_MISSING) ||
+      (a_rank == 1 && (!left || a.tag != LAN_LIST)) ||
+      (b_rank == 1 && (!right || b.tag != LAN_LIST))) {
+    *status = -3;
+    return NULL;
+  }
+
+  uint64_t length = left ? left->length : right->length;
+  if (left && right && right->length < length) length = right->length;
+  int32_t storage_tag = binary_result_storage_tag(
+      a, a_rank, b, b_rank, operation);
+  if (storage_tag == LAN_MISSING || storage_tag == LAN_LIST ||
+      storage_tag == LAN_RECORD) {
+    *status = -3;
+    return NULL;
+  }
+
+  LanList* result = make_typed_list(length, storage_tag);
+  for (uint64_t i = 0; i < length; ++i) {
+    LanValue left_value = left ? load_list_value(left, i) : a;
+    LanValue right_value = right ? load_list_value(right, i) : b;
+    LanValue value = scalar_binary(left_value, right_value, operation, status);
+    if (*status) return NULL;
+    store_list_value(result, i, value);
+  }
+  return result;
+}
+
 void* lan_number_list_binary(void* left_pointer, void* right_pointer,
                              int32_t operation, int32_t* status) {
   LanList* left = left_pointer;
@@ -770,9 +846,8 @@ void* lan_number_list_binary(void* left_pointer, void* right_pointer,
   if (!left || !right || left->storage_tag != LAN_NUMBER ||
       right->storage_tag != LAN_NUMBER || operation < 0 || operation > 12 ||
       operation == 10 || operation == 11) {
-    return lan_list_binary(LAN_LIST, 0, left_pointer, 1,
-                           LAN_LIST, 0, right_pointer, 1,
-                           operation, status);
+    *status = -3;
+    return NULL;
   }
 
   uint64_t length = left->length < right->length
@@ -839,7 +914,10 @@ static LanValue recursive_unary(LanValue value, uint32_t rank,
     *status = -2; return (LanValue){LAN_MISSING, 0, NULL};
   }
   LanList* source = value.pointer;
-  LanList* result = make_list(source->length);
+  int32_t storage_tag = rank > 1 ? LAN_LIST : source->storage_tag;
+  if (rank == 1 && storage_tag != LAN_NUMBER && storage_tag != LAN_BOOLEAN)
+    storage_tag = LAN_MISSING;
+  LanList* result = make_typed_list(source->length, storage_tag);
   for (uint64_t i = 0; i < source->length; ++i)
     store_list_value(result, i, recursive_unary(
         load_list_value(source, i), rank - 1, operation, status));

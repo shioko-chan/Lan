@@ -7,7 +7,7 @@ if(NOT run_result EQUAL 0)
   message(FATAL_ERROR "compact ABI program failed: ${run_error}")
 endif()
 if(NOT run_output MATCHES
-   "calculated: \\[11, missing, 33\\].*flags: \\[true, missing, false, true\\].*nested: \\[\\[1\\], missing\\].*numbers: \\[1, missing, 3\\].*texts: \\[\"A\", missing, \"B\", \"C\", \"D\"\\]")
+   "calculated: \\[11, missing, 33\\].*flags: \\[true, missing, false, true\\].*labels: \\[\"A!\", missing, \"B!\", \"C!\", \"D!\"\\].*nested: \\[\\[1\\], missing\\].*numbers: \\[1, missing, 3\\].*scaled: \\[11, missing, 13\\].*scaled_again: \\[12, missing, 16\\].*texts: \\[\"A\", missing, \"B\", \"C\", \"D\"\\].*truths: \\[true, missing, false, true\\]")
   message(FATAL_ERROR "unexpected compact ABI output: ${run_output}")
 endif()
 
@@ -59,6 +59,12 @@ endif()
 # vectorizes its presence-aware arithmetic loop on the current target.
 if(NOT main_ir MATCHES "call ptr @lan_number_list_binary\\(")
   message(FATAL_ERROR "flat Number operation used the dynamic recursive path")
+endif()
+string(REGEX MATCHALL "call ptr @lan_flat_list_binary\\(" flat_calls "${main_ir}")
+list(LENGTH flat_calls flat_count)
+if(flat_count LESS 3)
+  message(FATAL_ERROR
+          "expected Number/Boolean/Text scalar broadcasts to use the flat compact path")
 endif()
 if(NOT ir MATCHES "load <[0-9]+ x double>" OR
    NOT ir MATCHES "llvm.loop.isvectorized")

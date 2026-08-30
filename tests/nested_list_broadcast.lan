@@ -1,9 +1,11 @@
 {matrix = [[1, 2], [3, 4]];
 row = [1, 2];
+shifted = matrix + row;
 {
   compare: matrix == row,
   reverse_compare: row == matrix,
   add: matrix + row,
+  chained: shifted.0 + [1, 1],
   negative: -matrix,
   defaults: [[1, missing], [missing, 4]] ?? 0,
   text: [["A", "B"], ["C", "D"]] + ["!", "?"],

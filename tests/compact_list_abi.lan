@@ -3,10 +3,18 @@ flags = [true, missing, false, true];
 texts = ["A", missing, "B", "C", "D"];
 nested = [[1], missing];
 calculated = numbers + [10, 20, 30];
+scaled = numbers + 10;
+scaled_again = scaled + [1, 2, 3];
+truths = flags and true;
+labels = texts + "!";
 {
   calculated: calculated,
   numbers: numbers,
   flags: flags,
   texts: texts,
-  nested: nested
+  nested: nested,
+  scaled: scaled,
+  scaled_again: scaled_again,
+  truths: truths,
+  labels: labels
 }}

@@ -80,7 +80,8 @@
 - [x] ~~为 `List<Text>`、`List<Record>` 和嵌套 List 使用指针数组及空指针 niche。~~
 - [x] ~~为一维 `List<Number>` 列间算术、比较和 `??` 提供专用循环，并验证 LLVM SIMD 向量化。~~
 - [ ] 将 Number 存在标记和 Boolean 三态编码进一步按位打包；仅在不妨碍向量化时采用。
-- [ ] 扩大紧凑运行时结果覆盖面：标量广播、Text 连接、Boolean 运算和嵌套 List 当前仍可退回动态标签布局。
+- [x] ~~扩大紧凑运行时结果覆盖面：标量广播、Text 连接、Boolean 运算、一元运算和嵌套 List 都按已知叶类型构造结果。~~
+- [ ] 为适合的 Number 标量广播循环增加 SIMD lowering；Text 分配和需要短路的运算保持标量执行。
 - [x] ~~支持 `first(list)`、`last(list)` 及 `items |> first()`、`items |> last()`。~~
 - [x] ~~在集合元素表达式中支持 `.`、`.field`、`.(key)` 和受限的 `name => expression`。~~
 - [x] ~~支持 List/Table 的 `map`、`filter`、`find`、`any` 和 `all`。~~

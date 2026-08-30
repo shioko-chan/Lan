@@ -680,7 +680,14 @@ class Inference {
     if (auto* field = dynamic_cast<const FieldExpr*>(&expr)) {
       int object = infer(*field->record);
       if (field->key) {
-        dynamicAccesses_.push_back({object, infer(*field->key), result});
+        int key = infer(*field->key);
+        if (resolved(object) == Type::List) {
+          bind(key, Type::Number, "List 下标");
+          unify(result, listElement(object, "下标读取左侧"),
+                "List 下标读取结果");
+        } else {
+          dynamicAccesses_.push_back({object, key, result});
+        }
       } else {
         recordLikeVariables_.push_back(object);
         fixedAccesses_.push_back({object, result, field->name});
@@ -2354,6 +2361,34 @@ struct CodeGenerator::Impl {
           "number.list.operation");
       requireRuntimeSuccess(builder.CreateLoad(builder.getInt32Ty(), status),
                             "整列数字运算要求 Number 元素");
+      return {result, Type::List, kPresent};
+    }
+    auto leafType = [&](const Expr& expression, unsigned rank) {
+      return rank == 0 ? inference->expressionType(expression)
+                       : inference->expressionListElementType(expression);
+    };
+    Type leftLeaf = leafType(*binary.lhs, leftRank);
+    Type rightLeaf = leafType(*binary.rhs, rightRank);
+    auto compactLeaf = [](Type type) {
+      return type == Type::Number || type == Type::Boolean || type == Type::Text;
+    };
+    bool compactFlat = std::max(leftRank, rightRank) == 1 &&
+        compactLeaf(leftLeaf) && compactLeaf(rightLeaf);
+    if (compactFlat) {
+      auto operationFn = external(
+          "lan_flat_list_binary", llvmType(Type::List),
+          {builder.getInt32Ty(), builder.getDoubleTy(), llvmType(Type::Text),
+           builder.getInt32Ty(), builder.getInt32Ty(), builder.getDoubleTy(),
+           llvmType(Type::Text), builder.getInt32Ty(), builder.getInt32Ty(),
+           llvm::PointerType::get(context, 0)});
+      auto* result = builder.CreateCall(
+          operationFn,
+          {leftParts[0], leftParts[1], leftParts[2], builder.getInt32(leftRank),
+           rightParts[0], rightParts[1], rightParts[2], builder.getInt32(rightRank),
+           builder.getInt32(operation), status},
+          "flat.list.operation");
+      requireRuntimeSuccess(builder.CreateLoad(builder.getInt32Ty(), status),
+                            "紧凑整列运算的元素类型不正确");
       return {result, Type::List, kPresent};
     }
     auto operationFn = external(

@@ -298,7 +298,7 @@ set_tests_properties(reject_mixed_text_column_concat PROPERTIES WILL_FAIL TRUE)
 add_test(NAME nested_list_broadcast
   COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/nested_list_broadcast.lan)
 set_tests_properties(nested_list_broadcast PROPERTIES PASS_REGULAR_EXPRESSION
-  [=[\{add: \[\[2, 4\], \[4, 6\]\], compare: \[\[true, true\], \[false, false\]\], defaults: \[\[1, 0\], \[0, 4\]\], logic: \[\[true, false\], \[false, false\]\], negative: \[\[-1, -2\], \[-3, -4\]\], ragged: \[\[11, 22\], \[34\]\], reverse_compare: \[\[true, true\], \[false, false\]\], text: \[\["A!", "B\?"\], \["C!", "D\?"\]\]\}]=])
+  [=[\{add: \[\[2, 4\], \[4, 6\]\], chained: \[3, 5\], compare: \[\[true, true\], \[false, false\]\], defaults: \[\[1, 0\], \[0, 4\]\], logic: \[\[true, false\], \[false, false\]\], negative: \[\[-1, -2\], \[-3, -4\]\], ragged: \[\[11, 22\], \[34\]\], reverse_compare: \[\[true, true\], \[false, false\]\], text: \[\["A!", "B\?"\], \["C!", "D\?"\]\]\}]=])
 add_test(NAME structural_same
   COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/structural_same.lan)
 set_tests_properties(structural_same PROPERTIES PASS_REGULAR_EXPRESSION
