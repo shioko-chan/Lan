@@ -4,7 +4,8 @@
 记录在 [`SYNTAX_TODO.md`](SYNTAX_TODO.md)，IO Monad 的完整规则记录在
 [`IO_DESIGN.md`](IO_DESIGN.md)，数学函数规则记录在
 [`MATH_DESIGN.md`](MATH_DESIGN.md)，时间与随机规则记录在
-[`TIME_RANDOM_DESIGN.md`](TIME_RANDOM_DESIGN.md)。
+[`TIME_RANDOM_DESIGN.md`](TIME_RANDOM_DESIGN.md)，正则表达式规则记录在
+[`REGEX_DESIGN.md`](REGEX_DESIGN.md)。
 
 当前标准库以编译器 intrinsic 和随程序链接的运行时函数实现，但这不改变其公开 API
 身份。管道 `value |> operation(args)` 等价于把 `value` 作为第一个输入；建立元素上下文
@@ -34,10 +35,10 @@
 - [x] ~~`find` 从左到右返回第一个匹配元素或 missing。~~
 - [x] ~~`any`、`all` 使用三值逻辑并从左到右短路。~~
 - [x] ~~`concat(left, right)` 连接两个元素类型相同的 List。~~
-- [ ] `flatten(lists)` 只展开一层嵌套 List。
+- [x] ~~`flatten(lists)` 只展开一层嵌套 List；missing 子列表运行时拒绝。~~
 - [x] ~~`reverse(list)` 返回逆序 List。~~
 - [x] ~~将 `take(list, n)` 和 `drop(list, n)` 扩展到 List，并保持操作有界。~~
-- [ ] `sort(list)` 稳定排序 Number 或 Text List，missing 固定放在末尾。
+- [x] ~~`sort(list)` 稳定排序 Number 或 Text List，missing 固定放在末尾。~~
 - [ ] `distinct(list)` 去重并保留每个值第一次出现的位置。
 - [x] ~~不增加 `contains`；使用 `items |> any(. == target)` 表达。~~
 - [x] ~~不增加 `is_empty`；使用 `length(items) == 0` 表达。~~
@@ -50,9 +51,11 @@
 - [x] ~~`trim(text)` 去除首尾 Unicode White_Space。~~
 - [x] ~~`lowercase(text)` 和 `uppercase(text)` 做 Unicode 简单大小写转换。~~
 - [x] ~~`starts_with(text, prefix)` 和 `ends_with(text, suffix)` 判断前后缀。~~
-- [ ] `text_contains(text, part)` 判断是否包含子文本。
+- [x] ~~`text_contains(text, part)` 判断是否包含子文本。~~
 - [x] ~~`split(text, separator)` 返回 `List<Text>`，并拒绝空分隔符。~~
 - [x] ~~`join(parts, separator)` 将不存在 missing 元素的 `List<Text>` 连接成 Text。~~
+- [ ] 按 `REGEX_DESIGN.md` 增加基于 RE2 的不透明 `Regex` 类型、构造和第一阶段匹配 API；
+  ARC 前置条件已经满足。
 
 ## Number
 
@@ -79,8 +82,8 @@
 
 - [x] ~~`fields(record)` 按与 Record 输出一致的确定顺序返回 `List<Text>`。~~
 - [x] ~~`has_field(record, key)` 判断字段是否存在，并区分字段缺失与字段值为 missing。~~
-- [ ] `merge(left, right)` 合并两个 Record；同名字段由右侧覆盖。
-- [ ] `remove_field(record, key)` 返回移除指定字段后的 Record。
+- [x] ~~`merge(left, right)` 合并两个 Record；同名字段由右侧覆盖。~~
+- [x] ~~`remove_field(record, key)` 返回移除指定字段后的 Record。~~
 - [x] ~~不提供 `values(record)`；Record 字段可以异型，无法自然组成单类型 List。~~
 - [x] ~~不单独提供字段数量函数；使用 `length(fields(record))`。~~
 

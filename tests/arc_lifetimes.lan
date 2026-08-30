@@ -1,0 +1,20 @@
+decorate(name, suffix = "!") = {
+  original: name,
+  label: name + suffix
+}
+
+bundle(value) = [{value: value}, {value: value + 1}]
+
+{
+  original = {name: "Alice", nested: {score: 10}};
+  alias = original;
+  original.nested.score = 20;
+  rows = ["A", "B", "C"] |> map(decorate(.));
+  result = {
+    alias_score: alias.nested.score,
+    bundles: [1, 3] |> map(bundle(.)) |> flatten(),
+    labels: rows |> map(.label),
+    updated_score: original.nested.score
+  };
+  result
+}

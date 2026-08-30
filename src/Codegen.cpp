@@ -69,12 +69,14 @@ class Inference {
           function->name == "min" || function->name == "max" ||
           function->name == "count" || function->name == "fill_missing" ||
           function->name == "select_columns" || function->name == "take" ||
-          function->name == "drop" || function->name == "sort_by" ||
+          function->name == "drop" || function->name == "sort" ||
+          function->name == "sort_by" ||
           function->name == "same" || function->name == "first" ||
           function->name == "last" || function->name == "is_missing" ||
           function->name == "require" || function->name == "trim" ||
           function->name == "lowercase" || function->name == "uppercase" ||
           function->name == "starts_with" || function->name == "ends_with" ||
+          function->name == "text_contains" ||
           function->name == "split" || function->name == "join" ||
           function->name == "abs" || function->name == "floor" ||
           function->name == "ceil" || function->name == "round" ||
@@ -88,8 +90,10 @@ class Inference {
           function->name == "radians" || function->name == "degrees" ||
           function->name == "to_text" ||
           function->name == "parse_number" || function->name == "concat" ||
-          function->name == "reverse" || function->name == "fields" ||
-          function->name == "has_field")
+          function->name == "flatten" || function->name == "reverse" ||
+          function->name == "fields" ||
+          function->name == "has_field" || function->name == "merge" ||
+          function->name == "remove_field")
         fail("“" + function->name + "”由语言保留，请换一个函数名");
       if (functions_.count(function->name))
         fail("函数“" + function->name + "”定义了不止一次");
@@ -217,6 +221,13 @@ class Inference {
         fail("字段访问左侧需要 Record 或 Table，但这里得到的是" +
              std::string(typeName(type)));
     }
+    for (int element : sortableListElements_) {
+      Type type = resolved(element);
+      if (type == Type::Unknown) bind(element, Type::Number, "sort 的列表元素");
+      else if (type != Type::Number && type != Type::Text)
+        fail("sort 只能用于 Number 或 Text List，不能用于" +
+             std::string(typeName(type)) + " List");
+    }
     for (const auto& [expression, variable] : expressions_)
       if (dynamic_cast<const FieldExpr*>(expression) && resolved(variable) == Type::Unknown)
         bind(variable, Type::Dynamic, "动态字段");
@@ -296,6 +307,7 @@ class Inference {
   };
   std::vector<DynamicAccess> dynamicAccesses_;
   std::vector<int> tableColumnElements_;
+  std::vector<int> sortableListElements_;
   std::unordered_set<const BinaryExpr*> vectorOperations_;
   struct CollectionConstraint {
     int collection;
@@ -874,6 +886,21 @@ class Inference {
           fail("table 需要 1 个 Record 或 List<Record>，但这里给了 " +
                std::to_string(call->args.size()) + " 个值");
         int input = infer(*call->args[0]);
+        if (auto* literal = dynamic_cast<const RecordExpr*>(call->args[0].get())) {
+          std::optional<std::size_t> knownLength;
+          for (const auto& field : literal->fields) {
+            int column = expressions_.at(field.value.get());
+            bind(column, Type::List,
+                 "Table 字面量的列“" +
+                     (field.key ? std::string("(动态字段)") : field.name) + "”");
+            listElement(column, "Table 字面量的列");
+            if (auto* list = dynamic_cast<const ListExpr*>(field.value.get())) {
+              if (knownLength && *knownLength != list->elements.size())
+                fail("Table 字面量中静态已知的列长度不一致");
+              knownLength = list->elements.size();
+            }
+          }
+        }
         if (resolved(input) == Type::List)
           bind(listElement(input, "table 的行列表"), Type::Record,
                "table 的每一行");
@@ -942,7 +969,8 @@ class Inference {
         bind(result, Type::Text, "函数“" + call->callee + "”的结果");
         return result;
       }
-      if (call->callee == "starts_with" || call->callee == "ends_with") {
+      if (call->callee == "starts_with" || call->callee == "ends_with" ||
+          call->callee == "text_contains") {
         if (call->args.size() != 2)
           fail("函数“" + call->callee + "”需要 Text 和要匹配的 Text");
         bind(infer(*call->args[0]), Type::Text,
@@ -1040,11 +1068,28 @@ class Inference {
         unify(result, left, "concat 的结果");
         return result;
       }
+      if (call->callee == "flatten") {
+        if (call->args.size() != 1)
+          fail("flatten 需要 1 个 List<List<T>>");
+        int input = infer(*call->args[0]);
+        int inner = listElement(input, "flatten 的输入");
+        int element = listElement(inner, "flatten 的输入元素");
+        unify(listElement(result, "flatten 的结果"), element,
+              "flatten 的结果元素");
+        return result;
+      }
       if (call->callee == "reverse") {
         if (call->args.size() != 1) fail("reverse 需要 1 个 List");
         int input = infer(*call->args[0]);
         listElement(input, "reverse 的输入");
         unify(result, input, "reverse 的结果");
+        return result;
+      }
+      if (call->callee == "sort") {
+        if (call->args.size() != 1) fail("sort 需要 1 个 List");
+        int input = infer(*call->args[0]);
+        sortableListElements_.push_back(listElement(input, "sort 的输入"));
+        unify(result, input, "sort 的结果");
         return result;
       }
       if (call->callee == "fields") {
@@ -1059,6 +1104,21 @@ class Inference {
         bind(infer(*call->args[0]), Type::Record, "has_field 的 Record");
         bind(infer(*call->args[1]), Type::Text, "has_field 的字段名");
         bind(result, Type::Boolean, "has_field 的结果");
+        return result;
+      }
+      if (call->callee == "merge") {
+        if (call->args.size() != 2) fail("merge 需要两个 Record");
+        bind(infer(*call->args[0]), Type::Record, "merge 的左侧");
+        bind(infer(*call->args[1]), Type::Record, "merge 的右侧");
+        bind(result, Type::Record, "merge 的结果");
+        return result;
+      }
+      if (call->callee == "remove_field") {
+        if (call->args.size() != 2)
+          fail("remove_field 需要 Record 和字段名");
+        bind(infer(*call->args[0]), Type::Record, "remove_field 的 Record");
+        bind(infer(*call->args[1]), Type::Text, "remove_field 的字段名");
+        bind(result, Type::Record, "remove_field 的结果");
         return result;
       }
       if (call->callee == "first" || call->callee == "last") {
@@ -1272,13 +1332,17 @@ class Inference {
                  call->callee == "asin" || call->callee == "acos" ||
                  call->callee == "atan" || call->callee == "radians" ||
                  call->callee == "degrees" ||
-                 call->callee == "to_text" || call->callee == "reverse" ||
+                 call->callee == "to_text" || call->callee == "flatten" ||
+                 call->callee == "reverse" || call->callee == "sort" ||
                  call->callee == "fields") {
         result = presenceOf(*call->args[0]);
       } else if (call->callee == "starts_with" ||
-                 call->callee == "ends_with" || call->callee == "split" ||
+                 call->callee == "ends_with" ||
+                 call->callee == "text_contains" ||
+                 call->callee == "split" ||
                  call->callee == "join" || call->callee == "concat" ||
-                 call->callee == "has_field") {
+                 call->callee == "has_field" || call->callee == "merge" ||
+                 call->callee == "remove_field") {
         result = propagate(presenceOf(*call->args[0]),
                            presenceOf(*call->args[1]));
       } else if (call->callee == "round") {
@@ -1581,7 +1645,8 @@ struct CodeGenerator::Impl {
       listIndex = builder.CreateCall(indexFn, {}, "error.list.index");
     } else if (auto* call = dynamic_cast<const CallExpr*>(
                    currentDiagnosticExpression);
-               call && call->callee == "join") {
+               call && (call->callee == "join" ||
+                        call->callee == "flatten")) {
       auto indexFn = external("lan_diagnostic_error_index", builder.getInt64Ty(), {});
       listIndex = builder.CreateCall(indexFn, {}, "error.list.index");
     }
@@ -1662,7 +1727,8 @@ struct CodeGenerator::Impl {
     if (!listType) {
       listType = llvm::StructType::create(context, "lan.list");
       listType->setBody({builder.getInt64Ty(), llvmType(Type::Text),
-                         builder.getInt32Ty(), llvmType(Type::Text)});
+                         builder.getInt32Ty(), llvmType(Type::Text),
+                         builder.getInt32Ty()});
     }
     return listType;
   }
@@ -1679,6 +1745,48 @@ struct CodeGenerator::Impl {
       case Type::Unknown: break;
     }
     throw std::runtime_error("内部错误：列表元素类型未知");
+  }
+
+  llvm::Value* adoptHeap(llvm::Value* pointer, Type type) {
+    auto adopt = external("lan_arc_adopt", builder.getVoidTy(),
+        {builder.getInt32Ty(), builder.getDoubleTy(), llvmType(Type::Text)});
+    builder.CreateCall(adopt,
+        {builder.getInt32(tagFor(type)),
+         llvm::ConstantFP::get(builder.getDoubleTy(), 0.0), pointer});
+    return pointer;
+  }
+
+  TypedValue adoptValue(TypedValue value) {
+    if (value.type != Type::Text && value.type != Type::List &&
+        value.type != Type::Record && value.type != Type::Table &&
+        value.type != Type::Dynamic)
+      return value;
+    auto parts = dynamicParts(value);
+    auto adopt = external("lan_arc_adopt", builder.getVoidTy(),
+        {builder.getInt32Ty(), builder.getDoubleTy(), llvmType(Type::Text)});
+    builder.CreateCall(adopt, {parts[0], parts[1], parts[2]});
+    return value;
+  }
+
+  void beginArcFrame() {
+    auto push = external("lan_arc_push", builder.getVoidTy(), {});
+    builder.CreateCall(push, {});
+  }
+
+  void endArcFrame(const TypedValue* returned = nullptr) {
+    llvm::Value* tag = builder.getInt32(0);
+    llvm::Value* number = llvm::ConstantFP::get(builder.getDoubleTy(), 0.0);
+    llvm::Value* pointer = llvm::ConstantPointerNull::get(
+        llvm::cast<llvm::PointerType>(llvmType(Type::Text)));
+    if (returned) {
+      auto parts = dynamicParts(*returned);
+      tag = parts[0];
+      number = parts[1];
+      pointer = parts[2];
+    }
+    auto pop = external("lan_arc_pop", builder.getVoidTy(),
+        {builder.getInt32Ty(), builder.getDoubleTy(), llvmType(Type::Text)});
+    builder.CreateCall(pop, {tag, number, pointer});
   }
 
   llvm::Value* allocate(llvm::Value* size, const std::string& name) {
@@ -1730,7 +1838,7 @@ struct CodeGenerator::Impl {
       builder.CreateCall(releaseFn, {root});
       root = updated;
     }
-    return root;
+    return adoptHeap(root, Type::Record);
   }
 
   llvm::Value* fieldKey(const std::string& name, const Expr* key) {
@@ -1830,9 +1938,10 @@ struct CodeGenerator::Impl {
                             {llvmType(Type::Record), llvmType(Type::Text),
                              builder.getInt32Ty(), builder.getDoubleTy(),
                              llvmType(Type::Text)});
-    return {builder.CreateCall(assocFn,
-                               {record.value, key, parts[0], parts[1], parts[2]},
-                               "record.update"),
+    auto* result = builder.CreateCall(
+        assocFn, {record.value, key, parts[0], parts[1], parts[2]},
+        "record.update");
+    return {adoptHeap(result, Type::Record),
             Type::Record, kPresent};
   }
 
@@ -1858,10 +1967,10 @@ struct CodeGenerator::Impl {
                              llvmType(Type::Text)});
     for (std::size_t i = keys.size(); i-- > 0;) {
       auto parts = dynamicParts(current);
-      current = {builder.CreateCall(
-                     assocFn,
-                     {records[i], keys[i], parts[0], parts[1], parts[2]},
-                     "record.nested.update"),
+      auto* result = builder.CreateCall(
+          assocFn, {records[i], keys[i], parts[0], parts[1], parts[2]},
+          "record.nested.update");
+      current = {adoptHeap(result, Type::Record),
                  Type::Record, kPresent};
     }
     return current;
@@ -1920,6 +2029,12 @@ struct CodeGenerator::Impl {
     builder.CreateStore(
         presence,
         builder.CreateStructGEP(listStorage, list, 3));
+    builder.CreateStore(builder.getInt32(1),
+                        builder.CreateStructGEP(listStorage, list, 4));
+    auto noteAllocation = external("lan_arc_note_object_allocated",
+                                   builder.getVoidTy(), {});
+    builder.CreateCall(noteAllocation, {});
+    adoptHeap(list, Type::List);
     return {list, data, presence, storageType};
   }
 
@@ -1947,6 +2062,10 @@ struct CodeGenerator::Impl {
     }
     if (storage.elementType == Type::Text || storage.elementType == Type::List ||
         storage.elementType == Type::Record) {
+      auto parts = dynamicParts(value);
+      auto retain = external("lan_value_retain", builder.getVoidTy(),
+          {builder.getInt32Ty(), builder.getDoubleTy(), llvmType(Type::Text)});
+      builder.CreateCall(retain, {parts[0], parts[1], parts[2]});
       auto* slot = builder.CreateGEP(llvmType(Type::Text), storage.data, index,
                                      "pointer.output");
       builder.CreateStore(rawPayload(value), slot);
@@ -1955,6 +2074,9 @@ struct CodeGenerator::Impl {
     auto* slot = builder.CreateGEP(taggedValueType(), storage.data, index,
                                    "element.output");
     auto parts = dynamicParts(value);
+    auto retain = external("lan_value_retain", builder.getVoidTy(),
+        {builder.getInt32Ty(), builder.getDoubleTy(), llvmType(Type::Text)});
+    builder.CreateCall(retain, {parts[0], parts[1], parts[2]});
     builder.CreateStore(parts[0], builder.CreateStructGEP(taggedValueType(), slot, 0));
     builder.CreateStore(parts[1], builder.CreateStructGEP(taggedValueType(), slot, 1));
     builder.CreateStore(parts[2], builder.CreateStructGEP(taggedValueType(), slot, 2));
@@ -2008,7 +2130,7 @@ struct CodeGenerator::Impl {
     auto* row = builder.CreateCall(rowFn, {table, index, status}, "table.row");
     requireRuntimeSuccess(builder.CreateLoad(builder.getInt32Ty(), status),
                           "无法读取 Table 行");
-    return {row, Type::Record, kPresent};
+    return {adoptHeap(row, Type::Record), Type::Record, kPresent};
   }
 
   const LazyTableRow* lazyTableRow(const std::string& name) const {
@@ -2135,6 +2257,7 @@ struct CodeGenerator::Impl {
            builder.getInt32(expression.operation == CollectionOperation::Replace),
            status},
           "row.updated");
+      adoptHeap(merged, Type::Record);
       requireRuntimeSuccess(builder.CreateLoad(builder.getInt32Ty(), status),
                             expression.operation == CollectionOperation::Add
                                 ? "add 不能添加已经存在的字段"
@@ -2166,7 +2289,7 @@ struct CodeGenerator::Impl {
           {receiver.value, mapped, status}, "collection.filtered");
       requireRuntimeSuccess(builder.CreateLoad(builder.getInt32Ty(), status),
                             "filter 条件必须产生 Boolean 或 missing");
-      return {filtered, receiver.type, kPresent};
+      return {adoptHeap(filtered, receiver.type), receiver.type, kPresent};
     }
 
     auto* status = builder.CreateAlloca(builder.getInt32Ty(), nullptr,
@@ -2177,7 +2300,7 @@ struct CodeGenerator::Impl {
     auto* table = builder.CreateCall(tableFn, {mapped, status}, "rows.to.table");
     requireRuntimeSuccess(builder.CreateLoad(builder.getInt32Ty(), status),
                           "Table 的所有行必须具有相同字段和列类型");
-    return {table, Type::Table, kPresent};
+    return {adoptHeap(table, Type::Table), Type::Table, kPresent};
   }
 
   TypedValue emitShortCircuitCollection(const CollectionExpr& expression,
@@ -2375,7 +2498,7 @@ struct CodeGenerator::Impl {
       builder.CreateCall(releaseFn, {result});
       result = updated;
     }
-    return {result, Type::Table, kPresent};
+    return {adoptHeap(result, Type::Table), Type::Table, kPresent};
   }
 
   TypedValue emitFusedComputedTable(const CollectionExpr& map) {
@@ -2434,7 +2557,7 @@ struct CodeGenerator::Impl {
       builder.CreateCall(releaseFn, {result});
       result = updated;
     }
-    return {result, Type::Table, kPresent};
+    return {adoptHeap(result, Type::Table), Type::Table, kPresent};
   }
 
   TypedValue emitTableValidation(const CallExpr& call) {
@@ -2455,7 +2578,7 @@ struct CodeGenerator::Impl {
                                        "table.from.rows");
       requireRuntimeSuccess(builder.CreateLoad(builder.getInt32Ty(), status),
                             "table 的所有行必须具有相同字段和列类型");
-      return {table, Type::Table, kPresent};
+      return {adoptHeap(table, Type::Table), Type::Table, kPresent};
     }
     auto record = input;
     auto* rows = builder.CreateAlloca(builder.getInt64Ty(), nullptr, "table.rows");
@@ -2633,7 +2756,7 @@ struct CodeGenerator::Impl {
           "boolean.list.operation");
       requireRuntimeSuccess(builder.CreateLoad(builder.getInt32Ty(), status),
                             "整列逻辑运算要求 Boolean 元素");
-      return {result, Type::List, kPresent};
+      return {adoptHeap(result, Type::List), Type::List, kPresent};
     }
     bool compactBooleanScalar = std::max(leftRank, rightRank) == 1 &&
         std::min(leftRank, rightRank) == 0 && leftLeaf == Type::Boolean &&
@@ -2662,7 +2785,7 @@ struct CodeGenerator::Impl {
           "boolean.list.scalar.operation");
       requireRuntimeSuccess(builder.CreateLoad(builder.getInt32Ty(), status),
                             "整列逻辑广播要求 Boolean 元素");
-      return {result, Type::List, kPresent};
+      return {adoptHeap(result, Type::List), Type::List, kPresent};
     }
     bool compactNumberPair = leftRank == 1 && rightRank == 1 &&
         leftLeaf == Type::Number && rightLeaf == Type::Number &&
@@ -2678,7 +2801,7 @@ struct CodeGenerator::Impl {
       requireRuntimeSuccess(builder.CreateLoad(builder.getInt32Ty(), status),
                             "整列数字运算要求 Number 元素",
                             binary.op == "/" || binary.op == "%");
-      return {result, Type::List, kPresent};
+      return {adoptHeap(result, Type::List), Type::List, kPresent};
     }
     bool compactNumberScalar = std::max(leftRank, rightRank) == 1 &&
         std::min(leftRank, rightRank) == 0 && leftLeaf == Type::Number &&
@@ -2699,7 +2822,7 @@ struct CodeGenerator::Impl {
       requireRuntimeSuccess(builder.CreateLoad(builder.getInt32Ty(), status),
                             "整列数字广播要求 Number 元素",
                             binary.op == "/" || binary.op == "%");
-      return {result, Type::List, kPresent};
+      return {adoptHeap(result, Type::List), Type::List, kPresent};
     }
     auto compactLeaf = [](Type type) {
       return type == Type::Number || type == Type::Boolean || type == Type::Text;
@@ -2722,7 +2845,7 @@ struct CodeGenerator::Impl {
       requireRuntimeSuccess(builder.CreateLoad(builder.getInt32Ty(), status),
                             "紧凑整列运算的元素类型不正确",
                             binary.op == "/" || binary.op == "%");
-      return {result, Type::List, kPresent};
+      return {adoptHeap(result, Type::List), Type::List, kPresent};
     }
     auto operationFn = external(
         "lan_list_binary", llvmType(Type::List),
@@ -2741,7 +2864,7 @@ struct CodeGenerator::Impl {
     requireRuntimeSuccess(builder.CreateLoad(builder.getInt32Ty(), status),
                           "整列运算要求元素类型正确",
                           binary.op == "/" || binary.op == "%");
-    return {result, Type::List, kPresent};
+    return {adoptHeap(result, Type::List), Type::List, kPresent};
   }
 
   TypedValue emitListUnary(const UnaryExpr& unary) {
@@ -2758,7 +2881,7 @@ struct CodeGenerator::Impl {
         "list.unary");
     requireRuntimeSuccess(builder.CreateLoad(builder.getInt32Ty(), status),
                           "一元整列运算的元素类型不正确");
-    return {result, Type::List, kPresent};
+    return {adoptHeap(result, Type::List), Type::List, kPresent};
   }
 
   TypedValue emitFillMissing(const CallExpr& call) {
@@ -2776,18 +2899,22 @@ struct CodeGenerator::Impl {
         {list.value, parts[0], parts[1], parts[2], status}, "filled.column");
     requireRuntimeSuccess(builder.CreateLoad(builder.getInt32Ty(), status),
                           "fill_missing 的替代值必须与列元素类型相同");
-    return {result, Type::List, kPresent};
+    return {adoptHeap(result, Type::List), Type::List, kPresent};
   }
 
   TypedValue emitTextBuiltin(const CallExpr& call) {
-    if (call.callee == "starts_with" || call.callee == "ends_with") {
+    if (call.callee == "starts_with" || call.callee == "ends_with" ||
+        call.callee == "text_contains") {
       auto text = requirePresent(emitExpr(*call.args[0]),
                                  "函数“" + call.callee + "”的 Text");
       auto part = requirePresent(emitExpr(*call.args[1]),
                                  "函数“" + call.callee + "”的匹配内容");
+      const char* runtimeName = call.callee == "starts_with"
+          ? "lan_text_starts_with"
+          : call.callee == "ends_with" ? "lan_text_ends_with"
+                                        : "lan_text_contains";
       auto function = external(
-          call.callee == "starts_with" ? "lan_text_starts_with"
-                                       : "lan_text_ends_with",
+          runtimeName,
           builder.getInt32Ty(), {llvmType(Type::Text), llvmType(Type::Text)});
       auto* result = builder.CreateCall(function, {text.value, part.value},
                                         call.callee + ".result");
@@ -2806,7 +2933,7 @@ struct CodeGenerator::Impl {
           function, {text.value, separator.value, status}, "split.result");
       requireRuntimeSuccess(builder.CreateLoad(builder.getInt32Ty(), status),
                             "split 的分隔符不能为空");
-      return {result, Type::List, kPresent};
+      return {adoptHeap(result, Type::List), Type::List, kPresent};
     }
     if (call.callee == "join") {
       auto parts = requirePresent(emitExpr(*call.args[0]), "join 的 Text List");
@@ -2820,7 +2947,7 @@ struct CodeGenerator::Impl {
           function, {parts.value, separator.value, status}, "join.result");
       requireRuntimeSuccess(builder.CreateLoad(builder.getInt32Ty(), status),
                             "join 的元素必须是存在的 Text");
-      return {result, Type::Text, kPresent};
+      return {adoptHeap(result, Type::Text), Type::Text, kPresent};
     }
     auto text = requirePresent(emitExpr(*call.args[0]),
                                "函数“" + call.callee + "”的输入");
@@ -2841,7 +2968,7 @@ struct CodeGenerator::Impl {
             call.callee + ".result");
     requireRuntimeSuccess(builder.CreateLoad(builder.getInt32Ty(), status),
                           "Text 包含无效的 UTF-8");
-    return {result, Type::Text, kPresent};
+    return {adoptHeap(result, Type::Text), Type::Text, kPresent};
   }
 
   TypedValue emitNumberBuiltin(const CallExpr& call) {
@@ -2941,8 +3068,9 @@ struct CodeGenerator::Impl {
       auto parts = dynamicParts(input);
       auto function = external("lan_value_to_text", llvmType(Type::Text),
           {builder.getInt32Ty(), builder.getDoubleTy(), llvmType(Type::Text)});
-      return {builder.CreateCall(function, {parts[0], parts[1], parts[2]},
-                                 "text.value"),
+      auto* result = builder.CreateCall(
+          function, {parts[0], parts[1], parts[2]}, "text.value");
+      return {adoptHeap(result, Type::Text),
               Type::Text, kPresent};
     }
     auto* output = builder.CreateAlloca(builder.getDoubleTy(), nullptr,
@@ -2965,8 +3093,31 @@ struct CodeGenerator::Impl {
     if (call.callee == "reverse") {
       auto function = external("lan_list_reverse", llvmType(Type::List),
                                {llvmType(Type::List)});
-      return {builder.CreateCall(function, {input.value}, "reversed.list"),
+      auto* result = builder.CreateCall(function, {input.value}, "reversed.list");
+      return {adoptHeap(result, Type::List),
               Type::List, kPresent};
+    }
+    if (call.callee == "flatten") {
+      auto* status = builder.CreateAlloca(builder.getInt32Ty(), nullptr,
+                                          "list.flatten.status");
+      auto function = external("lan_list_flatten", llvmType(Type::List),
+          {llvmType(Type::List), llvm::PointerType::get(context, 0)});
+      auto* result = builder.CreateCall(function, {input.value, status},
+                                        "flattened.list");
+      requireRuntimeSuccess(builder.CreateLoad(builder.getInt32Ty(), status),
+                            "flatten 的子列表不能是 missing");
+      return {adoptHeap(result, Type::List), Type::List, kPresent};
+    }
+    if (call.callee == "sort") {
+      auto* status = builder.CreateAlloca(builder.getInt32Ty(), nullptr,
+                                          "list.sort.status");
+      auto function = external("lan_list_sort", llvmType(Type::List),
+          {llvmType(Type::List), llvm::PointerType::get(context, 0)});
+      auto* result = builder.CreateCall(function, {input.value, status},
+                                        "sorted.list");
+      requireRuntimeSuccess(builder.CreateLoad(builder.getInt32Ty(), status),
+                            "sort 只能用于 Number 或 Text List");
+      return {adoptHeap(result, Type::List), Type::List, kPresent};
     }
     if (call.callee == "concat") {
       auto right = requirePresent(emitExpr(*call.args[1]), "concat 的右侧 List");
@@ -2979,7 +3130,7 @@ struct CodeGenerator::Impl {
           function, {input.value, right.value, status}, "concatenated.list");
       requireRuntimeSuccess(builder.CreateLoad(builder.getInt32Ty(), status),
                             "concat 的两个 List 必须具有相同元素类型");
-      return {result, Type::List, kPresent};
+      return {adoptHeap(result, Type::List), Type::List, kPresent};
     }
     auto amount = requirePresent(emitExpr(*call.args[1]),
                                  "函数“" + call.callee + "”的数量");
@@ -2993,7 +3144,7 @@ struct CodeGenerator::Impl {
         "sliced.list");
     requireRuntimeSuccess(builder.CreateLoad(builder.getInt32Ty(), status),
                           "take/drop 的数量必须是非负整数");
-    return {result, Type::List, kPresent};
+    return {adoptHeap(result, Type::List), Type::List, kPresent};
   }
 
   TypedValue emitRecordBuiltin(const CallExpr& call) {
@@ -3002,10 +3153,31 @@ struct CodeGenerator::Impl {
     if (call.callee == "fields") {
       auto function = external("lan_record_fields", llvmType(Type::List),
                                {llvmType(Type::Record)});
-      return {builder.CreateCall(function, {record.value}, "record.fields"),
+      auto* result = builder.CreateCall(function, {record.value}, "record.fields");
+      return {adoptHeap(result, Type::List),
               Type::List, kPresent};
     }
-    auto key = requirePresent(emitExpr(*call.args[1]), "has_field 的字段名");
+    if (call.callee == "merge") {
+      auto right = requirePresent(emitExpr(*call.args[1]), "merge 的右侧 Record");
+      auto function = external("lan_record_merge", llvmType(Type::Record),
+          {llvmType(Type::Record), llvmType(Type::Record)});
+      auto* result = builder.CreateCall(function, {record.value, right.value},
+                                        "merged.record");
+      return {adoptHeap(result, Type::Record),
+              Type::Record, kPresent};
+    }
+    auto key = requirePresent(
+        emitExpr(*call.args[1]),
+        call.callee == "has_field" ? "has_field 的字段名"
+                                   : "remove_field 的字段名");
+    if (call.callee == "remove_field") {
+      auto function = external("lan_record_remove_field", llvmType(Type::Record),
+          {llvmType(Type::Record), llvmType(Type::Text)});
+      auto* result = builder.CreateCall(function, {record.value, key.value},
+                                        "record.without.field");
+      return {adoptHeap(result, Type::Record),
+              Type::Record, kPresent};
+    }
     auto function = external("lan_record_has_field", builder.getInt32Ty(),
         {llvmType(Type::Record), llvmType(Type::Text)});
     auto* found = builder.CreateCall(function, {record.value, key.value},
@@ -3048,7 +3220,7 @@ struct CodeGenerator::Impl {
     }
     requireRuntimeSuccess(builder.CreateLoad(builder.getInt32Ty(), status),
                           "操作“" + displayName + "”的参数或列不符合要求");
-    return {result, Type::Table, kPresent};
+    return {adoptHeap(result, Type::Table), Type::Table, kPresent};
   }
 
   llvm::Value* emitList(const ListExpr& list) {
@@ -3219,19 +3391,10 @@ struct CodeGenerator::Impl {
   }
 
   llvm::Value* concatenate(llvm::Value* lhs, llvm::Value* rhs) {
-    auto* pointer = llvmType(Type::Text);
-    auto strlenFn = external("strlen", builder.getInt64Ty(), {pointer});
-    auto mallocFn = external("malloc", pointer, {builder.getInt64Ty()});
-    auto strcpyFn = external("strcpy", pointer, {pointer, pointer});
-    auto strcatFn = external("strcat", pointer, {pointer, pointer});
-    auto* leftLength = builder.CreateCall(strlenFn, {lhs}, "text.left.length");
-    auto* rightLength = builder.CreateCall(strlenFn, {rhs}, "text.right.length");
-    auto* total = builder.CreateAdd(leftLength, rightLength, "text.length");
-    total = builder.CreateAdd(total, builder.getInt64(1), "text.space");
-    auto* buffer = builder.CreateCall(mallocFn, {total}, "text.buffer");
-    builder.CreateCall(strcpyFn, {buffer, lhs});
-    builder.CreateCall(strcatFn, {buffer, rhs});
-    return buffer;
+    auto function = external("lan_text_concat", llvmType(Type::Text),
+        {llvmType(Type::Text), llvmType(Type::Text)});
+    auto* result = builder.CreateCall(function, {lhs, rhs}, "text.concat");
+    return adoptHeap(result, Type::Text);
   }
 
   llvm::Value* floorModulo(llvm::Value* lhs, llvm::Value* rhs) {
@@ -3456,8 +3619,13 @@ struct CodeGenerator::Impl {
       return {llvm::ConstantFP::get(builder.getDoubleTy(), number->value), type, kPresent};
     if (auto* boolean = dynamic_cast<const BooleanExpr*>(&expr))
       return {builder.getInt1(boolean->value), type, kPresent};
-    if (auto* text = dynamic_cast<const TextExpr*>(&expr))
-      return {builder.CreateGlobalString(text->value), type, kPresent};
+    if (auto* text = dynamic_cast<const TextExpr*>(&expr)) {
+      auto create = external("lan_text_from_cstr", llvmType(Type::Text),
+                             {llvmType(Type::Text)});
+      auto* value = builder.CreateCall(
+          create, {builder.CreateGlobalString(text->value)}, "text.literal");
+      return {adoptHeap(value, Type::Text), type, kPresent};
+    }
     if (dynamic_cast<const MissingExpr*>(&expr))
       return {missingValue(type), type, kMissing};
     if (auto* list = dynamic_cast<const ListExpr*>(&expr))
@@ -3611,7 +3779,8 @@ struct CodeGenerator::Impl {
       if (call->callee == "fill_missing") return emitFillMissing(*call);
       if (call->callee == "trim" || call->callee == "lowercase" ||
           call->callee == "uppercase" || call->callee == "starts_with" ||
-          call->callee == "ends_with" || call->callee == "split" ||
+          call->callee == "ends_with" || call->callee == "text_contains" ||
+          call->callee == "split" ||
           call->callee == "join")
         return emitTextBuiltin(*call);
       if (call->callee == "abs" || call->callee == "floor" ||
@@ -3627,11 +3796,13 @@ struct CodeGenerator::Impl {
         return emitNumberBuiltin(*call);
       if (call->callee == "to_text" || call->callee == "parse_number")
         return emitConversionBuiltin(*call);
-      if (call->callee == "concat" || call->callee == "reverse" ||
+      if (call->callee == "concat" || call->callee == "flatten" ||
+          call->callee == "reverse" || call->callee == "sort" ||
           ((call->callee == "take" || call->callee == "drop") &&
            inference->expressionType(*call->args[0]) == Type::List))
         return emitListBuiltin(*call);
-      if (call->callee == "fields" || call->callee == "has_field")
+      if (call->callee == "fields" || call->callee == "has_field" ||
+          call->callee == "merge" || call->callee == "remove_field")
         return emitRecordBuiltin(*call);
       if (call->callee == "select_columns" || call->callee == "take" ||
           call->callee == "drop" || call->callee == "sort_by")
@@ -3704,7 +3875,7 @@ struct CodeGenerator::Impl {
       TypedValue returned{builder.CreateCall(module->getFunction(call->callee), args,
                                              call->callee + ".result"),
                           type, returnedPresence};
-      return convertPresence(returned, presence);
+      return convertPresence(adoptValue(returned), presence);
     }
     throw std::runtime_error("内部错误：无法生成表达式");
   }
@@ -3730,6 +3901,7 @@ struct CodeGenerator::Impl {
     scopes.emplace_back();
     auto* generated = module->getFunction(function.name);
     builder.SetInsertPoint(llvm::BasicBlock::Create(context, "start", generated));
+    beginArcFrame();
     currentMissingTarget = nullptr;
     rootMissingTarget = nullptr;
     emitDiagnosticPush(function.name);
@@ -3744,10 +3916,12 @@ struct CodeGenerator::Impl {
     auto result = emitExpr(*function.body);
     result = convertPresence(result, inference->resultPresence(function));
     emitDiagnosticPop();
+    endArcFrame(&result);
     builder.CreateRet(result.value);
     if (rootMissingTarget) {
       builder.SetInsertPoint(rootMissingTarget);
       emitDiagnosticPop();
+      endArcFrame();
       builder.CreateRet(missingValue(inference->resultType(function)));
     }
     currentMissingTarget = nullptr;
@@ -3792,6 +3966,7 @@ struct CodeGenerator::Impl {
     auto* mainFunction = llvm::Function::Create(signature, llvm::Function::ExternalLinkage,
                                                 "main", module.get());
     builder.SetInsertPoint(llvm::BasicBlock::Create(context, "start", mainFunction));
+    beginArcFrame();
     scopes.clear();
     scopes.emplace_back();
     currentMissingTarget = nullptr;
@@ -3802,11 +3977,17 @@ struct CodeGenerator::Impl {
     auto result = requirePresent(emitExpr(*program.result), "程序最终结果");
     displayPresent(result, printfFn);
     emitDiagnosticPop();
+    endArcFrame();
+    auto assertArc = external("lan_arc_assert_empty", builder.getVoidTy(), {});
+    builder.CreateCall(assertArc, {});
     builder.CreateRet(builder.getInt32(0));
     if (rootMissingTarget) {
       builder.SetInsertPoint(rootMissingTarget);
       builder.CreateCall(printfFn, {builder.CreateGlobalString("missing\n")});
       emitDiagnosticPop();
+      endArcFrame();
+      auto assertArc = external("lan_arc_assert_empty", builder.getVoidTy(), {});
+      builder.CreateCall(assertArc, {});
       builder.CreateRet(builder.getInt32(0));
     }
     currentMissingTarget = nullptr;

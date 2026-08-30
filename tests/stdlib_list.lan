@@ -9,6 +9,9 @@ result = {
   oversized_take: take(items, 100),
   oversized_drop: drop(items, 100),
   inferred_list_take: first_two(items),
-  pipeline: items |> reverse() |> take(2)
+  pipeline: items |> reverse() |> take(2),
+  flattened: [[1, missing], [], [3, 4]] |> flatten(),
+  flattened_once: [[[1], [2]], [[3]]] |> flatten(),
+  flattened_empty: flatten([[], []])
 };
 result}

@@ -233,6 +233,7 @@ lowercase("ÄBC Σ")        # "äbc σ"
 uppercase("äbc σ")        # "ÄBC Σ"
 starts_with("report.csv", "report")  # true
 ends_with("report.csv", ".csv")      # true
+text_contains("report.csv", "port") # true
 ```
 
 `trim` 使用 Unicode White_Space；`lowercase` 和 `uppercase` 使用 Unicode 简单大小写
@@ -302,6 +303,13 @@ to_text([1, missing, 3])       # "[1, missing, 3]"
 ```lan
 numbers() = [1, 2, 3]
 names() = ["小明", "小兰"]
+```
+
+Number 和 Text List 可以稳定排序；missing 固定放在末尾：
+
+```lan
+sort([3, missing, 1, 2])       # [1, 2, 3, missing]
+names |> sort()                # 管道形式
 ```
 
 混合列表会在编译期被拒绝：
@@ -374,16 +382,22 @@ count([10, missing, 20])     # 2
 
 `first(list)` 和 `last(list)` 分别读取第一个和最后一个元素，空列表返回 `missing`。
 
-`concat` 连接两个元素类型相同的 List；`reverse`、`take` 和 `drop` 返回新 List，原 List
-保持不变。截取数量必须是非负整数，超过长度时截到容器边界：
+`concat` 连接两个元素类型相同的 List；`flatten` 只展开一层；`reverse`、`take` 和
+`drop` 返回新 List，原 List 保持不变。截取数量必须是非负整数，超过长度时截到容器
+边界：
 
 ```lan
 items = concat([1, 2], [3, 4])
+flatten([[1, 2], [], [3, 4]])  # [1, 2, 3, 4]
+flatten([[[1], [2]], [[3]]])   # [[1], [2], [3]]
 reverse(items)       # [4, 3, 2, 1]
 take(items, 2)       # [1, 2]
 drop(items, 2)       # [3, 4]
 items |> reverse() |> take(2)  # [4, 3]
 ```
+
+`flatten` 的类型是 `List<List<T>> -> List<T>`。外层的 missing 子列表会被拒绝；子列表
+内部的 missing 元素会保留。
 
 ### 集合管道与元素表达式
 
@@ -439,7 +453,8 @@ ages |> map(adult(.))        # 明确逐元素调用
 
 Table 没有独立的字面量语法，也不是新的运行时数据类型。内置 `table(value)` 接受两种
 输入形式。列式形式是 `Record<List<T>>`：每个字段都必须是 List，并且所有 List 长度
-相同。
+相同。对于直接传入的 Record/List 字面量，列类型和静态已知长度会在编译期检查；
+动态构造的值仍在 `table` 执行时验证。
 
 ```lan
 people() = table({
@@ -660,10 +675,19 @@ has_field(person, "age")      # true
 has_field(person, "score")    # false
 ```
 
+`merge` 合并两个 Record，右侧同名字段覆盖左侧；`remove_field` 返回删除字段后的新
+Record，字段不存在时返回结构相同的 Record。输入 Record 都不会改变：
+
+```lan
+merge({name: "Alice", age: 20}, {age: 21})       # {age: 21, name: "Alice"}
+remove_field({name: "Alice", age: 20}, "age")  # {name: "Alice"}
+```
+
 底层使用持久化 HAMT。更新只复制从根到目标字段的路径，其余分支由新旧 Record 共享，
-HAMT 节点用引用计数管理。第一阶段尚未启用“引用计数为 1 时原地更新”的优化；当前
-始终采用安全的路径复制，后续补齐编译器的所有权保留与释放后可在不改变语义的前提下
-启用该优化。
+HAMT 节点用引用计数管理。Text、List、Record 和 Table 都纳入 ARC；复合值持有其子
+对象，函数参数借用调用者的值，新建值由当前函数的所有权区域持有，返回值在区域清理前
+转移给调用者。程序正常结束时会验证没有遗留堆对象。当前尚未启用“引用计数为 1 时原地
+更新”的优化，仍始终采用安全的路径复制。
 
 ## 缺失值、运行时检查与显式传播
 
@@ -893,4 +917,5 @@ Lan 公式
 语言核心的已完成事项和后续计划见
 [`docs/SYNTAX_TODO.md`](docs/SYNTAX_TODO.md)，标准库 API 清单见
 [`docs/STDLIB_TODO.md`](docs/STDLIB_TODO.md)。完整的专题设计文档也统一位于
-[`docs/`](docs/) 目录。
+[`docs/`](docs/) 目录；计划中的正则表达式 API 见
+[`docs/REGEX_DESIGN.md`](docs/REGEX_DESIGN.md)。

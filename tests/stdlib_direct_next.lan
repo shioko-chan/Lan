@@ -1,0 +1,21 @@
+ordered(values) = sort(values)
+
+{
+  contains: [
+    text_contains("data report.csv", "report"),
+    text_contains("data report.csv", "json"),
+    text_contains("", "")
+  ],
+  numbers: sort([3, missing, 1, 2, 1]),
+  texts: ordered(["b", missing, "a", "b"]),
+  pipeline: [4, 2, 3, 1] |> sort(),
+  records: {
+    original: {name: "Alice", age: 20},
+    merged: merge({name: "Alice", age: 20}, {age: 21, city: "Sydney"}),
+    removed: remove_field({name: "Alice", age: 20}, "age"),
+    absent: remove_field({name: "Alice"}, "unknown"),
+    removed_only: remove_field({only: 1}, "only"),
+    removed_many: remove_field({a: 1, b: 2, c: 3, d: 4, e: 5}, "c"),
+    pipeline: {a: 1} |> merge({b: 2}) |> remove_field("a")
+  }
+}

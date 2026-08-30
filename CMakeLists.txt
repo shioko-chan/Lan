@@ -181,17 +181,35 @@ add_test(NAME reject_stdlib_math_map_domain
 add_test(NAME stdlib_list
   COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib_list.lan)
 set_tests_properties(stdlib_list PROPERTIES PASS_REGULAR_EXPRESSION
-  [=[after_two: \[3, 4, 5\].*first_three: \[1, missing, 3\].*oversized_drop: \[\].*pipeline: \[5, 4\].*reversed: \[5, 4, 3, missing, 1\]]=])
+  [=[after_two: \[3, 4, 5\].*first_three: \[1, missing, 3\].*flattened: \[1, missing, 3, 4\].*flattened_empty: \[\].*flattened_once: \[\[1\], \[2\], \[3\]\].*oversized_drop: \[\].*pipeline: \[5, 4\].*reversed: \[5, 4, 3, missing, 1\]]=])
 add_test(NAME stdlib_record
   COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib_record.lan)
 set_tests_properties(stdlib_record PROPERTIES PASS_REGULAR_EXPRESSION
   [=[empty: \[\].*has_age: true.*has_score: false.*names: \["age", "city", "name"\]]=])
-foreach(stdlib_type_error length concat)
+add_test(NAME arc_lifetimes
+  COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/arc_lifetimes.lan)
+set_tests_properties(arc_lifetimes PROPERTIES PASS_REGULAR_EXPRESSION
+  [=[\{alias_score: 10, bundles: \[\{value: 1\}, \{value: 2\}, \{value: 3\}, \{value: 4\}\], labels: \["A!", "B!", "C!"\], updated_score: 20\}]=])
+add_test(NAME stdlib_direct_next
+  COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib_direct_next.lan)
+set_tests_properties(stdlib_direct_next PROPERTIES PASS_REGULAR_EXPRESSION
+  [=[contains: \[true, false, true\].*numbers: \[1, 1, 2, 3, missing\].*pipeline: \[1, 2, 3, 4\].*records: \{absent: \{name: "Alice"\}, merged: \{age: 21, city: "Sydney", name: "Alice"\}, original: \{age: 20, name: "Alice"\}, pipeline: \{b: 2\}, removed: \{name: "Alice"\}, removed_many: \{a: 1, b: 2, d: 4, e: 5\}, removed_only: \{\}\}.*texts: \["a", "b", "b", missing\]]=])
+add_test(NAME reject_stdlib_sort_type
+  COMMAND lanc ${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib_sort_type_error.lan)
+set_tests_properties(reject_stdlib_sort_type PROPERTIES WILL_FAIL TRUE)
+foreach(stdlib_type_error length concat flatten)
   add_test(NAME reject_stdlib_${stdlib_type_error}_type
     COMMAND lanc ${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib_${stdlib_type_error}_type_error.lan)
   set_tests_properties(reject_stdlib_${stdlib_type_error}_type PROPERTIES
     WILL_FAIL TRUE)
 endforeach()
+add_test(NAME reject_stdlib_flatten_missing
+  COMMAND ${CMAKE_COMMAND}
+          -DLANC=$<TARGET_FILE:lanc>
+          -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib_flatten_missing_error.lan
+          -DEXPECTED=子列表不能是\ missing
+          -DEXPECTED_INDEX=1
+          -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_runtime_error.cmake)
 foreach(stdlib_runtime_error split_empty clamp_range list_take)
   add_test(NAME reject_stdlib_${stdlib_runtime_error}
     COMMAND ${CMAKE_COMMAND}
@@ -445,10 +463,10 @@ add_test(NAME table_empty_aggregates
 set_tests_properties(table_empty_aggregates PROPERTIES PASS_REGULAR_EXPRESSION
   [=[\{average: -1, count: 0, sum: 0\}]=])
 add_test(NAME reject_table_unequal_columns
-  COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/table_invalid_length.lan)
+  COMMAND lanc ${CMAKE_CURRENT_SOURCE_DIR}/tests/table_invalid_length.lan)
 set_tests_properties(reject_table_unequal_columns PROPERTIES WILL_FAIL TRUE)
 add_test(NAME reject_table_non_list_column
-  COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/table_invalid_column.lan)
+  COMMAND lanc ${CMAKE_CURRENT_SOURCE_DIR}/tests/table_invalid_column.lan)
 set_tests_properties(reject_table_non_list_column PROPERTIES WILL_FAIL TRUE)
 add_test(NAME table_operation_requires_validation
   COMMAND lanc ${CMAKE_CURRENT_SOURCE_DIR}/tests/table_requires_validation.lan)

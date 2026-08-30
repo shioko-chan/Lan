@@ -2,6 +2,7 @@
 #include <errno.h>
 #include <float.h>
 #include <math.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -9,6 +10,22 @@
 #include "utf8proc.h"
 
 typedef struct LanRecordNode LanRecordNode;
+
+typedef struct {
+  uint64_t length;
+  void* elements;
+  int32_t storage_tag;
+  uint8_t* presence;
+  uint32_t references;
+} LanList;
+
+typedef struct {
+  uint32_t references;
+  uint32_t marker;
+  char bytes[];
+} LanTextHeader;
+
+enum { LAN_TEXT_MARKER = 0x4c414e54 };
 
 typedef struct {
   int32_t tag;
@@ -29,6 +46,29 @@ enum { LAN_MISSING = 0, LAN_NUMBER = 1, LAN_BOOLEAN = 2,
 static const char* diagnostic_frames[128];
 static uint32_t diagnostic_frame_count = 0;
 static int64_t diagnostic_error_index = -1;
+
+typedef struct LanArcEntry {
+  LanValue value;
+  struct LanArcEntry* next;
+} LanArcEntry;
+
+typedef struct LanArcFrame {
+  LanArcEntry* values;
+  struct LanArcFrame* previous;
+} LanArcFrame;
+
+static _Thread_local LanArcFrame* arc_frame = NULL;
+static _Thread_local int64_t arc_live_objects = 0;
+
+void lan_arc_note_object_allocated(void) { ++arc_live_objects; }
+
+void lan_arc_assert_empty(void) {
+  if (arc_frame || arc_live_objects != 0) {
+    fprintf(stderr, "Lan ARC 错误：程序结束时仍有 %lld 个堆对象\n",
+            (long long)arc_live_objects);
+    abort();
+  }
+}
 
 void lan_diagnostic_push(const char* function) {
   if (diagnostic_frame_count < 128)
@@ -93,18 +133,94 @@ static uint32_t child_index(uint32_t bitmap, uint32_t bit) {
 
 void lan_record_retain(void* pointer) {
   LanRecordNode* node = pointer;
-  if (node && node->references != UINT32_MAX) ++node->references;
+  if (node && node->references != UINT32_MAX) {
+    if (node->references == UINT32_MAX - 1) abort();
+    ++node->references;
+  }
 }
 
+static LanTextHeader* text_header(const char* text) {
+  return text ? (LanTextHeader*)((char*)text - offsetof(LanTextHeader, bytes))
+              : NULL;
+}
+
+void lan_text_retain(void* pointer) {
+  LanTextHeader* text = text_header(pointer);
+  if (text) {
+    if (text->marker != LAN_TEXT_MARKER || text->references == UINT32_MAX)
+      abort();
+    ++text->references;
+  }
+}
+
+void lan_text_release(void* pointer) {
+  LanTextHeader* text = text_header(pointer);
+  if (text) {
+    if (text->marker != LAN_TEXT_MARKER || text->references == 0) abort();
+  }
+  if (text && --text->references == 0) {
+    free(text);
+    --arc_live_objects;
+  }
+}
+
+void lan_list_retain(void* pointer) {
+  LanList* list = pointer;
+  if (list) {
+    if (list->references == UINT32_MAX) abort();
+    ++list->references;
+  }
+}
+
+static void lan_list_release(void* pointer);
+
 static void retain_value(LanValue value) {
-  if (value.tag == LAN_RECORD) lan_record_retain(value.pointer);
+  if (value.tag == LAN_TEXT) lan_text_retain(value.pointer);
+  else if (value.tag == LAN_LIST) lan_list_retain(value.pointer);
+  else if (value.tag == LAN_RECORD) lan_record_retain(value.pointer);
 }
 
 static void release_value(LanValue value);
 
+void lan_arc_push(void) {
+  LanArcFrame* frame = calloc(1, sizeof(*frame));
+  if (!frame) abort();
+  frame->previous = arc_frame;
+  arc_frame = frame;
+}
+
+void lan_arc_adopt(int32_t tag, double number, void* pointer) {
+  if (!arc_frame || !pointer ||
+      (tag != LAN_TEXT && tag != LAN_LIST && tag != LAN_RECORD)) return;
+  LanArcEntry* entry = malloc(sizeof(*entry));
+  if (!entry) abort();
+  entry->value = (LanValue){tag, number, pointer};
+  entry->next = arc_frame->values;
+  arc_frame->values = entry;
+}
+
+void lan_arc_pop(int32_t return_tag, double return_number,
+                 void* return_pointer) {
+  LanArcFrame* frame = arc_frame;
+  if (!frame) abort();
+  LanValue returned = {return_tag, return_number, return_pointer};
+  retain_value(returned);
+  LanArcEntry* entry = frame->values;
+  while (entry) {
+    LanArcEntry* next = entry->next;
+    release_value(entry->value);
+    free(entry);
+    entry = next;
+  }
+  arc_frame = frame->previous;
+  free(frame);
+}
+
 void lan_record_release(void* pointer) {
   LanRecordNode* node = pointer;
-  if (!node || node->references == UINT32_MAX || --node->references != 0) return;
+  if (!node || node->references == UINT32_MAX) return;
+  if (node->references == 0) abort();
+  if (--node->references != 0) return;
   if (node->kind == LAN_BRANCH) {
     for (uint32_t i = 0; i < node->count; ++i) lan_record_release(node->children[i]);
     free(node->children);
@@ -119,16 +235,20 @@ void lan_record_release(void* pointer) {
     free(node->entries);
   }
   free(node);
+  --arc_live_objects;
 }
 
 static void release_value(LanValue value) {
-  if (value.tag == LAN_RECORD) lan_record_release(value.pointer);
+  if (value.tag == LAN_TEXT) lan_text_release(value.pointer);
+  else if (value.tag == LAN_LIST) lan_list_release(value.pointer);
+  else if (value.tag == LAN_RECORD) lan_record_release(value.pointer);
 }
 
 static LanRecordNode* allocate_node(uint32_t kind) {
   LanRecordNode* node = calloc(1, sizeof(*node));
   if (!node) abort();
   node->references = 1;
+  ++arc_live_objects;
   node->kind = kind;
   return node;
 }
@@ -240,12 +360,101 @@ static LanRecordNode* assoc(LanRecordNode* node, uint64_t hash, const char* key,
   return result;
 }
 
+static LanRecordNode* dissoc(LanRecordNode* node, uint64_t hash,
+                             const char* key, unsigned shift) {
+  if (!node || node == &empty_record) return &empty_record;
+  if (node->kind == LAN_LEAF) {
+    if (node->hash == hash && strcmp(node->key, key) == 0)
+      return &empty_record;
+    lan_record_retain(node);
+    return node;
+  }
+  if (node->kind == LAN_COLLISION) {
+    uint32_t removed = node->count;
+    for (uint32_t i = 0; i < node->count; ++i)
+      if (node->entries[i].hash == hash &&
+          strcmp(node->entries[i].key, key) == 0) {
+        removed = i;
+        break;
+      }
+    if (removed == node->count) {
+      lan_record_retain(node);
+      return node;
+    }
+    if (node->count == 2) {
+      const LanEntry* kept = &node->entries[removed == 0 ? 1 : 0];
+      return make_leaf(kept->hash, kept->key, kept->value);
+    }
+    LanRecordNode* result = allocate_node(LAN_COLLISION);
+    result->hash = node->hash;
+    result->count = node->count - 1;
+    result->entries = calloc(result->count, sizeof(LanEntry));
+    if (!result->entries) abort();
+    uint32_t output = 0;
+    for (uint32_t i = 0; i < node->count; ++i) {
+      if (i == removed) continue;
+      const LanEntry* source = &node->entries[i];
+      result->entries[output] =
+          (LanEntry){source->hash, strdup(source->key), source->value};
+      if (!result->entries[output].key) abort();
+      retain_value(result->entries[output].value);
+      ++output;
+    }
+    return result;
+  }
+
+  uint32_t slot = (uint32_t)((hash >> shift) & 31);
+  uint32_t bit = UINT32_C(1) << slot;
+  if ((node->bitmap & bit) == 0) {
+    lan_record_retain(node);
+    return node;
+  }
+  uint32_t index = child_index(node->bitmap, bit);
+  LanRecordNode* child = dissoc(node->children[index], hash, key, shift + 5);
+  if (child == node->children[index]) {
+    /* dissoc returned an owned reference to the unchanged subtree. */
+    lan_record_release(child);
+    lan_record_retain(node);
+    return node;
+  }
+  if (child == &empty_record && node->count == 1) return &empty_record;
+  if (child == &empty_record && node->count == 2) {
+    LanRecordNode* kept = node->children[index == 0 ? 1 : 0];
+    if (kept->kind != LAN_BRANCH) {
+      lan_record_retain(kept);
+      return kept;
+    }
+  }
+
+  LanRecordNode* result = allocate_node(LAN_BRANCH);
+  int removed = child == &empty_record;
+  result->bitmap = removed ? node->bitmap & ~bit : node->bitmap;
+  result->count = node->count - (uint32_t)removed;
+  result->children = malloc(result->count * sizeof(LanRecordNode*));
+  if (!result->children) abort();
+  uint32_t output = 0;
+  for (uint32_t i = 0; i < node->count; ++i) {
+    if (i == index) {
+      if (!removed) result->children[output++] = child;
+      continue;
+    }
+    result->children[output] = node->children[i];
+    lan_record_retain(result->children[output]);
+    ++output;
+  }
+  return result;
+}
+
 void* lan_record_empty(void) { return &empty_record; }
 
 void* lan_record_assoc(void* record, const char* key, int32_t tag,
                        double number, void* pointer) {
   LanValue value = {tag, number, pointer};
   return assoc(record, hash_text(key), key, value, 0);
+}
+
+void* lan_record_remove_field(void* record, const char* key) {
+  return dissoc(record, hash_text(key), key, 0);
 }
 
 int32_t lan_record_lookup(void* record, const char* key, LanValue* output) {
@@ -305,13 +514,6 @@ static int compare_entries(const void* left, const void* right) {
   const LanEntry* b = right;
   return strcmp(a->key, b->key);
 }
-
-typedef struct {
-  uint64_t length;
-  void* elements;
-  int32_t storage_tag;
-  uint8_t* presence;
-} LanList;
 
 static LanValue load_list_value(const LanList* list, uint64_t index) {
   if (list->storage_tag == LAN_NUMBER) {
@@ -387,6 +589,8 @@ static LanList* make_typed_list(uint64_t length, int32_t storage_tag) {
   if (!list) abort();
   list->length = length;
   list->storage_tag = storage_tag;
+  list->references = 1;
+  ++arc_live_objects;
   list->presence = NULL;
   size_t element_size = sizeof(LanValue);
   if (storage_tag == LAN_NUMBER) element_size = sizeof(double);
@@ -400,6 +604,45 @@ static LanList* make_typed_list(uint64_t length, int32_t storage_tag) {
     if (!list->presence) abort();
   }
   return list;
+}
+
+static void lan_list_release(void* pointer) {
+  LanList* list = pointer;
+  if (!list) return;
+  if (list->references == 0) abort();
+  if (--list->references != 0) return;
+  for (uint64_t i = 0; i < list->length; ++i)
+    release_value(load_list_value(list, i));
+  free(list->presence);
+  free(list->elements);
+  free(list);
+  --arc_live_objects;
+}
+
+void lan_value_retain(int32_t tag, double number, void* pointer) {
+  retain_value((LanValue){tag, number, pointer});
+}
+
+void lan_value_release(int32_t tag, double number, void* pointer) {
+  release_value((LanValue){tag, number, pointer});
+}
+
+static char* allocate_text(size_t length) {
+  if (length > SIZE_MAX - sizeof(LanTextHeader) - 1) abort();
+  LanTextHeader* text = malloc(sizeof(*text) + length + 1);
+  if (!text) abort();
+  text->references = 1;
+  text->marker = LAN_TEXT_MARKER;
+  text->bytes[length] = '\0';
+  ++arc_live_objects;
+  return text->bytes;
+}
+
+char* lan_text_from_cstr(const char* source) {
+  size_t length = strlen(source);
+  char* result = allocate_text(length);
+  memcpy(result, source, length);
+  return result;
 }
 
 static void store_list_value(LanList* list, uint64_t index, LanValue value) {
@@ -454,10 +697,8 @@ static int32_t unicode_white_space(utf8proc_int32_t codepoint) {
 }
 
 static char* duplicate_text_range(const char* start, size_t length) {
-  char* result = malloc(length + 1);
-  if (!result) abort();
+  char* result = allocate_text(length);
   memcpy(result, start, length);
-  result[length] = '\0';
   return result;
 }
 
@@ -510,8 +751,7 @@ char* lan_text_trim(const char* text, int32_t* status) {
 char* lan_text_case(const char* text, int32_t uppercase, int32_t* status) {
   size_t length = strlen(text);
   if (length > (SIZE_MAX - 1) / 4) abort();
-  utf8proc_uint8_t* output = malloc(length * 4 + 1);
-  if (!output) abort();
+  utf8proc_uint8_t* output = (utf8proc_uint8_t*)allocate_text(length * 4);
   const utf8proc_uint8_t* current = (const utf8proc_uint8_t*)text;
   utf8proc_ssize_t remaining = (utf8proc_ssize_t)length;
   size_t written = 0;
@@ -520,7 +760,7 @@ char* lan_text_case(const char* text, int32_t uppercase, int32_t* status) {
     utf8proc_int32_t codepoint;
     utf8proc_ssize_t consumed = utf8proc_iterate(current, remaining, &codepoint);
     if (consumed < 0) {
-      free(output);
+      lan_text_release(output);
       *status = -1;
       return NULL;
     }
@@ -528,7 +768,7 @@ char* lan_text_case(const char* text, int32_t uppercase, int32_t* status) {
                           : utf8proc_tolower(codepoint);
     utf8proc_ssize_t encoded = utf8proc_encode_char(codepoint, output + written);
     if (encoded < 0) {
-      free(output);
+      lan_text_release(output);
       *status = -1;
       return NULL;
     }
@@ -554,6 +794,20 @@ int32_t lan_text_ends_with(const char* text, const char* suffix) {
          memcmp(text + text_length - suffix_length, suffix, suffix_length) == 0;
 }
 
+int32_t lan_text_contains(const char* text, const char* part) {
+  return strstr(text, part) != NULL;
+}
+
+char* lan_text_concat(const char* left, const char* right) {
+  size_t left_length = strlen(left);
+  size_t right_length = strlen(right);
+  if (right_length > SIZE_MAX - left_length) abort();
+  char* result = allocate_text(left_length + right_length);
+  memcpy(result, left, left_length);
+  memcpy(result + left_length, right, right_length);
+  return result;
+}
+
 void* lan_text_split(const char* text, const char* separator, int32_t* status) {
   size_t separator_length = strlen(separator);
   *status = 0;
@@ -570,8 +824,9 @@ void* lan_text_split(const char* text, const char* separator, int32_t* status) {
   for (uint64_t index = 0; index < pieces; ++index) {
     found = strstr(current, separator);
     size_t length = found ? (size_t)(found - current) : strlen(current);
-    store_list_value(result, index,
-                     (LanValue){LAN_TEXT, 0, duplicate_text_range(current, length)});
+    char* piece = duplicate_text_range(current, length);
+    store_list_value(result, index, (LanValue){LAN_TEXT, 0, piece});
+    lan_text_release(piece);
     current = found ? found + separator_length : current + length;
   }
   return result;
@@ -598,8 +853,7 @@ char* lan_text_join(void* list_pointer, const char* separator, int32_t* status) 
       total += separator_length;
     }
   }
-  char* result = malloc(total + 1);
-  if (!result) abort();
+  char* result = allocate_text(total);
   size_t written = 0;
   for (uint64_t index = 0; index < list->length; ++index) {
     if (index != 0) {
@@ -611,7 +865,6 @@ char* lan_text_join(void* list_pointer, const char* separator, int32_t* status) 
     memcpy(result + written, value.pointer, item_length);
     written += item_length;
   }
-  result[written] = '\0';
   return result;
 }
 
@@ -624,8 +877,11 @@ void* lan_record_fields(void* record) {
   qsort(entries, count, sizeof(*entries), compare_entries);
   LanList* result = make_typed_list(count, LAN_TEXT);
   for (uint32_t field = 0; field < count; ++field)
-    store_list_value(result, field,
-                     (LanValue){LAN_TEXT, 0, strdup(entries[field].key)});
+  {
+    char* name = lan_text_from_cstr(entries[field].key);
+    store_list_value(result, field, (LanValue){LAN_TEXT, 0, name});
+    lan_text_release(name);
+  }
   free(entries);
   return result;
 }
@@ -780,6 +1036,25 @@ void* lan_record_merge_checked(void* base_pointer, void* changes_pointer,
       free(entries);
       return NULL;
     }
+    LanValue value = entries[i].value;
+    void* updated = lan_record_assoc(result, entries[i].key,
+                                     value.tag, value.number, value.pointer);
+    lan_record_release(result);
+    result = updated;
+  }
+  free(entries);
+  return result;
+}
+
+void* lan_record_merge(void* left_pointer, void* right_pointer) {
+  LanRecordNode* right = right_pointer;
+  uint32_t count = entry_count(right);
+  LanEntry* entries = count ? malloc(count * sizeof(*entries)) : NULL;
+  uint32_t index = 0;
+  if (count) collect_entries(right, entries, &index);
+  void* result = left_pointer;
+  lan_record_retain(result);
+  for (uint32_t i = 0; i < count; ++i) {
     LanValue value = entries[i].value;
     void* updated = lan_record_assoc(result, entries[i].key,
                                      value.tag, value.number, value.pointer);
@@ -991,10 +1266,9 @@ static LanValue scalar_binary(LanValue a, LanValue b, int32_t operation,
     if (operation == 0 && a.tag == LAN_TEXT && b.tag == LAN_TEXT) {
       size_t left = strlen(a.pointer);
       size_t right = strlen(b.pointer);
-      char* joined = malloc(left + right + 1);
-      if (!joined) abort();
+      char* joined = allocate_text(left + right);
       memcpy(joined, a.pointer, left);
-      memcpy(joined + left, b.pointer, right + 1);
+      memcpy(joined + left, b.pointer, right);
       return (LanValue){LAN_TEXT, 0, joined};
     }
     if (a.tag != LAN_NUMBER || b.tag != LAN_NUMBER) {
@@ -1222,6 +1496,7 @@ void* lan_flat_list_binary(int32_t a_tag, double a_number, void* a_pointer,
     LanValue value = scalar_binary(left_value, right_value, operation, status);
     if (*status) return NULL;
     store_list_value(result, i, value);
+    if (operation == 0 && value.tag == LAN_TEXT) release_value(value);
   }
   return result;
 }
@@ -1570,6 +1845,53 @@ void* lan_list_concat(void* left_pointer, void* right_pointer, int32_t* status) 
   return result;
 }
 
+void* lan_list_flatten(void* list_pointer, int32_t* status) {
+  LanList* outer = list_pointer;
+  diagnostic_error_index = -1;
+  *status = 0;
+  if (!outer || (outer->storage_tag != LAN_LIST &&
+                 outer->storage_tag != LAN_MISSING)) {
+    *status = -1;
+    return NULL;
+  }
+
+  uint64_t length = 0;
+  int32_t storage_tag = LAN_MISSING;
+  for (uint64_t i = 0; i < outer->length; ++i) {
+    LanValue value = load_list_value(outer, i);
+    if (value.tag == LAN_MISSING) {
+      diagnostic_error_index = (int64_t)i;
+      *status = -2;
+      return NULL;
+    }
+    if (value.tag != LAN_LIST) {
+      diagnostic_error_index = (int64_t)i;
+      *status = -1;
+      return NULL;
+    }
+    LanList* inner = value.pointer;
+    if (inner->length > UINT64_MAX - length) abort();
+    length += inner->length;
+    if (inner->storage_tag != LAN_MISSING) {
+      if (storage_tag != LAN_MISSING && storage_tag != inner->storage_tag) {
+        diagnostic_error_index = (int64_t)i;
+        *status = -1;
+        return NULL;
+      }
+      storage_tag = inner->storage_tag;
+    }
+  }
+
+  LanList* result = make_typed_list(length, storage_tag);
+  uint64_t output = 0;
+  for (uint64_t i = 0; i < outer->length; ++i) {
+    LanList* inner = load_list_value(outer, i).pointer;
+    for (uint64_t j = 0; j < inner->length; ++j)
+      store_list_value(result, output++, load_list_value(inner, j));
+  }
+  return result;
+}
+
 void* lan_list_reverse(void* list_pointer) {
   LanList* source = list_pointer;
   LanList* result = make_typed_list(source->length, source->storage_tag);
@@ -1720,6 +2042,26 @@ static int compare_sort_items(const void* left, const void* right) {
   return a->index < b->index ? -1 : a->index > b->index;
 }
 
+void* lan_list_sort(void* list_pointer, int32_t* status) {
+  LanList* list = list_pointer;
+  *status = 0;
+  if (list->storage_tag != LAN_NUMBER && list->storage_tag != LAN_TEXT) {
+    *status = -1;
+    return NULL;
+  }
+  LanSortItem* items = list->length ? malloc(list->length * sizeof(*items)) : NULL;
+  uint64_t* order = list->length ? malloc(list->length * sizeof(*order)) : NULL;
+  if (list->length && (!items || !order)) abort();
+  for (uint64_t i = 0; i < list->length; ++i)
+    items[i] = (LanSortItem){i, load_list_value(list, i)};
+  qsort(items, list->length, sizeof(*items), compare_sort_items);
+  for (uint64_t i = 0; i < list->length; ++i) order[i] = items[i].index;
+  LanList* result = permute_list(list, order);
+  free(items);
+  free(order);
+  return result;
+}
+
 void* lan_table_sort_by(void* record, const char* key, int32_t* status) {
   LanValue column;
   *status = 0;
@@ -1829,11 +2171,13 @@ static void format_value(LanTextBuilder* builder, LanValue value, int32_t nested
 }
 
 char* lan_value_to_text(int32_t tag, double number, void* pointer) {
-  if (tag == LAN_TEXT && pointer) return strdup(pointer);
+  if (tag == LAN_TEXT && pointer) return lan_text_from_cstr(pointer);
   LanTextBuilder builder = {NULL, 0, 0};
   format_value(&builder, (LanValue){tag, number, pointer}, 0);
-  if (!builder.data) return strdup("");
-  return builder.data;
+  if (!builder.data) return lan_text_from_cstr("");
+  char* result = lan_text_from_cstr(builder.data);
+  free(builder.data);
+  return result;
 }
 
 void lan_record_print(void* record) {
