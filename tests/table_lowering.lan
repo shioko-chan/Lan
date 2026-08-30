@@ -1,0 +1,11 @@
+demo() =
+  people = table({
+    name: ["Alice", "Bob", "Carol"],
+    active: [false, true, false]
+  })
+  active = people |> filter(.active)
+  names = active |> map(.name)
+  found = people |> find(.active)
+  {names: names, found: found}
+
+demo()

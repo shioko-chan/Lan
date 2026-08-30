@@ -1,0 +1,5 @@
+bad() =
+  people = table({name: ["Alice", "Bob"]})
+  people |> map(.name - 1)
+
+bad()

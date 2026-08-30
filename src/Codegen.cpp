@@ -147,17 +147,19 @@ class Inference {
              std::string(typeName(collectionType)));
       }
     }
-    for (int input : tableInputConstraints_) {
-      Type inputType = resolved(input);
+    for (const auto& constraint : tableInputConstraints_) {
+      Type inputType = resolved(constraint.input);
       if (inputType == Type::Unknown) {
-        bind(input, Type::Record, "table 的输入");
+        bind(constraint.input, Type::Record, "table 的输入");
       } else if (inputType == Type::List) {
-        bind(listElement(input, "table 的行列表"), Type::Record,
+        bind(listElement(constraint.input, "table 的行列表"), Type::Record,
              "table 的每一行");
       } else if (inputType != Type::Record) {
         fail("table 需要 Record<List<T>> 或 List<Record>");
       }
     }
+
+    resolveShapes();
 
     for (int variable : plusVariables_) {
       Type type = resolved(variable);
@@ -205,6 +207,13 @@ class Inference {
     return resolved(collectionElements_.at(&expression));
   }
 
+  bool tableHasFixedField(const CollectionExpr& expression,
+                          const std::string& name) {
+    int input = expressions_.at(expression.collection.get());
+    auto shape = shapes_.find(find(input));
+    return shape != shapes_.end() && shape->second.fields.count(name) != 0;
+  }
+
   std::vector<Type> parameterTypes(const Function& function) {
     std::vector<Type> result;
     for (int variable : functions_.at(function.name).params)
@@ -250,10 +259,26 @@ class Inference {
   struct CollectionConstraint {
     int collection;
     int element;
+    int result;
+    int body;
+    const CollectionExpr* expression;
   };
   std::vector<CollectionConstraint> collectionConstraints_;
   std::unordered_map<const CollectionExpr*, int> collectionElements_;
-  std::vector<int> tableInputConstraints_;
+  struct TableInputConstraint { int input; int result; };
+  std::vector<TableInputConstraint> tableInputConstraints_;
+  struct Shape {
+    std::unordered_map<std::string, int> fields;
+    bool complete = true;
+  };
+  std::unordered_map<int, Shape> shapes_;
+  struct FixedAccess {
+    int object;
+    int result;
+    std::string field;
+  };
+  std::vector<FixedAccess> fixedAccesses_;
+  std::vector<std::pair<int, int>> shapeCopies_;
   std::unordered_map<const Expr*, Presence> presences_;
   std::unordered_map<std::string, std::vector<Presence>> parameterPresences_;
   std::unordered_map<std::string, Presence> resultPresences_;
@@ -433,6 +458,34 @@ class Inference {
     return result;
   }
 
+  void mergeShapeInto(int destination, const Shape& source,
+                      const std::string& contextName) {
+    int root = find(destination);
+    auto existing = shapes_.find(root);
+    if (existing == shapes_.end()) {
+      shapes_.emplace(root, source);
+      return;
+    }
+    Shape& target = existing->second;
+    bool sameFields = target.fields.size() == source.fields.size();
+    for (auto field = target.fields.begin(); field != target.fields.end();) {
+      auto incoming = source.fields.find(field->first);
+      if (incoming == source.fields.end()) {
+        sameFields = false;
+        field = target.fields.erase(field);
+        continue;
+      }
+      unify(field->second, incoming->second,
+            contextName + "的字段“" + field->first + "”");
+      ++field;
+    }
+    target.complete = target.complete && source.complete && sameFields;
+  }
+
+  void attachShape(int variable, Shape shape, const std::string& contextName) {
+    mergeShapeInto(variable, shape, contextName);
+  }
+
   void unify(int lhs, int rhs, const std::string& contextName) {
     int leftRoot = find(lhs);
     int rightRoot = find(rhs);
@@ -449,6 +502,83 @@ class Inference {
     if (leftElement < 0) nodes_[leftRoot].listElement = rightElement;
     else if (rightElement >= 0)
       unify(leftElement, rightElement, contextName + "的列表元素");
+    auto rightShape = shapes_.find(rightRoot);
+    if (rightShape != shapes_.end()) {
+      Shape moved = std::move(rightShape->second);
+      shapes_.erase(rightShape);
+      mergeShapeInto(leftRoot, moved, contextName);
+    }
+  }
+
+  void resolveShapes() {
+    for (const auto& constraint : tableInputConstraints_) {
+      Shape converted;
+      int input = constraint.input;
+      if (resolved(input) == Type::List) {
+        int row = listElement(input, "table 的行列表");
+        if (auto found = shapes_.find(find(row)); found != shapes_.end())
+          converted = found->second;
+        else
+          converted.complete = false;
+      } else if (auto found = shapes_.find(find(input)); found != shapes_.end()) {
+        converted.complete = found->second.complete;
+        for (const auto& [name, column] : found->second.fields) {
+          if (resolved(column) == Type::List)
+            converted.fields.emplace(
+                name, listElement(column, "Table 列“" + name + "”"));
+          else
+            converted.complete = false;
+        }
+      } else {
+        converted.complete = false;
+      }
+      attachShape(constraint.result, std::move(converted), "table schema");
+    }
+
+    for (const auto& [source, destination] : shapeCopies_)
+      if (auto found = shapes_.find(find(source)); found != shapes_.end())
+        attachShape(destination, found->second, "Table schema 传播");
+
+    for (const auto& constraint : collectionConstraints_) {
+      if (resolved(constraint.collection) != Type::Table) continue;
+      auto inputShape = shapes_.find(find(constraint.collection));
+      if (inputShape != shapes_.end())
+        attachShape(constraint.element, inputShape->second, "Table 逻辑行");
+
+      const auto operation = constraint.expression->operation;
+      if (operation == CollectionOperation::Select) {
+        if (auto bodyShape = shapes_.find(find(constraint.body));
+            bodyShape != shapes_.end())
+          attachShape(constraint.result, bodyShape->second, "select schema");
+      } else if (operation == CollectionOperation::Add ||
+                 operation == CollectionOperation::Replace) {
+        Shape output;
+        if (inputShape != shapes_.end()) output = inputShape->second;
+        else output.complete = false;
+        if (auto bodyShape = shapes_.find(find(constraint.body));
+            bodyShape != shapes_.end()) {
+          output.complete = output.complete && bodyShape->second.complete;
+          for (const auto& [name, value] : bodyShape->second.fields)
+            output.fields[name] = value;
+        } else {
+          output.complete = false;
+        }
+        attachShape(constraint.result, std::move(output), "Table 更新 schema");
+      }
+    }
+
+    for (const auto& access : fixedAccesses_) {
+      auto foundShape = shapes_.find(find(access.object));
+      if (foundShape == shapes_.end()) continue;
+      auto foundField = foundShape->second.fields.find(access.field);
+      if (foundField == foundShape->second.fields.end()) continue;
+      if (resolved(access.object) == Type::Table)
+        unify(listElement(access.result, "Table 列“" + access.field + "”"),
+              foundField->second, "Table 列“" + access.field + "”");
+      else
+        unify(access.result, foundField->second,
+              "Record 字段“" + access.field + "”");
+    }
   }
 
   int remember(const Expr& expr, int variable) {
@@ -480,13 +610,19 @@ class Inference {
     }
     if (auto* record = dynamic_cast<const RecordExpr*>(&expr)) {
       std::unordered_set<std::string> names;
+      Shape shape;
       for (const auto& field : record->fields) {
         if (!field.key && !names.insert(field.name).second)
           fail("Record 字段“" + field.name + "”重复了");
-        if (field.key) bind(infer(*field.key), Type::Text, "动态字段名");
-        infer(*field.value);
+        if (field.key) {
+          bind(infer(*field.key), Type::Text, "动态字段名");
+          shape.complete = false;
+        }
+        int value = infer(*field.value);
+        if (!field.key) shape.fields.emplace(field.name, value);
       }
       bind(result, Type::Record, "Record");
+      attachShape(result, std::move(shape), "Record schema");
       return result;
     }
     if (auto* variable = dynamic_cast<const VariableExpr*>(&expr)) {
@@ -543,6 +679,7 @@ class Inference {
         dynamicAccesses_.push_back({object, infer(*field->key), result});
       } else {
         recordLikeVariables_.push_back(object);
+        fixedAccesses_.push_back({object, result, field->name});
         if (resolved(object) == Type::Table) {
           int element = listElement(result, "Table 的列");
           tableColumnElements_.push_back(element);
@@ -665,7 +802,8 @@ class Inference {
           bind(result, Type::Table, "Table schema 操作的结果");
           break;
       }
-      collectionConstraints_.push_back({input, element});
+      collectionConstraints_.push_back(
+          {input, element, result, body, collection});
       return result;
     }
     if (dynamic_cast<const ElementBindingExpr*>(&expr))
@@ -686,7 +824,9 @@ class Inference {
         else if (resolved(input) == Type::Record)
           bind(input, Type::Record, "table 的输入");
         else
-          tableInputConstraints_.push_back(input);
+          tableInputConstraints_.push_back({input, result});
+        if (resolved(input) == Type::List || resolved(input) == Type::Record)
+          tableInputConstraints_.push_back({input, result});
         bind(result, Type::Table, "table 的结果");
         return result;
       }
@@ -769,6 +909,7 @@ class Inference {
         bind(listElement(mask, "where 的筛选条件"), Type::Boolean,
              "where 的筛选条件");
         bind(result, Type::Table, "where 的结果");
+        shapeCopies_.push_back({expressions_.at(call->args[0].get()), result});
         return result;
       }
       if (call->callee == "add_column" || call->callee == "replace_column") {
@@ -797,6 +938,7 @@ class Inference {
         bind(infer(*call->args[0]), Type::Table, "函数“" + call->callee + "”的输入");
         bind(infer(*call->args[1]), Type::Number, "函数“" + call->callee + "”的行数");
         bind(result, Type::Table, "函数“" + call->callee + "”的结果");
+        shapeCopies_.push_back({expressions_.at(call->args[0].get()), result});
         return result;
       }
       if (call->callee == "sort_by") {
@@ -804,6 +946,7 @@ class Inference {
         bind(infer(*call->args[0]), Type::Table, "sort_by 的输入");
         bind(infer(*call->args[1]), Type::Text, "sort_by 的列名");
         bind(result, Type::Table, "sort_by 的结果");
+        shapeCopies_.push_back({expressions_.at(call->args[0].get()), result});
         return result;
       }
       auto found = functions_.find(call->callee);
@@ -1055,6 +1198,13 @@ struct CodeGenerator::Impl {
   llvm::IRBuilder<> builder{context};
   std::unique_ptr<Inference> inference;
   std::vector<std::unordered_map<std::string, TypedValue>> scopes;
+  struct LazyTableRow {
+    std::size_t scopeIndex;
+    llvm::Value* table;
+    llvm::Value* index;
+    std::string binding;
+  };
+  std::vector<LazyTableRow> lazyTableRows;
   std::unordered_map<std::string, const Function*> declarations;
   llvm::StructType* taggedType = nullptr;
   llvm::StructType* listType = nullptr;
@@ -1539,6 +1689,36 @@ struct CodeGenerator::Impl {
     return {row, Type::Record, kPresent};
   }
 
+  const LazyTableRow* lazyTableRow(const std::string& name) const {
+    for (std::size_t scopeIndex = scopes.size(); scopeIndex-- > 0;) {
+      if (scopes[scopeIndex].count(name)) return nullptr;
+      for (auto row = lazyTableRows.rbegin(); row != lazyTableRows.rend(); ++row) {
+        if (row->scopeIndex != scopeIndex) continue;
+        if (name == "$lan_current_element" ||
+            (!row->binding.empty() && name == row->binding))
+          return &*row;
+      }
+    }
+    return nullptr;
+  }
+
+  TypedValue emitTableCell(const LazyTableRow& row, const FieldExpr& field,
+                           Type expected) {
+    auto* key = fieldKey(field.name, field.key.get());
+    auto* storage = builder.CreateAlloca(taggedValueType(), nullptr, "table.cell");
+    builder.CreateStore(missingValue(Type::Dynamic), storage);
+    auto cellFn = external("lan_table_cell", builder.getInt32Ty(),
+                           {llvmType(Type::Table), llvmType(Type::Text),
+                            builder.getInt64Ty(),
+                            llvm::PointerType::get(context, 0)});
+    auto* found = builder.CreateICmpNE(
+        builder.CreateCall(cellFn, {row.table, key, row.index, storage}),
+        builder.getInt32(0), "table.cell.found");
+    auto* dynamic = builder.CreateLoad(taggedValueType(), storage,
+                                       "table.cell.value");
+    return decodeLookupValue(found, dynamic, expected);
+  }
+
   TypedValue emitCollectionElement(const CollectionExpr& expression,
                                    const TypedValue& receiver,
                                    llvm::Value* index) {
@@ -1548,12 +1728,19 @@ struct CodeGenerator::Impl {
   }
 
   TypedValue emitElementBody(const CollectionExpr& expression,
-                             const TypedValue& element) {
+                             const TypedValue& receiver, llvm::Value* index,
+                             const TypedValue* element = nullptr) {
     scopes.emplace_back();
-    scopes.back().emplace("$lan_current_element", element);
-    if (!expression.binding.empty())
-      scopes.back().emplace(expression.binding, element);
+    if (receiver.type == Type::Table) {
+      lazyTableRows.push_back(
+          {scopes.size() - 1, receiver.value, index, expression.binding});
+    } else {
+      scopes.back().emplace("$lan_current_element", *element);
+      if (!expression.binding.empty())
+        scopes.back().emplace(expression.binding, *element);
+    }
     auto value = emitElementBoundary(*expression.body);
+    if (receiver.type == Type::Table) lazyTableRows.pop_back();
     scopes.pop_back();
     return value;
   }
@@ -1589,10 +1776,16 @@ struct CodeGenerator::Impl {
     builder.CreateCondBr(builder.CreateICmpULT(index, length), body, done);
 
     builder.SetInsertPoint(body);
-    auto element = emitCollectionElement(expression, receiver, index);
-    auto mappedValue = emitElementBody(expression, element);
+    TypedValue element{nullptr, Type::Unknown, kNoPresence};
+    if (receiver.type != Type::Table)
+      element = emitCollectionElement(expression, receiver, index);
+    auto mappedValue = emitElementBody(
+        expression, receiver, index,
+        receiver.type == Type::Table ? nullptr : &element);
     if (expression.operation == CollectionOperation::Add ||
         expression.operation == CollectionOperation::Replace) {
+      if (receiver.type == Type::Table)
+        element = tableRowElement(receiver.value, index);
       auto changes = requirePresent(mappedValue, "add/replace 的字段 Record");
       auto* status = builder.CreateAlloca(builder.getInt32Ty(), nullptr,
                                           "record.merge.status");
@@ -1683,8 +1876,12 @@ struct CodeGenerator::Impl {
     builder.CreateCondBr(builder.CreateICmpULT(index, length), body, done);
 
     builder.SetInsertPoint(body);
-    auto element = emitCollectionElement(expression, receiver, index);
-    auto predicate = emitElementBody(expression, element);
+    TypedValue element{nullptr, Type::Unknown, kNoPresence};
+    if (receiver.type != Type::Table)
+      element = emitCollectionElement(expression, receiver, index);
+    auto predicate = emitElementBody(
+        expression, receiver, index,
+        receiver.type == Type::Table ? nullptr : &element);
     auto* predicatePresent = presentFlag(predicate);
     auto* predicateTrue = builder.CreateAnd(predicatePresent, rawPayload(predicate));
     llvm::Value* shouldStop = nullptr;
@@ -1692,7 +1889,7 @@ struct CodeGenerator::Impl {
     else shouldStop = builder.CreateAnd(predicatePresent,
                                         builder.CreateNot(rawPayload(predicate)));
 
-    if (isFind)
+    if (isFind && receiver.type != Type::Table)
       shouldStop = builder.CreateAnd(shouldStop, presentFlag(element));
     if (!isFind) {
       auto* recordMissing = llvm::BasicBlock::Create(context, "search.missing", function);
@@ -1707,6 +1904,8 @@ struct CodeGenerator::Impl {
 
     builder.SetInsertPoint(matched);
     if (isFind) {
+      if (receiver.type == Type::Table)
+        element = tableRowElement(receiver.value, index);
       auto found = convertPresence(element, resultPresence);
       builder.CreateStore(found.value, resultAddress);
     } else {
@@ -1729,6 +1928,21 @@ struct CodeGenerator::Impl {
   TypedValue emitCollection(const CollectionExpr& expression) {
     auto receiver = requirePresent(emitExpr(*expression.collection),
                                    "集合管道的输入");
+    if (receiver.type == Type::Table &&
+        expression.operation == CollectionOperation::Map) {
+      if (auto* field = dynamic_cast<const FieldExpr*>(expression.body.get())) {
+        auto* base = dynamic_cast<const VariableExpr*>(field->record.get());
+        bool current = base &&
+            (base->name == "$lan_current_element" ||
+             (!expression.binding.empty() && base->name == expression.binding));
+        if (current && !field->key &&
+            inference->tableHasFixedField(expression, field->name)) {
+          auto column = emitRecordLookup(
+              receiver.value, builder.CreateGlobalString(field->name), Type::List);
+          return requirePresent(column, "Table 列“" + field->name + "”");
+        }
+      }
+    }
     if (expression.operation == CollectionOperation::Find ||
         expression.operation == CollectionOperation::Any ||
         expression.operation == CollectionOperation::All)
@@ -2414,9 +2628,16 @@ struct CodeGenerator::Impl {
     if (auto* record = dynamic_cast<const RecordExpr*>(&expr))
       return {emitRecord(*record), Type::Record, kPresent};
     if (auto* variable = dynamic_cast<const VariableExpr*>(&expr)) {
-      for (auto scope = scopes.rbegin(); scope != scopes.rend(); ++scope) {
-        auto found = scope->find(variable->name);
-        if (found != scope->end()) return convertPresence(found->second, presence);
+      for (std::size_t scopeIndex = scopes.size(); scopeIndex-- > 0;) {
+        auto found = scopes[scopeIndex].find(variable->name);
+        if (found != scopes[scopeIndex].end())
+          return convertPresence(found->second, presence);
+        for (auto row = lazyTableRows.rbegin(); row != lazyTableRows.rend(); ++row) {
+          if (row->scopeIndex != scopeIndex) continue;
+          if (variable->name == "$lan_current_element" ||
+              (!row->binding.empty() && variable->name == row->binding))
+            return convertPresence(tableRowElement(row->table, row->index), presence);
+        }
       }
     }
     if (auto* let = dynamic_cast<const LetExpr*>(&expr)) {
@@ -2433,6 +2654,9 @@ struct CodeGenerator::Impl {
     if (auto* field = dynamic_cast<const FieldExpr*>(&expr)) {
       if (inference->expressionType(*field->record) == Type::List)
         return emitListIndex(*field, type);
+      if (auto* base = dynamic_cast<const VariableExpr*>(field->record.get()))
+        if (auto* row = lazyTableRow(base->name))
+          return emitTableCell(*row, *field, type);
       return emitField(*field, type);
     }
     if (auto* update = dynamic_cast<const RecordUpdateExpr*>(&expr))

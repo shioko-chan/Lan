@@ -399,6 +399,18 @@ void* lan_table_row(void* record, uint64_t row, int32_t* status) {
   return result;
 }
 
+int32_t lan_table_cell(void* record, const char* key, uint64_t row,
+                       LanValue* output) {
+  LanValue column;
+  if (!lan_record_lookup(record, key, &column) ||
+      column.tag != LAN_LIST || !column.pointer)
+    return 0;
+  LanList* list = column.pointer;
+  if (row >= list->length) return 0;
+  *output = list->elements[row];
+  return 1;
+}
+
 void* lan_table_from_rows(void* rows_pointer, int32_t* status) {
   LanList* rows = rows_pointer;
   *status = 0;

@@ -1,0 +1,3 @@
+names(rows) = rows |> map(.name)
+
+[names(table({name: ["Alice"]})), names(table({age: [20]}))]

@@ -525,7 +525,10 @@ Number、Boolean 和指针列提供紧凑数组及存在位，并向 LLVM 提供
 - [x] 普通函数不自动广播。
 - [x] Boolean 三值短路逻辑、`is_missing`、`require` 和简单分支存在性细化。
 - [x] `table(Record<List<T>>)` 零复制验证与 `table(List<Record>)` 行转列。
-- [ ] TableShape 静态 schema 传播与更精确的固定字段类型。
+- [x] TableShape 静态 schema 传播与更精确的固定字段类型；多个调用点的不同 schema 保守地取交集。
+- [x] 固定字段 predicate 直接按列/行号读取，`find` 仅在命中后物化返回行。
+- [x] `map(.field)` 在 TableShape 证明列存在时直接复用底层 List。
 - [ ] `map({...}) |> table()` 的相邻阶段融合；当前语义正确但会物化中间 List。
 - [ ] 紧凑列 ABI、LLVM 循环向量化和 SIMD 验证。
+- [ ] 用户函数接收整行时的跨函数字段需求分析；当前会退化为物化行 Record。
 - [ ] 带集合索引、Table 行号、字段路径和调用链的完整运行时诊断。

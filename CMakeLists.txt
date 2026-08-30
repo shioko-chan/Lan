@@ -51,7 +51,8 @@ foreach(error_case
     normal_function_broadcast
     element_binding_outside
     pipeline_parentheses
-    old_stream_syntax)
+    old_stream_syntax
+    table_shape_type)
   add_test(NAME reject_${error_case}
     COMMAND lanc ${CMAKE_CURRENT_SOURCE_DIR}/tests/${error_case}_error.lan)
   set_tests_properties(reject_${error_case} PROPERTIES WILL_FAIL TRUE)
@@ -59,6 +60,16 @@ endforeach()
 add_test(NAME reject_require_missing
   COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/require_missing_error.lan)
 set_tests_properties(reject_require_missing PROPERTIES WILL_FAIL TRUE)
+add_test(NAME table_lazy_row_lowering
+  COMMAND ${CMAKE_COMMAND}
+          -DLANC=$<TARGET_FILE:lanc>
+          -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/table_lowering.lan
+          -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/table_lowering.ll
+          -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_table_lowering.cmake)
+add_test(NAME table_shape_call_intersection
+  COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/table_shape_intersection.lan)
+set_tests_properties(table_shape_call_intersection PROPERTIES
+  PASS_REGULAR_EXPRESSION [=[\[\["Alice"\], \[missing\]\]]=])
 add_test(NAME confirmed_new_syntax
   COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/confirmed_syntax.lan)
 set_tests_properties(confirmed_new_syntax PROPERTIES

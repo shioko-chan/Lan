@@ -451,6 +451,11 @@ Table 底层仍是 `Record<List<T>>`：HAMT 负责列名查找，单类型 List 
 表格验证只遍历列描述和读取列表长度，不遍历或复制单元格。筛选、截取、排序、
 整列计算会为结果分配新的 List 和 HAMT 路径，但不会修改输入 Table。
 
+编译器会为静态已知的列传播 TableShape。Table 元素表达式中的 `.field`
+直接按列和行号读取，不会先构造完整行 Record；`table |> map(.field)`
+可直接复用已验证的底层 List。`find` 在检查 predicate 时也不物化行，
+只在命中后构造需要返回的 Record。
+
 ## Record
 
 Record 是字段名称到值的不可变映射，不是具有方法的对象。字段本身可以保存任意
