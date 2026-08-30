@@ -70,6 +70,14 @@ add_test(NAME table_shape_call_intersection
   COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/table_shape_intersection.lan)
 set_tests_properties(table_shape_call_intersection PROPERTIES
   PASS_REGULAR_EXPRESSION [=[\[\["Alice"\], \[missing\]\]]=])
+add_test(NAME table_map_table_fusion
+  COMMAND ${CMAKE_COMMAND}
+          -DLANC=$<TARGET_FILE:lanc>
+          -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/table_map_table_fusion.lan
+          -DFALLBACK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/table_fusion_fallback.lan
+          -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/table_map_table_fusion.ll
+          -DFALLBACK_OUTPUT=${CMAKE_CURRENT_BINARY_DIR}/table_fusion_fallback.ll
+          -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_table_fusion.cmake)
 add_test(NAME confirmed_new_syntax
   COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/confirmed_syntax.lan)
 set_tests_properties(confirmed_new_syntax PROPERTIES

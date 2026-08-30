@@ -1,0 +1,15 @@
+demo() =
+  people = table({
+    name: ["Alice", "Bob"],
+    age: [20, missing],
+    ignored: [true, false]
+  })
+  projected = people
+    |> map({label: .name, years: .age})
+    |> table()
+  computed = people
+    |> map({label: .name + "!", adult: (.age ?? 0) >= 18})
+    |> table()
+  {projected: projected, computed: computed}
+
+demo()

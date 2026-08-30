@@ -1,0 +1,6 @@
+maybe_adults(people) =
+  people
+    |> map({adult: .age? >= 18})
+    |> table()
+
+maybe_adults(table({age: [20, missing]}))

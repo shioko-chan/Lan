@@ -1727,9 +1727,11 @@ struct CodeGenerator::Impl {
                            inference->collectionElementType(expression));
   }
 
-  TypedValue emitElementBody(const CollectionExpr& expression,
-                             const TypedValue& receiver, llvm::Value* index,
-                             const TypedValue* element = nullptr) {
+  TypedValue emitElementExpression(const CollectionExpr& expression,
+                                   const Expr& body,
+                                   const TypedValue& receiver,
+                                   llvm::Value* index,
+                                   const TypedValue* element = nullptr) {
     scopes.emplace_back();
     if (receiver.type == Type::Table) {
       lazyTableRows.push_back(
@@ -1739,10 +1741,17 @@ struct CodeGenerator::Impl {
       if (!expression.binding.empty())
         scopes.back().emplace(expression.binding, *element);
     }
-    auto value = emitElementBoundary(*expression.body);
+    auto value = emitElementBoundary(body);
     if (receiver.type == Type::Table) lazyTableRows.pop_back();
     scopes.pop_back();
     return value;
+  }
+
+  TypedValue emitElementBody(const CollectionExpr& expression,
+                             const TypedValue& receiver, llvm::Value* index,
+                             const TypedValue* element = nullptr) {
+    return emitElementExpression(expression, *expression.body, receiver, index,
+                                 element);
   }
 
   llvm::Value* collectionLength(const TypedValue& receiver) {
@@ -1958,7 +1967,162 @@ struct CodeGenerator::Impl {
     builder.CreateUnreachable();
   }
 
+  bool projectionField(const CollectionExpr& map, const Expr& expression,
+                       std::string& name) {
+    auto* field = dynamic_cast<const FieldExpr*>(&expression);
+    if (!field || field->key) return false;
+    auto* base = dynamic_cast<const VariableExpr*>(field->record.get());
+    if (!base) return false;
+    bool current = base->name == "$lan_current_element" ||
+        (!map.binding.empty() && base->name == map.binding);
+    if (!current || !inference->tableHasFixedField(map, field->name)) return false;
+    name = field->name;
+    return true;
+  }
+
+  bool canFuseTableProjection(const CollectionExpr& map) {
+    if (map.operation != CollectionOperation::Map ||
+        inference->expressionType(*map.collection) != Type::Table)
+      return false;
+    auto* record = dynamic_cast<const RecordExpr*>(map.body.get());
+    if (!record) return false;
+    for (const auto& field : record->fields) {
+      std::string input;
+      if (field.key || !projectionField(map, *field.value, input)) return false;
+    }
+    return true;
+  }
+
+  bool canFuseColumnExpression(const CollectionExpr& map,
+                               const Expr& expression) {
+    if (inference->expressionType(expression) == Type::Dynamic) return false;
+    if (dynamic_cast<const NumberExpr*>(&expression) ||
+        dynamic_cast<const BooleanExpr*>(&expression) ||
+        dynamic_cast<const TextExpr*>(&expression) ||
+        dynamic_cast<const MissingExpr*>(&expression))
+      return true;
+    if (auto* field = dynamic_cast<const FieldExpr*>(&expression)) {
+      std::string ignored;
+      return projectionField(map, expression, ignored);
+    }
+    if (auto* unary = dynamic_cast<const UnaryExpr*>(&expression))
+      return canFuseColumnExpression(map, *unary->operand);
+    if (auto* binary = dynamic_cast<const BinaryExpr*>(&expression))
+      return canFuseColumnExpression(map, *binary->lhs) &&
+             canFuseColumnExpression(map, *binary->rhs);
+    return false;
+  }
+
+  bool canFuseComputedTable(const CollectionExpr& map) {
+    if (map.operation != CollectionOperation::Map ||
+        inference->expressionType(*map.collection) != Type::Table)
+      return false;
+    auto* record = dynamic_cast<const RecordExpr*>(map.body.get());
+    if (!record) return false;
+    return std::all_of(record->fields.begin(), record->fields.end(),
+                       [&](const RecordField& field) {
+      return !field.key && canFuseColumnExpression(map, *field.value);
+    });
+  }
+
+  TypedValue emitFusedTableProjection(const CollectionExpr& map) {
+    auto source = requirePresent(emitExpr(*map.collection),
+                                 "Table 投影的输入");
+    auto* record = static_cast<const RecordExpr*>(map.body.get());
+    auto emptyFn = external("lan_record_empty", llvmType(Type::Record), {});
+    auto assocFn = external("lan_record_assoc", llvmType(Type::Record),
+                            {llvmType(Type::Record), llvmType(Type::Text),
+                             builder.getInt32Ty(), builder.getDoubleTy(),
+                             llvmType(Type::Text)});
+    auto releaseFn = external("lan_record_release", builder.getVoidTy(),
+                              {llvmType(Type::Record)});
+    llvm::Value* result = builder.CreateCall(emptyFn, {}, "projection.empty");
+    for (const auto& output : record->fields) {
+      std::string input;
+      projectionField(map, *output.value, input);
+      auto column = requirePresent(
+          emitRecordLookup(source.value, builder.CreateGlobalString(input), Type::List),
+          "Table 列“" + input + "”");
+      auto* updated = builder.CreateCall(
+          assocFn,
+          {result, builder.CreateGlobalString(output.name),
+           builder.getInt32(tagFor(Type::List)),
+           llvm::ConstantFP::get(builder.getDoubleTy(), 0.0), column.value},
+          "projection.column");
+      builder.CreateCall(releaseFn, {result});
+      result = updated;
+    }
+    return {result, Type::Table, kPresent};
+  }
+
+  TypedValue emitFusedComputedTable(const CollectionExpr& map) {
+    auto source = requirePresent(emitExpr(*map.collection),
+                                 "Table 计算投影的输入");
+    auto* record = static_cast<const RecordExpr*>(map.body.get());
+    auto* length = collectionLength(source);
+    std::vector<llvm::Value*> columns;
+    std::vector<llvm::Value*> data;
+    columns.reserve(record->fields.size());
+    data.reserve(record->fields.size());
+    for (std::size_t field = 0; field < record->fields.size(); ++field) {
+      auto storage = allocateListStorage(length, "projection.computed");
+      columns.push_back(storage.first);
+      data.push_back(storage.second);
+    }
+
+    auto* function = builder.GetInsertBlock()->getParent();
+    auto* check = llvm::BasicBlock::Create(context, "projection.check", function);
+    auto* body = llvm::BasicBlock::Create(context, "projection.body", function);
+    auto* done = llvm::BasicBlock::Create(context, "projection.done", function);
+    auto* indexAddress = builder.CreateAlloca(builder.getInt64Ty(), nullptr,
+                                              "projection.index");
+    builder.CreateStore(builder.getInt64(0), indexAddress);
+    builder.CreateBr(check);
+    builder.SetInsertPoint(check);
+    auto* index = builder.CreateLoad(builder.getInt64Ty(), indexAddress,
+                                     "projection.row");
+    builder.CreateCondBr(builder.CreateICmpULT(index, length), body, done);
+
+    builder.SetInsertPoint(body);
+    for (std::size_t field = 0; field < record->fields.size(); ++field) {
+      auto value = emitElementExpression(map, *record->fields[field].value,
+                                         source, index);
+      storeListElement(data[field], index, value);
+    }
+    auto* next = builder.CreateAdd(index, builder.getInt64(1),
+                                   "projection.next");
+    builder.CreateStore(next, indexAddress);
+    builder.CreateBr(check);
+    builder.SetInsertPoint(done);
+
+    auto emptyFn = external("lan_record_empty", llvmType(Type::Record), {});
+    auto assocFn = external("lan_record_assoc", llvmType(Type::Record),
+                            {llvmType(Type::Record), llvmType(Type::Text),
+                             builder.getInt32Ty(), builder.getDoubleTy(),
+                             llvmType(Type::Text)});
+    auto releaseFn = external("lan_record_release", builder.getVoidTy(),
+                              {llvmType(Type::Record)});
+    llvm::Value* result = builder.CreateCall(emptyFn, {}, "projection.result");
+    for (std::size_t field = 0; field < record->fields.size(); ++field) {
+      auto* updated = builder.CreateCall(
+          assocFn,
+          {result, builder.CreateGlobalString(record->fields[field].name),
+           builder.getInt32(tagFor(Type::List)),
+           llvm::ConstantFP::get(builder.getDoubleTy(), 0.0), columns[field]},
+          "projection.result.column");
+      builder.CreateCall(releaseFn, {result});
+      result = updated;
+    }
+    return {result, Type::Table, kPresent};
+  }
+
   TypedValue emitTableValidation(const CallExpr& call) {
+    if (auto* map = dynamic_cast<const CollectionExpr*>(call.args[0].get());
+        map && canFuseTableProjection(*map))
+      return emitFusedTableProjection(*map);
+    if (auto* map = dynamic_cast<const CollectionExpr*>(call.args[0].get());
+        map && canFuseComputedTable(*map))
+      return emitFusedComputedTable(*map);
     auto input = requirePresent(emitExpr(*call.args[0]), "table 的输入");
     if (input.type == Type::List) {
       auto* status = builder.CreateAlloca(builder.getInt32Ty(), nullptr,
