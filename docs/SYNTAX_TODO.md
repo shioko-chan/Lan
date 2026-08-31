@@ -1,7 +1,7 @@
 # Lan 语法与语言核心清单
 
 本文件记录语法、静态语义、求值规则、编译器 lowering、运行时表示和内存管理。
-用户可调用的函数及集合操作记录在 [`STDLIB_TODO.md`](STDLIB_TODO.md)，尚未实现的
+用户可调用的函数及集合操作记录在 [`STDLIB_TODO.md`](STDLIB_TODO.md)，分阶段实现的
 IO Monad 规范记录在 [`IO_DESIGN.md`](IO_DESIGN.md)，时间与随机 effect 记录在
 [`TIME_RANDOM_DESIGN.md`](TIME_RANDOM_DESIGN.md)，正则表达式类型记录在
 [`REGEX_DESIGN.md`](REGEX_DESIGN.md)。
@@ -16,7 +16,7 @@ IO Monad 规范记录在 [`IO_DESIGN.md`](IO_DESIGN.md)，时间与随机 effect
 
 - [x] ~~将 Lan 定位为简单、简洁、优雅的纯函数式数据 DSL；面向具备基本代码阅读能力的领域使用者和人机协作流程，而非零经验用户或无代码场景。~~
 - [x] ~~使用 Flex、Bison、C++17 和 LLVM 后端。~~
-- [x] ~~采用表达式语言，没有 `main`、`return` 和用户可见的打印副作用。~~
+- [x] ~~采用表达式语言，没有 `main`、`return`；外部输出使用显式 IO action，入口自动显示最终结果。~~
 - [x] ~~支持缩进块以及花括号/分号块，并将两者降低为相同 AST。~~
 - [x] ~~使用 layout rule 生成虚拟块起止符和分隔符；未开启新块的更深缩进作为表达式续行。~~
 - [x] ~~使用冒号区分 Record 字段，使用等号和分号区分显式代码块。~~
@@ -25,8 +25,13 @@ IO Monad 规范记录在 [`IO_DESIGN.md`](IO_DESIGN.md)，时间与随机 effect
 - [x] ~~禁止直接和间接递归，要求函数调用图为 DAG。~~
 - [x] ~~沿调用 DAG 分析函数，不使用固定次数的反复扫描。~~
 - [x] ~~不提供通用 `for`、`while` 和无限迭代。~~
-- [ ] 按 `IO_DESIGN.md` 增加显式 `IO<T>`、`Unit`、`io` 块和 `<-` 顺序绑定。
-- [ ] 仅在文件最终结果位置执行 `IO<T>`，保持普通函数和 action 构造过程纯净。
+- [x] ~~按 `IO_DESIGN.md` 增加 `Unit` 类型与 `()` 字面量，支持函数、missing、List、Record 和 Table 列。~~
+- [x] ~~单元值统一写为 `()`；`unit` 是普通名称，不保留旧字面量别名。~~
+- [x] ~~按 `IO_DESIGN.md` 增加 `IO<T>`、`io` 块和 `<-` 顺序绑定，缩进/花括号形式等价。~~
+- [x] ~~普通表达式只构造 action，执行仅发生在 `io` 顺序步骤和文件最终 IO 入口。~~
+- [x] ~~IO 最后一步自动执行 action 或提升纯值；`?` 只结束当前步骤的表达式。~~
+- [x] ~~拒绝 IO 容器元素、比较、`same` 和 Text 转换；区分 action 与执行结果的 missing。~~
+- [x] ~~IO 仅捕获词法自由变量，环境保持不可变 DAG，由 ARC 管理并支持重复执行。~~
 
 ## 名称、作用域与函数
 
@@ -42,13 +47,14 @@ IO Monad 规范记录在 [`IO_DESIGN.md`](IO_DESIGN.md)，时间与随机 effect
 
 ## 类型与 missing
 
-- [x] ~~支持 Number、Boolean、Text、`List<T>`、Record 和静态细化的 Table。~~
+- [x] ~~支持 Number、Boolean、Unit、Text、`List<T>`、Record、Regex、`IO<T>` 和静态细化的 Table。~~
 - [x] ~~所有值在语言语义上统一理解为 `Option<T>`。~~
 - [x] ~~同时推断 `Present`、`Missing` 和 `MaybeMissing`。~~
 - [x] ~~确定存在的数字和布尔值直接生成裸 LLVM SSA 值。~~
 - [x] ~~可能缺失的 Number 使用 `{i1, double}`。~~
 - [x] ~~可能缺失的 Boolean 使用 `i2` niche。~~
-- [x] ~~可能缺失的 Text、List、Record 和 Table 使用空指针 niche。~~
+- [x] ~~Unit 不携带数据载荷；可能缺失的 Unit 使用 `i1` 存在标记。~~
+- [x] ~~可能缺失的 Text、List、Record、Table、Regex 和 IO 使用空指针 niche。~~
 - [x] ~~动态值使用 `MISSING` 类型标签。~~
 - [x] ~~普通运算消费 `missing` 时在运行时拒绝。~~
 - [x] ~~后缀 `?` 使当前表达式短路为 `missing`，不是函数提前返回。~~
@@ -75,6 +81,7 @@ IO Monad 规范记录在 [`IO_DESIGN.md`](IO_DESIGN.md)，时间与随机 effect
 - [x] ~~普通用户函数不自动广播，逐元素调用必须显式位于集合操作中。~~
 - [x] ~~已知元素类型的 List 使用按 `T` 生成的紧凑连续数组，动态类型保留标签回退。~~
 - [x] ~~Number 使用 `double[]` 和存在标记；Boolean 使用三态字节；指针类型使用 null niche。~~
+- [x] ~~紧凑 `List<Unit>` 仅使用每个元素一个字节的存在标记。~~
 - [x] ~~一维 Number 列间及标量运算使用专用循环并验证 LLVM SIMD；除法先顺序检查首个有效零除数。~~
 - [x] ~~Boolean 三态列的列间及标量逻辑、相等比较和 `??` 使用专用紧凑循环并验证 LLVM SIMD。~~
 - [x] ~~标量广播、Text 连接、一元运算和嵌套广播按已知叶类型构造紧凑结果。~~
@@ -114,6 +121,7 @@ IO Monad 规范记录在 [`IO_DESIGN.md`](IO_DESIGN.md)，时间与随机 effect
 - [x] ~~允许不可变对象共享子结构，并规定所有堆对象构成 DAG。~~
 - [ ] 将“新对象只能引用已完成对象”的 DAG 保持规则加入编译器内部文档和验证器。
 - [x] ~~完成堆值的 owned、borrowed、transferred 所有权模型。~~
+- [x] ~~运行时内部使用 C++ RAII 管理临时 owned 引用；C ABI `LanValue` 保持平凡数据布局。~~
 - [x] ~~使用函数级所有权区域覆盖局部绑定、遮蔽、作用域、参数、默认参数和返回值边界。~~
 - [x] ~~管理 Record、List、动态 Text 和动态值中的所有引用，并在程序结束释放根对象。~~
 - [ ] 为未来的 FFI、反序列化和插件对象定义一次性 DAG 验证边界；在此之前保持禁用。
@@ -134,7 +142,9 @@ IO Monad 规范记录在 [`IO_DESIGN.md`](IO_DESIGN.md)，时间与随机 effect
 - [ ] 明确定义 totality 强度：只保证终止，还是保证所有输入都正常返回。
 - [ ] 统一定义资源耗尽和其他运行时数据错误的语言语义。
 - [x] ~~项目可以构建，`--build` 保存中间产物，`--run` 构建后执行。~~
-- [x] ~~现有 136 项自动化测试全部通过。~~
+- [x] ~~现有 193 项自动化测试全部通过。~~
 - [x] ~~测试覆盖递归拒绝、遮蔽、默认参数、missing、短路、List 类型和 Record 更新。~~
 - [x] ~~测试覆盖 Table 验证、聚合、转换、列式 lowering 和跨函数字段按需读取。~~
 - [x] ~~测试覆盖缩进/花括号等价、紧凑 ABI、SIMD、除零顺序和结构化诊断。~~
+- [x] ~~测试覆盖 Unit 的 presence、函数与容器交互，以及行转列和嵌套广播的 ARC 释放。~~
+- [x] ~~测试覆盖 IO 延迟执行、两种块语法、重复执行、捕获寿命、类型限制和 missing 边界。~~

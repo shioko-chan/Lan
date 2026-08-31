@@ -1,14 +1,21 @@
 #include "lan/AST.h"
 #include "lan/Codegen.h"
+#include "lan/RuntimeAssets.h"
 #include "parser.hpp"
 
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
+#include <cstdint>
+#include <cerrno>
+#include <cstring>
 #include <iostream>
 #include <memory>
 #include <string>
+#include <vector>
 #include <sys/wait.h>
+#include <unistd.h>
 
 extern FILE* yyin;
 extern int yylineno;
@@ -22,7 +29,7 @@ void usage(const char* executable) {
   std::cerr << "用法：\n"
             << "  " << executable << " [--emit-ir] <程序.lan> [-o 输出.ll]\n"
             << "  " << executable << " --build <程序.lan>\n"
-            << "  " << executable << " --run <程序.lan>\n";
+            << "  " << executable << " --run <程序.lan> [-- 参数...]\n";
 }
 
 std::string shellQuote(const std::string& value) {
@@ -45,8 +52,15 @@ int main(int argc, char** argv) {
   bool explicitMode = false;
   std::string inputPath;
   std::string outputPath;
+  std::vector<std::string> programArguments;
+  bool hasArgumentSeparator = false;
   for (int i = 1; i < argc; ++i) {
     std::string argument = argv[i];
+    if (argument == "--") {
+      hasArgumentSeparator = true;
+      for (++i; i < argc; ++i) programArguments.emplace_back(argv[i]);
+      break;
+    }
     if (argument == "--run" || argument == "--build" || argument == "--emit-ir") {
       Mode requested = argument == "--run" ? Mode::Run
                      : argument == "--build" ? Mode::Build : Mode::EmitIR;
@@ -69,6 +83,10 @@ int main(int argc, char** argv) {
   }
   if (inputPath.empty()) {
     usage(argv[0]);
+    return 2;
+  }
+  if (hasArgumentSeparator && mode != Mode::Run) {
+    std::cerr << "Lan：程序参数只能用于 --run，并放在 -- 后面\n";
     return 2;
   }
   if (mode != Mode::EmitIR && !outputPath.empty()) {
@@ -139,8 +157,38 @@ int main(int argc, char** argv) {
     std::cerr << "Lan：生成目标文件失败\n";
     return status;
   }
-  std::string linkCommand = shellQuote(LAN_CLANG_PATH) + " " +
-      shellQuote(objectPath.string()) + " -lm -o " + shellQuote(executablePath.string());
+  std::string nativeRuntime;
+  bool regex = generator.needsRegexRuntime();
+  if (regex) {
+    auto archivePath = buildDirectory / "lan_regex_runtime.a";
+    std::ofstream archive(archivePath, std::ios::binary | std::ios::trunc);
+    archive.write(reinterpret_cast<const char*>(lan_regex_bytes),
+        reinterpret_cast<uintptr_t>(lan_regex_end) -
+        reinterpret_cast<uintptr_t>(lan_regex_bytes));
+    archive.close();
+    if (!archive) {
+      std::cerr << "Lan：无法写入正则运行时静态库\n";
+      return 1;
+    }
+    std::ofstream notices(buildDirectory / "REGEX_LICENSES.txt", std::ios::binary);
+    notices.write(reinterpret_cast<const char*>(lan_regex_licenses),
+        reinterpret_cast<uintptr_t>(lan_regex_licenses_end) -
+        reinterpret_cast<uintptr_t>(lan_regex_licenses));
+    notices.close();
+    if (!notices) {
+      std::cerr << "Lan：无法写入正则运行时许可证\n";
+      return 1;
+    }
+    nativeRuntime = " " + shellQuote(archivePath.string()) + " -pthread";
+#ifdef __APPLE__
+    // Abseil's time/logging implementation depends on this system framework.
+    nativeRuntime += " -framework CoreFoundation -Wl,-dead_strip";
+#elif defined(__linux__)
+    nativeRuntime += " -ldl -lrt -Wl,--gc-sections";
+#endif
+  }
+  std::string linkCommand = shellQuote(regex ? LAN_CLANGXX_PATH : LAN_CLANG_PATH) + " " +
+      shellQuote(objectPath.string()) + nativeRuntime + " -lm -o " + shellQuote(executablePath.string());
   status = commandExitCode(std::system(linkCommand.c_str()));
   if (status != 0) {
     std::cerr << "Lan：生成可执行文件失败\n";
@@ -151,5 +199,11 @@ int main(int argc, char** argv) {
     std::cout << "Lan：已生成 " << executablePath.string() << "\n";
     return 0;
   }
-  return commandExitCode(std::system(shellQuote(executablePath.string()).c_str()));
+  std::string executable = executablePath.string();
+  std::vector<char*> runArguments{executable.data()};
+  for (auto& argument : programArguments) runArguments.push_back(argument.data());
+  runArguments.push_back(nullptr);
+  execv(executable.c_str(), runArguments.data());
+  std::cerr << "Lan：执行程序失败：" << std::strerror(errno) << "\n";
+  return 1;
 }

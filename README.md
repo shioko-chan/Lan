@@ -211,6 +211,7 @@ message("小明", 20)
 
 - 数字：`10`、`3.14`，底层使用 LLVM `double`
 - 是/否值：`true`、`false`
+- Unit：`()`，确定存在但没有额外内容的单一值
 - 文字：`"Hello"`、`"你好"`
 - 单类型列表：`[1, 2, 3]`、`["红", "绿", "蓝"]`
 - Record：`{name: "小明", age: 20}`
@@ -219,6 +220,85 @@ message("小明", 20)
 - 比较：`==`、`!=`、`<`、`>`、`<=`、`>=`
 - 逻辑：`and`、`or`、`not`，也兼容 `&&`、`||`、`!`
 - 中文或英文名称
+
+### Unit 与 missing
+
+`Unit` 只有一个值 `()`，用于表示完成但没有有意义的返回内容。它不是 `missing`，
+也不是 `false`、空 Record 或空 List：
+
+```lan
+finish(found) = if found { () } else { missing }
+
+finish(true)           # ()
+finish(false)?         # missing；最终结果显式允许缺失
+finish(false) ?? ()    # ()
+is_missing(())         # false
+same((), missing)     # false
+```
+
+Unit 可以用于函数参数、默认值、返回值、Record 字段和 `List<Unit>`（包括 Table 列）。
+它遵循既有的 `?`、`??` 和 `require` 规则；相等比较也支持 List 逐元素运算和广播。
+Unit 不能参与算术或用作 `if` 条件，也不能与 Boolean 混成单类型 List。
+`()` 是单元字面量，输出与 `to_text(())` 都使用文字 `()`。`unit` 不再是保留字，
+可以用作变量名、函数名或字段名。类型仍称为 `Unit`，不引入其他元组类型。
+
+底层 Unit 不分配堆对象：确定存在时为 LLVM 常量，可能缺失时用 `i1` 表示存在状态；
+紧凑 `List<Unit>` 每个元素占一个存在标记字节，动态值使用独立的 Unit 标签。
+它也用于表示 `IO<Unit>` 执行完成但没有额外结果。
+
+### IO action 与顺序执行
+
+`io` 块构造一个延迟执行的 `IO<T>` 值。构造时只捕获用到的不可变绑定，不运行块内
+代码；`<-` 执行 action 并绑定结果，文件最终结果为 IO 时由程序入口执行一次：
+
+```lan
+number(value) = io { value }
+
+program() = io
+  first <- number(10)
+  next = first + 2
+  number(next)
+
+program()  # 12
+```
+
+同一块也可以写成 `io { first <- number(10); next = first + 2; number(next) }`。
+规则如下：
+
+- `name = expression` 是纯绑定，右侧即使是 IO 也不会自动执行。
+- `name <- action` 执行 IO；块内非末尾的裸表达式也必须是 IO，执行后丢弃结果。
+- 最后一个表达式若为纯值则作为结果，若为 IO 则执行它并使用结果，不产生嵌套 IO。
+- 未使用的 action 不执行；同一 action 多次用于 `<-` 时，每次都会重新执行，不缓存结果。
+- 每个步骤按顺序执行，错误立即停止后续步骤。`?` 只结束所在步骤的表达式，不跳过整个块。
+- IO 可以作为函数参数、默认值、返回值及局部绑定；不能放进 List/Record/Table，不能比较、
+  调用 `same` 或转换为 Text。`<-` 只能出现在 `io` 块的步骤位置。
+
+action 自身为 missing 时拒绝执行，可以先用 `??` 选择备用 action。执行成功后产生的
+missing 是普通数据，后续步骤可用 `??`、`is_missing` 或 `require` 处理；程序入口显示
+IO 的最终数据结果时允许输出 `missing`。纯程序仍沿用最终 missing 必须显式 `?` 的规则。
+
+已实现以下标准 IO 函数，调用只构造 action，执行时才访问外部环境：
+
+- `read_stdin() -> IO<Text>`：读取到 EOF，保留换行；空输入返回空 Text。
+- `write_stdout(text) -> IO<Unit>`：写入原文，不自动加换行，返回前刷新输出。
+- `arguments() -> IO<List<Text>>`：返回不含可执行文件名的命令行参数快照。
+
+```lan
+io {
+  input <- read_stdin();
+  args <- arguments();
+  write_stdout(input);
+  {characters: length(input), arguments: args}
+}
+```
+
+标准输入最多 8 MiB，必须是有效 UTF-8 且不能包含 NUL；读取可能等待外部输入或 EOF，
+大小限制不代表超时保证。同一读取 action 再次执行时继续消费输入，已经到 EOF 则返回空 Text。
+命令行参数必须是有效 UTF-8，最多 65536 项、合计 8 MiB；空参数会保留。
+IO 错误写入 stderr，包含 action、源码位置和调用链；系统错误还包含 errno，失败后停止后续步骤。
+入口仍自动显示最终结果，包括 `IO<Unit>` 的 `()`；这与 `write_stdout` 的显式输出是两回事。
+文件读写和文件访问权限控制尚未实现。完整规范见
+[`docs/IO_DESIGN.md`](docs/IO_DESIGN.md)。
 
 ### Text、Number 与转换函数
 
@@ -295,6 +375,41 @@ require(parse_number(input))   # 需要严格拒绝失败时
 to_text([1, missing, 3])       # "[1, missing, 3]"
 ```
 
+### 正则表达式
+
+`regex(pattern)` 将 Text 编译为可复用的不透明 Regex，使用 RE2 语法：
+
+```lan
+digits = regex("[0-9]+")
+
+{
+  contains: "item-123" |> regex_contains(digits),  # true
+  matches: "123" |> regex_matches(digits),        # true，要求全文匹配
+  first: "item-123" |> regex_find(digits),         # "123"
+  all: "a1 b22" |> regex_find_all(digits),         # ["1", "22"]
+  parts: "a, b; c" |> regex_split(regex("[,;] *")) # ["a", "b", "c"]
+}
+```
+
+模式参数必须是 Regex，不接受隐式的 Text 模式转换；无效模式在运行时拒绝。
+`regex_find` 未匹配时返回 `missing`，`regex_find_all` 返回空 List。
+`regex_split` 保留首尾空片段；空匹配按一个 Unicode code point 前进，例如
+`regex_split("你好", regex(""))` 得到 `["", "你", "好", ""]`。
+切断 UTF-8 字符边界的提取（例如 `regex_find("你", regex("\\C"))`）会被拒绝。
+
+Regex 支持参数、返回值、List/Record 存储和 ARC。显示为 `<Regex>`，不暴露内部地址；
+`to_text` 拒绝 Regex 及包含 Regex 的集合。`same` 比较原始模式文本，不判断两个不同
+模式是否匹配同一个语言；Regex 不支持 `==`/`!=`。
+普通 missing 参数仍被拒绝，显式 `?` 可以短路。没有隐式广播：
+
+```lan
+texts |> map(regex_find(., digits))
+```
+
+模式上限为 64 KiB，RE2 引擎内存预算为 8 MiB。不支持反向引用和环视；
+大小写等选项使用模式内标记，例如 `regex("(?i)hello")`。详细规则见
+[`docs/REGEX_DESIGN.md`](docs/REGEX_DESIGN.md)。
+
 ## 单类型列表
 
 一个列表中的所有元素必须属于同一种类型。编译器自动推断元素类型，不需要用户写
@@ -311,6 +426,18 @@ Number 和 Text List 可以稳定排序；missing 固定放在末尾：
 sort([3, missing, 1, 2])       # [1, 2, 3, missing]
 names |> sort()                # 管道形式
 ```
+
+`distinct` 使用与 `same` 一致的结构化相等规则去重，保留每个值第一次出现的位置；多个
+missing 只保留一个。它支持所有 List 元素类型，返回的新 List 会共享而不是复制 Text、
+List、Record 和 Regex 元素：
+
+```lan
+distinct([2, 1, 2, missing, 1, missing])  # [2, 1, missing]
+records |> distinct()
+```
+
+实现使用结构化哈希，平均时间与输入的总结构大小呈线性关系，额外空间与外层元素数量
+呈线性关系；哈希冲突时仍调用结构化相等，因此不会因冲突错误去重。
 
 混合列表会在编译期被拒绝：
 
@@ -684,9 +811,11 @@ remove_field({name: "Alice", age: 20}, "age")  # {name: "Alice"}
 ```
 
 底层使用持久化 HAMT。更新只复制从根到目标字段的路径，其余分支由新旧 Record 共享，
-HAMT 节点用引用计数管理。Text、List、Record 和 Table 都纳入 ARC；复合值持有其子
+HAMT 节点用引用计数管理。Text、List、Record、Table 和 Regex 都纳入 ARC；复合值持有其子
 对象，函数参数借用调用者的值，新建值由当前函数的所有权区域持有，返回值在区域清理前
-转移给调用者。程序正常结束时会验证没有遗留堆对象。当前尚未启用“引用计数为 1 时原地
+转移给调用者。运行时内部以 C++ RAII 表示临时拥有的引用，并通过 `owned`/`shared`
+容器写入区分所有权转交与共享；LLVM 边界仍使用稳定的 C ABI `LanValue`，不会暴露 C++
+对象布局。底层 retain/release 只集中在引用计数实现中。程序正常结束时会验证没有遗留堆对象。当前尚未启用“引用计数为 1 时原地
 更新”的优化，仍始终采用安全的路径复制。
 
 ## 缺失值、运行时检查与显式传播
@@ -800,10 +929,13 @@ require(value)     # missing 时运行时拒绝，否则返回原值
 | 可能缺失的数字                | `{ i1 present, double value }` |
 | 确定存在的真假值              | `i1`                           |
 | 可能缺失的真假值              | `i2`：0 缺失、1 false、2 true  |
-| 可能缺失的文字、列表或 Record | `ptr`：空指针表示缺失          |
+| Unit                         | `i1`：0 缺失、1 ()         |
+| IO action                    | `ptr`：空指针表示 action 缺失；捕获环境使用 ARC |
+| 可能缺失的文字、列表、Record 或 Regex | `ptr`：空指针表示缺失          |
 | 已知类型的数字列表元素        | `double[]` 加逐元素存在标记    |
 | 已知类型的真假值列表元素      | 三态字节：missing/false/true   |
-| 文字、列表或 Record 列表元素  | `ptr[]`：空指针表示缺失        |
+| 文字、列表、Record 或 Regex 列表元素 | `ptr[]`：空指针表示缺失        |
+| Unit 列表元素                | `i8[]`：0 缺失、1 ()       |
 | 无法静态确定的动态字段/列表   | 带专用 `MISSING` 标签的回退值  |
 
 生成 IR 前会运行 LLVM `-O2` 流水线，因此常量存在标志、无效分支和临时 Option
@@ -852,7 +984,10 @@ repeat(value) = repeat(value)  # 编译错误
 
 ## 构建和运行
 
-需要 CMake、Flex、Bison、Clang 和 LLVM 开发文件：
+需要 CMake 3.22+、Flex、Bison、Clang/Clang++、llvm-ar 和 LLVM 开发文件。
+构建时自动下载固定版本的 RE2 2025-11-05 和 Abseil 20250512.1；离线时可向 CMake
+传入 `-DFETCHCONTENT_SOURCE_DIR_ABSEIL=/path/to/abseil` 和
+`-DFETCHCONTENT_SOURCE_DIR_RE2=/path/to/re2`，指向已解压的源码目录。
 
 Unicode Text 操作使用随源码内置的 utf8proc 2.11.3；构建时不需要另行安装，许可证位于
 `third_party/utf8proc/LICENSE.md`。
@@ -885,6 +1020,22 @@ ctest --test-dir build --output-on-failure
 `--run` 进行完全相同的持久化构建，然后自动执行 `.lan/<程序名>/<程序名>`。
 它不再创建临时 IR 或通过 `lli` 解释执行。`.lan/` 已加入 `.gitignore`。
 
+使用 `--` 将后续参数原样传给程序，供 `arguments()` 读取：
+
+```sh
+./build/lanc --run program.lan -- "a b" "" --verbose
+.lan/program/program "a b" "" --verbose
+```
+
+`-- 参数...` 只支持 `--run` 模式；程序直接继承标准输入、输出和错误流。
+
+Lan/Unicode bitcode 和 RE2 静态库已内嵌到 `lanc`，无需运行时读取源码构建目录。
+使用正则的程序还会在自己的 `.lan/<程序名>/` 中生成 `lan_regex_runtime.a` 和
+`REGEX_LICENSES.txt`，并静态链接 RE2/Abseil；分发此类程序时应附带许可证。
+不使用正则的程序不提取或链接该静态库。
+这并不意味着本机构建的编译器已是完全独立的发行包：它仍需 Clang 工具链，且所使用
+的 LLVM 发行版可能带有 z3/zstd 等动态依赖。
+
 生成 LLVM IR：
 
 ```sh
@@ -893,6 +1044,8 @@ lli types.ll
 ```
 
 `-o` 只用于默认的 IR 输出模式，不能与 `--build` 或 `--run` 一起使用。
+含正则调用的 IR 带有外部 RE2 适配层符号，不能直接用上面的裸 `lli` 命令执行；
+请使用 `--build`/`--run` 完成静态链接。
 
 ## 编译结构
 
@@ -911,11 +1064,10 @@ Lan 公式
 用户函数内部直接使用 LLVM SSA 值，不产生可变局部变量。文字连接由隐藏的运行时
 边界完成，但从 Lan 程序的观察结果看仍保持引用透明。
 
-下一阶段适合补齐容器的所有权分析和释放，在唯一引用路径上启用 Record 原地更新，
-然后增加列表遍历和模式匹配。
+后续可在唯一引用路径上启用 Record 原地更新，其他语法与标准库计划见下列文档。
 
 语言核心的已完成事项和后续计划见
 [`docs/SYNTAX_TODO.md`](docs/SYNTAX_TODO.md)，标准库 API 清单见
 [`docs/STDLIB_TODO.md`](docs/STDLIB_TODO.md)。完整的专题设计文档也统一位于
-[`docs/`](docs/) 目录；计划中的正则表达式 API 见
+[`docs/`](docs/) 目录；已实现的第一阶段正则表达式 API 及后续边界见
 [`docs/REGEX_DESIGN.md`](docs/REGEX_DESIGN.md)。

@@ -20,7 +20,7 @@ if(NOT compile_result EQUAL 0)
 endif()
 
 file(READ "${OUTPUT}" ir)
-string(REGEX MATCH "define noundef i32 @main\\(\\).*attributes" main_ir "${ir}")
+string(REGEX MATCH "define noundef i32 @main\\([^\n]*\\).*attributes" main_ir "${ir}")
 if(NOT main_ir)
   message(FATAL_ERROR "could not isolate generated main function")
 endif()

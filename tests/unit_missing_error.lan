@@ -1,0 +1,2 @@
+maybe_unit(found) = if found { () } else { missing }
+require(maybe_unit(false))

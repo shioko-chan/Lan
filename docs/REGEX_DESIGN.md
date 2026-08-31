@@ -1,6 +1,6 @@
 # Lan 正则表达式设计
 
-本文件定义尚未实现的正则表达式标准库。正则用于结构化文本搜索，不替代普通的字面
+本文件定义已实现的第一阶段正则表达式标准库及后续边界。正则用于结构化文本搜索，不替代普通的字面
 子串操作；`text_contains(text, part)` 始终按原样查找 Text，不把 `part` 解释为模式。
 
 ## 定位与引擎
@@ -26,7 +26,8 @@ regex(pattern) -> Regex
 语言语义上仍是 `Option<Regex>`；可能缺失时使用空指针 niche。
 
 `regex(pattern)` 是确定的纯函数。模式无效时属于程序输入错误，运行时拒绝并报告 RE2
-错误及模式偏移，不返回 missing。编译器遇到模式字面量时可以提前检查，但动态 Text
+错误，不返回 missing。RE2 的公共 API 提供错误信息和错误片段，不提供可靠的模式
+字节偏移；不得通过查找同名片段伪造精确偏移。编译器遇到模式字面量时可以提前检查，但动态 Text
 仍在运行时编译。
 
 Regex wrapper 使用引用计数管理；复制绑定只 retain，最后一个引用消失时 release 编译
@@ -63,6 +64,10 @@ regex_split("a, b; c", regex("[,;] *"))
 - `regex_split` 按从左到右的匹配边界切分，并像现有 `split` 一样保留首尾空 Text。
 - `regex_find_all` 和 `regex_split` 遇到零长度匹配时按一个 Unicode code point 前进，保证
   有限执行且不重复返回同一位置。
+- 尾部位置的空匹配也保留；例如 `regex_find_all("a", regex("a*"))` 返回 `["a", ""]`，
+  `regex_split("你好", regex(""))` 返回 `["", "你", "好", ""]`。
+  提取/切分不能产生破损 UTF-8：匹配边界切断 code point 时运行时拒绝，即使 RE2 的
+  `\\C` 字节匹配能识别该片段。Boolean 匹配不提取片段，不受此边界限制。
 
 所有操作也支持普通管道传入第一个参数：
 
@@ -77,12 +82,20 @@ Table 元素表达式。集合中从左到右定位第一个模式错误或运�
 
 ## 资源与 lowering
 
-- 限制模式 Text 的字节长度，并为每个 RE2 对象设置固定的最大内存预算。
+- 模式 Text 最长 65536 字节；每个 RE2 对象的 `max_mem` 设置为 8 MiB。
+  这是 RE2 引擎的内存预算，不是整个包装对象或进程的严格内存上限。
 - Text 本身继续遵守 Lan 的有限对象大小约束。
 - 编译器通过一个小型 `extern "C"` C ABI shim 调用 RE2；RE2 保持独立的成熟 C++ 库。
 - 循环不变量 Regex 在 `map` 和 Table 元素循环之外只编译一次并复用。
 - Regex wrapper 纳入 owned、borrowed、transferred 所有权分析和完整 ARC。
 - 错误诊断沿用源码位置、调用链、List 索引、Table 行号和字段路径。
+
+线性时间保证针对固定编译模式的**单次匹配**。find-all/split 会重复搜索剩余输入，
+不能笼统承诺整个枚举也线性：某些模式在每次返回短匹配前会扫描剩余后缀，整体可能
+达到平方时间。结果收集与片段复制另计；这些操作仍有限，且不存在回溯爆炸。
+
+Regex 通过 `same` 按原始模式 Text 比较，不比较对象地址，也不判断正则语言等价性；
+不提供 `==`/`!=`。最终显示中的 Regex 使用固定占位符 `<Regex>`，不读取模式内容。
 
 ## 暂不提供
 
@@ -104,3 +117,34 @@ Table 元素表达式。集合中从左到右定位第一个模式错误或运�
 4. 实现 contains、完整匹配和单次查找。
 5. 实现有限的 find-all 与 split，覆盖零长度匹配和 Unicode 前进规则。
 6. 验证普通函数、管道、List `map`、Table 元素上下文和跨函数 Regex 复用。
+
+## 实现进度与依赖构建
+
+- [x] 固定 RE2 2025-11-05，以及该版本上游声明的 Abseil 20250512.1。
+- [x] 编写独立的 C ABI 适配层 `runtime/regex/`：编译、retain/release、
+  完整匹配及按字节范围查找；异常不跨 C ABI 边界，错误使用调用方缓冲区。
+- [x] 编写 C 调用方测试，覆盖引用复用、空匹配、UTF-8、锚点、内嵌 NUL、
+  不支持的模式、参数校验和模式长度上限；C 语法检查已通过。
+- [x] 离线构建 RE2/Abseil 及适配层，并运行 C ABI 测试。
+- [x] 将静态运行时集成到编译器产物链接及资源分发流程。
+- [x] 接入 Regex 类型、Lan ARC 对象统计、构造与第一阶段语言 API。
+- [x] 完成 find-all/split 的 Unicode 零长度前进规则及 Lan 端到端回归测试。
+
+根项目构建已经集成适配层。只验证独立 C ABI 时也可以运行：
+
+```sh
+cmake -S runtime/regex -B build/regex -DCMAKE_BUILD_TYPE=Release
+cmake --build build/regex -j
+ctest --test-dir build/regex --output-on-failure
+```
+
+默认从官方仓库下载固定版本。离线构建可提供已解压的源码目录：
+`-DFETCHCONTENT_SOURCE_DIR_ABSEIL=/path/to/abseil`
+和 `-DFETCHCONTENT_SOURCE_DIR_RE2=/path/to/re2`。
+适配层只返回借用输入中的字节范围，不自行创建 Lan Text/List；这些值的物化、
+missing 和源码诊断由 Lan runtime/lowering 处理。
+
+编译器内嵌 Lan/Unicode bitcode、RE2/Abseil 原生静态库和许可证。优化后仍有正则调用时，
+`--build`/`--run` 才会将库和许可证写入程序的 `.lan` 目录并静态链接，普通程序不链接 RE2。
+RE2 不作为执行代码链接进编译器本身。该打包不消除 LLVM 发行版自身的动态依赖，
+也不内嵌 Clang 工具链；完全独立的编译器发行包仍是另一个构建目标。

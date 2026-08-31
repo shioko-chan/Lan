@@ -1,0 +1,6 @@
+source() = io { table({score: [10, 20], name: ["A", "B"]}) }
+io {
+  people <- source();
+  result = people |> map({score: .score + 1, name: .name}) |> table();
+  result
+}

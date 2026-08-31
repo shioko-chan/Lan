@@ -1,0 +1,38 @@
+make_pattern(source) = regex(source)
+identity(pattern) = pattern
+matches_row(row, pattern) = regex_contains(row.text, pattern)
+maybe_pattern(found) = if found { regex("[0-9]+") } else { missing }
+skip_pattern() = regex_contains(missing?, regex("["))
+
+{
+  digits = identity(make_pattern("[0-9]+"));
+  holder = {pattern: digits};
+  patterns = [digits, missing, regex("[a-z]+")];
+  people = table({text: ["a1", "none", "22"]});
+  {
+    all: "a1 b22" |> regex_find_all(digits),
+    anchor: regex_find_all("aa", regex("^a")),
+    casefold: regex_matches("Ä", regex("(?i)ä")),
+    contains: regex_contains("a1", digits),
+    empty_all: regex_find_all("你好", regex("")),
+    empty_input: regex_split("", regex("")),
+    empty_split: regex_split("你好", regex("")),
+    ends: regex_split(",a,", regex(",")),
+    first: regex_find("a1 b22", holder.pattern),
+    full: [regex_matches("a1", digits), regex_matches("123", digits)],
+    list_pattern: regex_contains("123", patterns.0),
+    mapped: ["a1", "b", "22"] |> map(regex_find(., digits)),
+    missing_pattern: is_missing(patterns.1),
+    no_match: regex_find("none", digits) ?? "fallback",
+    no_matches: regex_find_all("none", digits),
+    optional: regex_matches("42", maybe_pattern(true)),
+    opaque: digits,
+    preserved: regex_split("abc", regex("x")),
+    propagated: skip_pattern(),
+    same_patterns: same([digits], [regex("[0-9]+")]),
+    split: regex_split("a, b; c", regex("[,;] *")),
+    table_rows: people |> filter(matches_row(., digits)),
+    unicode: regex_find("你好世界", regex("世界")),
+    zero_after_match: regex_find_all("a", regex("a*"))
+  }
+}

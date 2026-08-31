@@ -1,0 +1,5 @@
+io {
+  first <- io { 1 / 0 };
+  second <- io { require(missing) };
+  ()
+}

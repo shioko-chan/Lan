@@ -1,0 +1,20 @@
+wrap(value) = io { value }
+default_action(action = io { 7 }) = io { action }
+maybe_action(found) = if found { io { 11 } } else { missing }
+build(seed) = io {
+  local = seed + 1;
+  nested = io { local + 1 };
+  nested
+}
+
+io {
+  nested <- wrap(io { 3 });
+  first <- default_action();
+  override <- default_action(action = io { 9 });
+  selected <- maybe_action(false) ?? io { 13 };
+  captured <- build(20);
+  unit_value <- io { () };
+  result <- io { missing };
+  {nested: nested, first: first, override: override, selected: selected,
+   captured: captured, unit_value: unit_value, result: result}
+}

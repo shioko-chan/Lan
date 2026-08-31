@@ -1,0 +1,2 @@
+compile_row(row) = regex(row.pattern)
+table({pattern: ["a", "["]}) |> map(compile_row(.))

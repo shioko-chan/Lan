@@ -1,0 +1,13 @@
+number(value) = io
+  value
+
+program() = io
+  x <- number(10)
+  y = x + 2
+  number(999)
+  if y > 10
+    number(y)
+  else
+    number(0)
+
+program()

@@ -1,0 +1,19 @@
+{
+  texts = [["a", missing], missing];
+  fallback = [["b", "c"], ["d"]];
+  values = [[()], missing];
+  records = [[{done: ()}, missing], missing];
+  checks = [
+    same(texts ?? fallback, [["a", "c"], ["d"]]),
+    same(texts, [["a", missing], missing]),
+    same(fallback, [["b", "c"], ["d"]]),
+    same(texts + "!", [["a!", missing], missing]),
+    same([[missing, ()]] ?? values, [[()]]),
+    same(values ?? [[()], [()]], [[()], [()]]),
+    same(records ?? [[{other: true}, {done: ()}], [{done: ()}]],
+         [[{done: ()}, {done: ()}], [{done: ()}]]),
+    same(records, [[{done: ()}, missing], missing]),
+    same([[1, missing], [3]] + [10, 20], [[11, missing], [13]])
+  ];
+  checks |> all(.)
+}

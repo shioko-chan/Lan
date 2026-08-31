@@ -1,0 +1,8 @@
+unit(unit) = unit
+has_argument(value = missing) = not is_missing(value)
+{
+  unit = ();
+  record = {unit: unit};
+  same(unit(()), (())) and same(record.unit, ())
+    and not has_argument() and has_argument(())
+}

@@ -1,0 +1,19 @@
+{
+  first = regex("a+");
+  second = regex("b+");
+  checks = [
+    same(distinct([1, 2, 1, missing, 2, missing, -0.0, 0.0]),
+         [1, 2, missing, -0.0]),
+    same(["a", "b", "a", missing, "b"] |> distinct(),
+         ["a", "b", missing]),
+    same(distinct([true, false, true, missing]),
+         [true, false, missing]),
+    same(distinct([(), missing, (), missing]), [(), missing]),
+    same(distinct([[1, 2], [1, 2], [2], missing]),
+         [[1, 2], [2], missing]),
+    same(distinct([{name: "A"}, {name: "A"}, {name: "B"}, missing]),
+         [{name: "A"}, {name: "B"}, missing]),
+    same(distinct([first, regex("a+"), second, first]), [first, second])
+  ];
+  checks |> all(.)
+}

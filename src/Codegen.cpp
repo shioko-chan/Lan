@@ -1,4 +1,6 @@
 #include "lan/Codegen.h"
+#include "lan/RuntimeAssets.h"
+#include "lan/FreeVariables.h"
 
 #include <llvm/Bitcode/BitcodeReader.h>
 #include <llvm/IR/BasicBlock.h>
@@ -36,6 +38,9 @@ const char* typeName(Type type) {
     case Type::List: return "列表";
     case Type::Record: return "Record";
     case Type::Table: return "Table";
+    case Type::Regex: return "Regex";
+    case Type::Unit: return "Unit";
+    case Type::IO: return "IO";
     case Type::Dynamic: return "动态值";
     case Type::Unknown: return "尚未确定的类型";
   }
@@ -46,6 +51,7 @@ struct TypeNode {
   int parent;
   Type type = Type::Unknown;
   int listElement = -1;
+  int ioResult = -1;
 };
 
 struct FunctionType {
@@ -59,17 +65,29 @@ constexpr Presence kPresent = 1;
 constexpr Presence kMissing = 2;
 constexpr Presence kMaybeMissing = kPresent | kMissing;
 
+bool isRegexBuiltin(const std::string& name) {
+  return name == "regex" || name == "regex_contains" ||
+      name == "regex_matches" || name == "regex_find" ||
+      name == "regex_find_all" || name == "regex_split";
+}
+
+bool isStandardIOBuiltin(const std::string& name) {
+  return name == "read_stdin" || name == "write_stdout" || name == "arguments";
+}
+
 class Inference {
  public:
   explicit Inference(const Program& program) {
     for (const auto& function : program.functions) {
-      if (function->name == "main" || function->name == "length" ||
+      if (isRegexBuiltin(function->name) || isStandardIOBuiltin(function->name) ||
+          function->name == "main" || function->name == "length" ||
           function->name == "table" || function->name == "row_count" ||
           function->name == "sum" || function->name == "average" ||
           function->name == "min" || function->name == "max" ||
           function->name == "count" || function->name == "fill_missing" ||
           function->name == "select_columns" || function->name == "take" ||
           function->name == "drop" || function->name == "sort" ||
+          function->name == "distinct" ||
           function->name == "sort_by" ||
           function->name == "same" || function->name == "first" ||
           function->name == "last" || function->name == "is_missing" ||
@@ -107,7 +125,7 @@ class Inference {
 
     rejectRecursion(program);
 
-    for (const auto& function : program.functions) {
+    for (const auto* function : inferenceOrder_) {
       scopes_.clear();
       scopes_.emplace_back();
       const auto& signature = functions_.at(function->name);
@@ -132,6 +150,8 @@ class Inference {
     scopes_.clear();
     scopes_.emplace_back();
     infer(*program.result);
+
+    resolveIOResults(true);
 
     for (const auto& constraint : lengthConstraints_) {
       Type input = resolved(constraint.input);
@@ -202,6 +222,17 @@ class Inference {
 
     resolveShapes();
 
+    for (int variable : dataOnlyVariables_)
+      if (resolved(variable) == Type::IO)
+        fail("IO 不能放入容器、比较或转换为文字");
+    for (std::size_t i = 0; i < nodes_.size(); ++i) {
+      if (resolved(i) == Type::List &&
+          resolved(listElement(i, "List 元素")) == Type::IO)
+        fail("IO 不能作为 List 或 Table 列元素");
+      if (resolved(i) == Type::IO && resolved(ioResult(i)) == Type::IO)
+        fail("IO 结果不能再是 IO；请在 io 块最后一步执行该 action");
+    }
+
     for (int variable : plusVariables_) {
       Type type = resolved(variable);
       if (type == Type::Unknown) bind(variable, Type::Number, "加法");
@@ -210,9 +241,10 @@ class Inference {
              std::string(typeName(type)));
     }
     for (int variable : equalityVariables_) {
+      if (resolved(variable) == Type::IO) fail("IO 不允许比较");
       if (resolved(variable) == Type::List || resolved(variable) == Type::Record ||
-          resolved(variable) == Type::Table)
-        fail("列表、Record 和 Table 暂时不能使用 == 或 != 整体比较");
+          resolved(variable) == Type::Table || resolved(variable) == Type::Regex)
+        fail("列表、Record、Table 和 Regex 不能使用 == 或 != 整体比较，请使用 same");
     }
     for (int variable : recordLikeVariables_) {
       Type type = resolved(variable);
@@ -242,6 +274,10 @@ class Inference {
   }
 
   Type expressionType(const Expr& expr) { return resolved(expressions_.at(&expr)); }
+
+  Type ioResultType(const Expr& expr) {
+    return resolved(ioResult(expressions_.at(&expr)));
+  }
 
   Type listElementType(const ListExpr& expr) {
     return resolved(listElement(expressions_.at(&expr), "列表"));
@@ -342,9 +378,42 @@ class Inference {
   std::unordered_map<std::string, std::unordered_map<std::string, Presence>>
       presenceResultsByContext_;
   std::unordered_set<std::string> presenceAnalyzedFunctions_;
+  bool presenceMayEscape_ = false;
+  std::vector<int> dataOnlyVariables_;
+  std::vector<UnaryConstraint> ioResults_;
+  std::unordered_set<std::size_t> resolvedIOResults_;
+  std::vector<const Function*> inferenceOrder_;
+
+  void resolveIOResults(bool final = false) {
+    std::vector<unsigned char> visited(ioResults_.size());
+    std::function<void(std::size_t)> visit = [&](std::size_t index) {
+      if (visited[index] == 2 || resolvedIOResults_.count(index)) return;
+      if (visited[index] == 1) fail("IO 结果存在循环类型约束");
+      visited[index] = 1;
+      int input = ioResults_[index].input;
+      for (std::size_t other = 0; other < ioResults_.size(); ++other)
+        if (other != index && find(ioResults_[other].result) == find(input))
+          visit(other);
+      if (final || resolved(input) != Type::Unknown) {
+        unify(ioResults_[index].result,
+              resolved(input) == Type::IO ? ioResult(input) : input,
+              "io 的最终结果");
+        resolvedIOResults_.insert(index);
+      }
+      visited[index] = 2;
+    };
+    for (std::size_t i = 0; i < ioResults_.size(); ++i) visit(i);
+  }
 
   void collectCalls(const Expr& expr, std::unordered_set<std::string>& calls) const {
-    if (auto* list = dynamic_cast<const ListExpr*>(&expr)) {
+    if (auto* io = dynamic_cast<const IOExpr*>(&expr)) {
+      collectCalls(*io->body, calls);
+    } else if (auto* bind = dynamic_cast<const IOBindExpr*>(&expr)) {
+      collectCalls(*bind->action, calls);
+      collectCalls(*bind->body, calls);
+    } else if (auto* result = dynamic_cast<const IOResultExpr*>(&expr)) {
+      collectCalls(*result->value, calls);
+    } else if (auto* list = dynamic_cast<const ListExpr*>(&expr)) {
       for (const auto& element : list->elements) collectCalls(*element, calls);
     } else if (auto* record = dynamic_cast<const RecordExpr*>(&expr)) {
       for (const auto& field : record->fields) {
@@ -388,7 +457,7 @@ class Inference {
     }
   }
 
-  void rejectRecursion(const Program& program) const {
+  void rejectRecursion(const Program& program) {
     std::unordered_map<std::string, std::unordered_set<std::string>> graph;
     for (const auto& function : program.functions) {
       auto& calls = graph[function->name];
@@ -418,6 +487,7 @@ class Inference {
       for (const auto& called : graph.at(name)) visit(called);
       path.pop_back();
       visits[name] = Visit::Done;
+      inferenceOrder_.push_back(definitions_.at(name));
     };
     for (const auto& function : program.functions) visit(function->name);
   }
@@ -491,6 +561,14 @@ class Inference {
     return nodes_[root].listElement;
   }
 
+  int ioResult(int variable) {
+    bind(variable, Type::IO, "action");
+    int root = find(variable);
+    if (nodes_[root].ioResult < 0)
+      nodes_[root].ioResult = newVariable();
+    return nodes_[root].ioResult;
+  }
+
   unsigned listRank(int variable) {
     unsigned rank = 0;
     while (resolved(variable) == Type::List) {
@@ -546,10 +624,27 @@ class Inference {
     int leftRoot = find(lhs);
     int rightRoot = find(rhs);
     if (leftRoot == rightRoot) return;
+    auto contains = [&](int root, int target) {
+      std::vector<int> pending{root};
+      std::unordered_set<int> seen;
+      while (!pending.empty()) {
+        int current = find(pending.back());
+        pending.pop_back();
+        if (current == target) return true;
+        if (!seen.insert(current).second) continue;
+        if (nodes_[current].listElement >= 0) pending.push_back(nodes_[current].listElement);
+        if (nodes_[current].ioResult >= 0) pending.push_back(nodes_[current].ioResult);
+      }
+      return false;
+    };
+    if (contains(leftRoot, rightRoot) || contains(rightRoot, leftRoot))
+      fail(contextName + "产生无限嵌套的类型");
     Type leftType = nodes_[leftRoot].type;
     Type rightType = nodes_[rightRoot].type;
     int leftElement = nodes_[leftRoot].listElement;
     int rightElement = nodes_[rightRoot].listElement;
+    int leftIO = nodes_[leftRoot].ioResult;
+    int rightIO = nodes_[rightRoot].ioResult;
     if (leftType != Type::Unknown && rightType != Type::Unknown && leftType != rightType)
       fail(contextName + "两边的种类不同：一边是" + typeName(leftType) +
            "，另一边是" + typeName(rightType));
@@ -558,6 +653,8 @@ class Inference {
     if (leftElement < 0) nodes_[leftRoot].listElement = rightElement;
     else if (rightElement >= 0)
       unify(leftElement, rightElement, contextName + "的列表元素");
+    if (leftIO < 0) nodes_[leftRoot].ioResult = rightIO;
+    else if (rightIO >= 0) unify(leftIO, rightIO, contextName + "的 IO 结果");
     auto rightShape = shapes_.find(rightRoot);
     if (rightShape != shapes_.end()) {
       Shape moved = std::move(rightShape->second);
@@ -645,12 +742,35 @@ class Inference {
   int infer(const Expr& expr) {
     int result = newVariable();
     remember(expr, result);
+    if (auto* io = dynamic_cast<const IOExpr*>(&expr)) {
+      unify(ioResult(result), infer(*io->body), "IO 结果");
+      return result;
+    }
+    if (auto* execution = dynamic_cast<const IOBindExpr*>(&expr)) {
+      int value = ioResult(infer(*execution->action));
+      scopes_.emplace_back();
+      if (!execution->name.empty()) scopes_.back().emplace(execution->name, value);
+      unify(result, infer(*execution->body), "IO 后续步骤");
+      scopes_.pop_back();
+      return result;
+    }
+    if (auto* final = dynamic_cast<const IOResultExpr*>(&expr)) {
+      int input = infer(*final->value);
+      if (resolved(input) == Type::Unknown) ioResults_.push_back({input, result});
+      else unify(result, resolved(input) == Type::IO ? ioResult(input) : input,
+                 "io 的最终结果");
+      return result;
+    }
     if (dynamic_cast<const NumberExpr*>(&expr)) {
       bind(result, Type::Number, "数字");
       return result;
     }
     if (dynamic_cast<const BooleanExpr*>(&expr)) {
       bind(result, Type::Boolean, "是/否值");
+      return result;
+    }
+    if (dynamic_cast<const UnitExpr*>(&expr)) {
+      bind(result, Type::Unit, "单元值 ()");
       return result;
     }
     if (dynamic_cast<const TextExpr*>(&expr)) {
@@ -675,6 +795,7 @@ class Inference {
           shape.complete = false;
         }
         int value = infer(*field.value);
+        dataOnlyVariables_.push_back(value);
         if (!field.key) shape.fields.emplace(field.name, value);
       }
       bind(result, Type::Record, "Record");
@@ -759,7 +880,7 @@ class Inference {
       int record = infer(*update->record);
       bind(record, Type::Record, "字段更新左侧");
       if (update->key) bind(infer(*update->key), Type::Text, "动态字段名");
-      infer(*update->value);
+      dataOnlyVariables_.push_back(infer(*update->value));
       bind(result, Type::Record, "字段更新结果");
       return result;
     }
@@ -767,7 +888,7 @@ class Inference {
       bind(infer(*update->record), Type::Record, "嵌套字段更新左侧");
       for (const auto& part : update->path)
         if (part.key) bind(infer(*part.key), Type::Text, "动态字段名");
-      infer(*update->value);
+      dataOnlyVariables_.push_back(infer(*update->value));
       bind(result, Type::Record, "嵌套字段更新结果");
       return result;
     }
@@ -881,6 +1002,33 @@ class Inference {
                                   [](const std::string& name) { return !name.empty(); });
       if (hasNamed && !functions_.count(call->callee))
         fail("内置函数“" + call->callee + "”暂不接受命名参数");
+      if (isStandardIOBuiltin(call->callee)) {
+        bool write = call->callee == "write_stdout";
+        if (call->args.size() != (write ? 1u : 0u))
+          fail(call->callee + (write ? " 需要 1 个 Text 参数" : " 不接受参数"));
+        if (write) bind(infer(*call->args[0]), Type::Text, "write_stdout 的输入");
+        int payload = ioResult(result);
+        if (call->callee == "arguments")
+          bind(listElement(payload, "arguments 的结果"), Type::Text, "命令行参数");
+        else bind(payload, write ? Type::Unit : Type::Text, "IO 执行结果");
+        return result;
+      }
+      if (isRegexBuiltin(call->callee)) {
+        size_t arity = call->callee == "regex" ? 1 : 2;
+        if (call->args.size() != arity)
+          fail("函数“" + call->callee + "”需要 " + std::to_string(arity) + " 个参数");
+        bind(infer(*call->args[0]), Type::Text, call->callee + " 的 Text");
+        if (arity == 1) bind(result, Type::Regex, "regex 的结果");
+        else {
+          bind(infer(*call->args[1]), Type::Regex, call->callee + " 的模式");
+          if (call->callee == "regex_find_all" || call->callee == "regex_split")
+            bind(listElement(result, call->callee + " 的结果"), Type::Text,
+                 call->callee + " 的结果元素");
+          else bind(result, call->callee == "regex_find" ? Type::Text : Type::Boolean,
+                    call->callee + " 的结果");
+        }
+        return result;
+      }
       if (call->callee == "table") {
         if (call->args.size() != 1)
           fail("table 需要 1 个 Record 或 List<Record>，但这里给了 " +
@@ -1049,7 +1197,7 @@ class Inference {
       }
       if (call->callee == "to_text") {
         if (call->args.size() != 1) fail("to_text 需要 1 个值");
-        infer(*call->args[0]);
+        dataOnlyVariables_.push_back(infer(*call->args[0]));
         bind(result, Type::Text, "to_text 的结果");
         return result;
       }
@@ -1078,11 +1226,12 @@ class Inference {
               "flatten 的结果元素");
         return result;
       }
-      if (call->callee == "reverse") {
-        if (call->args.size() != 1) fail("reverse 需要 1 个 List");
+      if (call->callee == "reverse" || call->callee == "distinct") {
+        if (call->args.size() != 1)
+          fail("函数“" + call->callee + "”需要 1 个 List");
         int input = infer(*call->args[0]);
-        listElement(input, "reverse 的输入");
-        unify(result, input, "reverse 的结果");
+        listElement(input, call->callee + " 的输入");
+        unify(result, input, call->callee + " 的结果");
         return result;
       }
       if (call->callee == "sort") {
@@ -1132,8 +1281,8 @@ class Inference {
       if (call->callee == "same") {
         if (call->args.size() != 2)
           fail("same 需要两个要比较的值");
-        infer(*call->args[0]);
-        infer(*call->args[1]);
+        dataOnlyVariables_.push_back(infer(*call->args[0]));
+        dataOnlyVariables_.push_back(infer(*call->args[1]));
         bind(result, Type::Boolean, "same 的结果");
         return result;
       }
@@ -1183,6 +1332,7 @@ class Inference {
                 "传给函数“" + call->callee + "”的参数“" +
                     definition.params[slot].name + "”");
       unify(result, found->second.result, "函数“" + call->callee + "”的结果");
+      resolveIOResults();
       return result;
     }
     fail("编译器暂时不能理解这个表达式");
@@ -1203,9 +1353,28 @@ class Inference {
   }
 
   Presence presenceOf(const Expr& expr) {
+    bool outerEscape = presenceMayEscape_;
+    presenceMayEscape_ = false;
     Presence result = kNoPresence;
-    if (dynamic_cast<const NumberExpr*>(&expr) ||
+    if (auto* io = dynamic_cast<const IOExpr*>(&expr)) {
+      presenceOf(*io->body);
+      presenceMayEscape_ = false;
+      result = kPresent;
+    } else if (auto* execution = dynamic_cast<const IOBindExpr*>(&expr)) {
+      presenceOf(*execution->action);
+      presenceMayEscape_ = false;
+      presenceScopes_.emplace_back();
+      if (!execution->name.empty())
+        presenceScopes_.back().emplace(execution->name, kMaybeMissing);
+      result = presenceOf(*execution->body);
+      presenceScopes_.pop_back();
+    } else if (auto* final = dynamic_cast<const IOResultExpr*>(&expr)) {
+      result = presenceOf(*final->value);
+      if (expressionType(*final->value) == Type::IO) result = kMaybeMissing;
+      presenceMayEscape_ = false;
+    } else if (dynamic_cast<const NumberExpr*>(&expr) ||
         dynamic_cast<const BooleanExpr*>(&expr) ||
+        dynamic_cast<const UnitExpr*>(&expr) ||
         dynamic_cast<const TextExpr*>(&expr) || dynamic_cast<const ListExpr*>(&expr) ||
         dynamic_cast<const RecordExpr*>(&expr)) {
       if (auto* list = dynamic_cast<const ListExpr*>(&expr))
@@ -1229,6 +1398,7 @@ class Inference {
         result = kPresent;
     } else if (auto* let = dynamic_cast<const LetExpr*>(&expr)) {
       Presence value = presenceOf(*let->value);
+      if (let->expressionBoundary) presenceMayEscape_ = false;
       presenceScopes_.emplace_back();
       presenceScopes_.back().emplace(let->name, value);
       result = presenceOf(*let->body);
@@ -1270,6 +1440,7 @@ class Inference {
       result = presenceOf(*unary->operand);
     } else if (auto* question = dynamic_cast<const PropagateExpr*>(&expr)) {
       result = presenceOf(*question->operand);
+      if (result & kMissing) presenceMayEscape_ = true;
     } else if (auto* field = dynamic_cast<const FieldExpr*>(&expr)) {
       Presence record = presenceOf(*field->record);
       if (field->key) presenceOf(*field->key);
@@ -1287,6 +1458,10 @@ class Inference {
       result = record;
     } else if (auto* binary = dynamic_cast<const BinaryExpr*>(&expr)) {
       Presence lhs = presenceOf(*binary->lhs);
+      // Scalar ?? catches ? from its left expression; a vector coalesce is
+      // an ordinary list operation and does not create that control boundary.
+      if (binary->op == "??" && !vectorOperations_.count(binary))
+        presenceMayEscape_ = false;
       Presence rhs = presenceOf(*binary->rhs);
       if (binary->op == "??") result = coalescePresence(lhs, rhs);
       else if (binary->op == "and" || binary->op == "or") {
@@ -1295,7 +1470,15 @@ class Inference {
         result = propagate(lhs, rhs);
       }
     } else if (auto* call = dynamic_cast<const CallExpr*>(&expr)) {
-      if (call->callee == "length" || call->callee == "table" ||
+      if (isStandardIOBuiltin(call->callee)) {
+        for (const auto& argument : call->args) presenceOf(*argument);
+        result = kPresent;
+      } else if (isRegexBuiltin(call->callee)) {
+        result = kPresent;
+        for (const auto& argument : call->args)
+          result = propagate(result, presenceOf(*argument));
+        if (call->callee == "regex_find") result = kMaybeMissing;
+      } else if (call->callee == "length" || call->callee == "table" ||
           call->callee == "row_count") {
         result = presenceOf(*call->args[0]);
       } else if (call->callee == "is_missing") {
@@ -1333,7 +1516,8 @@ class Inference {
                  call->callee == "atan" || call->callee == "radians" ||
                  call->callee == "degrees" ||
                  call->callee == "to_text" || call->callee == "flatten" ||
-                 call->callee == "reverse" || call->callee == "sort" ||
+                 call->callee == "reverse" || call->callee == "distinct" ||
+                 call->callee == "sort" ||
                  call->callee == "fields") {
         result = presenceOf(*call->args[0]);
       } else if (call->callee == "starts_with" ||
@@ -1376,6 +1560,8 @@ class Inference {
       }
     } else if (auto* collection = dynamic_cast<const CollectionExpr*>(&expr)) {
       Presence input = presenceOf(*collection->collection);
+      bool inputEscape = presenceMayEscape_;
+      presenceMayEscape_ = false;
       presenceScopes_.emplace_back();
       Presence element = expressionType(*collection->collection) == Type::Table
           ? kPresent : kMaybeMissing;
@@ -1383,6 +1569,7 @@ class Inference {
       if (!collection->binding.empty())
         presenceScopes_.back().emplace(collection->binding, element);
       Presence body = presenceOf(*collection->body);
+      presenceMayEscape_ = inputEscape;
       presenceScopes_.pop_back();
       if (collection->operation == CollectionOperation::Find)
         result = kMaybeMissing;
@@ -1394,6 +1581,10 @@ class Inference {
     } else if (dynamic_cast<const ElementBindingExpr*>(&expr)) {
       result = kNoPresence;
     }
+    // A missing field is data, but a field containing ? may abort construction
+    // of the enclosing Record. Keep this control effect separate from values.
+    if (presenceMayEscape_) result |= kMissing;
+    presenceMayEscape_ = presenceMayEscape_ || outerEscape;
     presences_[&expr] |= result;
     return result;
   }
@@ -1410,6 +1601,8 @@ class Inference {
       return found->second;
 
     presenceAnalyzedFunctions_.insert(function.name);
+    bool callerEscape = presenceMayEscape_;
+    presenceMayEscape_ = false;
     auto callerScopes = std::move(presenceScopes_);
     presenceScopes_.clear();
     presenceScopes_.emplace_back();
@@ -1423,6 +1616,7 @@ class Inference {
     for (std::size_t i = 0; i < arguments.size(); ++i)
       params[i] |= arguments[i];
     Presence result = presenceOf(*function.body);
+    presenceMayEscape_ = callerEscape;
     resultPresences_[function.name] |= result;
     presenceScopes_ = std::move(callerScopes);
     presenceResultsByContext_[function.name].emplace(std::move(contextKey), result);
@@ -1486,12 +1680,13 @@ struct CodeGenerator::Impl {
 
   Impl() : module(std::make_unique<llvm::Module>("lan_module", context)) {}
 
-  void loadRuntime(const std::string& path, const std::string& displayName) {
-    auto buffer = llvm::MemoryBuffer::getFile(path);
-    if (!buffer)
-      throw std::runtime_error("无法读取" + displayName + "运行时：" +
-                               buffer.getError().message());
-    auto runtime = llvm::parseBitcodeFile((*buffer)->getMemBufferRef(), context);
+  void loadRuntime(const unsigned char* bytes, const unsigned char* end,
+                   const std::string& displayName) {
+    llvm::StringRef data(reinterpret_cast<const char*>(bytes),
+                         reinterpret_cast<uintptr_t>(end) -
+                         reinterpret_cast<uintptr_t>(bytes));
+    auto runtime = llvm::parseBitcodeFile(
+        llvm::MemoryBufferRef(data, displayName), context);
     if (!runtime)
       throw std::runtime_error("无法解析" + displayName + "运行时：" +
                                llvm::toString(runtime.takeError()));
@@ -1500,18 +1695,24 @@ struct CodeGenerator::Impl {
   }
 
   void loadRecordRuntime() {
-    loadRuntime(LAN_UTF8PROC_BITCODE_PATH, "Unicode");
-    loadRuntime(LAN_RECORD_BITCODE_PATH, "Lan");
+    loadRuntime(lan_unicode_bytes, lan_unicode_end, "Unicode");
+    loadRuntime(lan_record_bytes, lan_record_end, "Lan");
+    for (auto& function : *module)
+      if (!function.isDeclaration() && function.getName().starts_with("lan_regex_"))
+        function.setLinkage(llvm::GlobalValue::InternalLinkage);
   }
 
   llvm::Type* llvmType(Type type) {
     switch (type) {
       case Type::Number: return builder.getDoubleTy();
       case Type::Boolean: return builder.getInt1Ty();
+      case Type::Unit: return builder.getInt1Ty();  // true = (), false = missing
       case Type::Text: return llvm::PointerType::get(context, 0);
       case Type::List: return llvm::PointerType::get(context, 0);
       case Type::Record: return llvm::PointerType::get(context, 0);
       case Type::Table: return llvm::PointerType::get(context, 0);
+      case Type::Regex: return llvm::PointerType::get(context, 0);
+      case Type::IO: return llvm::PointerType::get(context, 0);
       case Type::Dynamic: return taggedValueType();
       case Type::Unknown: break;
     }
@@ -1550,6 +1751,7 @@ struct CodeGenerator::Impl {
           value, llvm::ConstantFP::get(builder.getDoubleTy(), 0.0), 1);
     }
     if (type == Type::Boolean) return llvm::ConstantInt::get(builder.getIntNTy(2), 0);
+    if (type == Type::Unit) return builder.getFalse();
     return llvm::ConstantPointerNull::get(
         llvm::cast<llvm::PointerType>(llvmType(type)));
   }
@@ -1579,6 +1781,7 @@ struct CodeGenerator::Impl {
   llvm::Value* presentFlag(const TypedValue& value) {
     if (value.presence == kPresent) return builder.getTrue();
     if (value.presence == kMissing) return builder.getFalse();
+    if (value.type == Type::Unit) return value.value;
     if (value.type == Type::Dynamic)
       return builder.CreateICmpNE(builder.CreateExtractValue(value.value, 0),
                                   builder.getInt32(0), "dynamic.present");
@@ -1591,6 +1794,7 @@ struct CodeGenerator::Impl {
   }
 
   llvm::Value* rawPayload(const TypedValue& value) {
+    if (value.type == Type::Unit) return builder.getTrue();
     if (value.presence == kPresent) return value.value;
     if (value.type == Type::Dynamic) return value.value;
     if (value.type == Type::Number)
@@ -1623,10 +1827,17 @@ struct CodeGenerator::Impl {
     }
     if (auto* unary = dynamic_cast<const UnaryExpr*>(expression))
       return diagnosticFieldPath(unary->operand.get());
+    if (auto* question = dynamic_cast<const PropagateExpr*>(expression))
+      return diagnosticFieldPath(question->operand.get());
+    if (auto* call = dynamic_cast<const CallExpr*>(expression))
+      for (const auto& argument : call->args) {
+        auto path = diagnosticFieldPath(argument.get());
+        if (!path.empty()) return path;
+      }
     return {};
   }
 
-  void emitRuntimeError(const std::string& message) {
+  void emitRuntimeError(const std::string& message, llvm::Value* detail = nullptr) {
     auto failFn = external(
         "lan_runtime_fail", builder.getVoidTy(),
         {llvmType(Type::Text), llvmType(Type::Text), builder.getInt32Ty(),
@@ -1659,7 +1870,7 @@ struct CodeGenerator::Impl {
     auto field = diagnosticFieldPath(fieldExpression);
     builder.CreateCall(
         failFn,
-        {builder.CreateGlobalString(message), builder.CreateGlobalString(sourcePath),
+        {detail ? detail : builder.CreateGlobalString(message), builder.CreateGlobalString(sourcePath),
          builder.getInt32(line), builder.getInt32(column), listIndex, tableRow,
          builder.CreateGlobalString(field)});
     builder.CreateUnreachable();
@@ -1741,6 +1952,9 @@ struct CodeGenerator::Impl {
       case Type::List: return 4;
       case Type::Record: return 5;
       case Type::Table: return 5;
+      case Type::Regex: return 6;
+      case Type::Unit: return 7;
+      case Type::IO: return 8;
       case Type::Dynamic: break;
       case Type::Unknown: break;
     }
@@ -1759,7 +1973,7 @@ struct CodeGenerator::Impl {
   TypedValue adoptValue(TypedValue value) {
     if (value.type != Type::Text && value.type != Type::List &&
         value.type != Type::Record && value.type != Type::Table &&
-        value.type != Type::Dynamic)
+        value.type != Type::Dynamic && value.type != Type::Regex && value.type != Type::IO)
       return value;
     auto parts = dynamicParts(value);
     auto adopt = external("lan_arc_adopt", builder.getVoidTy(),
@@ -1813,7 +2027,7 @@ struct CodeGenerator::Impl {
     else if (value.type == Type::Boolean)
       number = builder.CreateUIToFP(rawPayload(value), builder.getDoubleTy(),
                                     "dynamic.boolean");
-    else pointer = rawPayload(value);
+    else if (value.type != Type::Unit) pointer = rawPayload(value);
     return {tag, number, pointer};
   }
 
@@ -1823,8 +2037,10 @@ struct CodeGenerator::Impl {
                             {llvmType(Type::Record), llvmType(Type::Text),
                              builder.getInt32Ty(), builder.getDoubleTy(),
                              llvmType(Type::Text)});
-    auto releaseFn = external("lan_record_release", builder.getVoidTy(),
-                              {llvmType(Type::Record)});
+    auto rootFn = external("lan_arc_record_root", llvmType(Type::Record), {});
+    auto updateFn = external("lan_arc_record_update", builder.getVoidTy(),
+                             {llvmType(Type::Record), llvmType(Type::Record)});
+    auto* slot = builder.CreateCall(rootFn, {}, "record.ownership");
     llvm::Value* root = builder.CreateCall(emptyFn, {}, "record.empty");
     for (const auto& field : record.fields) {
       auto* key = field.key
@@ -1835,10 +2051,10 @@ struct CodeGenerator::Impl {
       auto* updated = builder.CreateCall(
           assocFn, {root, key, parts[0], parts[1], parts[2]},
           "record.insert");
-      builder.CreateCall(releaseFn, {root});
+      builder.CreateCall(updateFn, {slot, updated});
       root = updated;
     }
-    return adoptHeap(root, Type::Record);
+    return root;
   }
 
   llvm::Value* fieldKey(const std::string& name, const Expr* key) {
@@ -1885,6 +2101,8 @@ struct CodeGenerator::Impl {
                                    llvm::ConstantInt::get(builder.getIntNTy(2), 0), encoded),
               expected, kMaybeMissing};
     }
+    if (expected == Type::Unit)
+      return {builder.CreateNot(absent), expected, kMaybeMissing};
     auto* pointer = builder.CreateExtractValue(dynamic, 2);
     auto* null = llvm::ConstantPointerNull::get(
         llvm::cast<llvm::PointerType>(llvmType(expected)));
@@ -2009,9 +2227,10 @@ struct CodeGenerator::Impl {
     Type storageType = elementType == Type::Table ? Type::Record : elementType;
     llvm::Type* elementStorage = taggedValueType();
     if (storageType == Type::Number) elementStorage = builder.getDoubleTy();
-    else if (storageType == Type::Boolean) elementStorage = builder.getInt8Ty();
+    else if (storageType == Type::Boolean || storageType == Type::Unit)
+      elementStorage = builder.getInt8Ty();
     else if (storageType == Type::Text || storageType == Type::List ||
-             storageType == Type::Record)
+             storageType == Type::Record || storageType == Type::Regex)
       elementStorage = llvmType(Type::Text);
     else
       storageType = Type::Dynamic;
@@ -2040,6 +2259,13 @@ struct CodeGenerator::Impl {
 
   void storeListElement(const ListAllocation& storage, llvm::Value* index,
                         const TypedValue& value) {
+    if (storage.elementType == Type::Unit) {
+      auto* slot = builder.CreateGEP(builder.getInt8Ty(), storage.data, index,
+                                     "unit.output");
+      builder.CreateStore(builder.CreateZExt(presentFlag(value), builder.getInt8Ty()),
+                          slot);
+      return;
+    }
     if (storage.elementType == Type::Number) {
       auto* slot = builder.CreateGEP(builder.getDoubleTy(), storage.data, index,
                                      "number.output");
@@ -2061,7 +2287,7 @@ struct CodeGenerator::Impl {
       return;
     }
     if (storage.elementType == Type::Text || storage.elementType == Type::List ||
-        storage.elementType == Type::Record) {
+        storage.elementType == Type::Record || storage.elementType == Type::Regex) {
       auto parts = dynamicParts(value);
       auto retain = external("lan_value_retain", builder.getVoidTy(),
           {builder.getInt32Ty(), builder.getDoubleTy(), llvmType(Type::Text)});
@@ -2444,6 +2670,7 @@ struct CodeGenerator::Impl {
     if (inference->expressionType(expression) == Type::Dynamic) return false;
     if (dynamic_cast<const NumberExpr*>(&expression) ||
         dynamic_cast<const BooleanExpr*>(&expression) ||
+        dynamic_cast<const UnitExpr*>(&expression) ||
         dynamic_cast<const TextExpr*>(&expression) ||
         dynamic_cast<const MissingExpr*>(&expression))
       return true;
@@ -2902,6 +3129,53 @@ struct CodeGenerator::Impl {
     return {adoptHeap(result, Type::List), Type::List, kPresent};
   }
 
+  TypedValue emitRegexBuiltin(const CallExpr& call) {
+    auto text = requirePresent(emitExpr(*call.args[0]), call.callee + " 的 Text");
+    auto* pointer = llvmType(Type::Text);
+    auto* error = builder.CreateAlloca(builder.getInt8Ty(), builder.getInt64(512),
+                                       "regex.error");
+    auto* output = builder.CreateAlloca(pointer, nullptr, "regex.output");
+    auto* matched = builder.CreateAlloca(builder.getInt32Ty(), nullptr, "regex.matched");
+    llvm::Value* status;
+    bool constructor = call.callee == "regex";
+    if (constructor) {
+      auto length = external("strlen", builder.getInt64Ty(), {pointer});
+      auto compile = external("lan_regex_compile", builder.getInt32Ty(),
+          {pointer, builder.getInt64Ty(), pointer, pointer, builder.getInt64Ty()});
+      status = builder.CreateCall(compile,
+          {text.value, builder.CreateCall(length, {text.value}), output, error,
+           builder.getInt64(512)});
+    } else {
+      auto pattern = requirePresent(emitExpr(*call.args[1]), call.callee + " 的模式");
+      int operation = call.callee == "regex_contains" ? 0
+          : call.callee == "regex_matches" ? 1 : call.callee == "regex_find" ? 2
+          : call.callee == "regex_find_all" ? 3 : 4;
+      auto evaluate = external("lan_regex_evaluate", builder.getInt32Ty(),
+          {pointer, pointer, builder.getInt32Ty(), pointer, pointer, pointer,
+           builder.getInt64Ty()});
+      status = builder.CreateCall(evaluate, {text.value, pattern.value,
+          builder.getInt32(operation), matched, output, error, builder.getInt64(512)});
+    }
+    auto* function = builder.GetInsertBlock()->getParent();
+    auto* valid = llvm::BasicBlock::Create(context, "regex.valid", function);
+    auto* invalid = llvm::BasicBlock::Create(context, "regex.invalid", function);
+    builder.CreateCondBr(builder.CreateICmpEQ(status, builder.getInt32(0)), valid, invalid);
+    builder.SetInsertPoint(invalid);
+    emitRuntimeError("regex 操作失败", error);
+    builder.SetInsertPoint(valid);
+    Type type = inference->expressionType(call);
+    if (type == Type::Boolean)
+      return {builder.CreateICmpNE(builder.CreateLoad(builder.getInt32Ty(), matched),
+                                   builder.getInt32(0)), type, kPresent};
+    if (constructor) {
+      auto note = external("lan_arc_note_object_allocated", builder.getVoidTy(), {});
+      builder.CreateCall(note, {});
+    }
+    auto* result = builder.CreateLoad(pointer, output);
+    return {adoptHeap(result, type), type,
+            call.callee == "regex_find" ? kMaybeMissing : kPresent};
+  }
+
   TypedValue emitTextBuiltin(const CallExpr& call) {
     if (call.callee == "starts_with" || call.callee == "ends_with" ||
         call.callee == "text_contains") {
@@ -3070,6 +3344,9 @@ struct CodeGenerator::Impl {
           {builder.getInt32Ty(), builder.getDoubleTy(), llvmType(Type::Text)});
       auto* result = builder.CreateCall(
           function, {parts[0], parts[1], parts[2]}, "text.value");
+      requireRuntimeSuccess(builder.CreateSelect(builder.CreateIsNull(result),
+          builder.getInt32(-1), builder.getInt32(0)),
+          "to_text 不支持 Regex 或包含 Regex 的集合");
       return {adoptHeap(result, Type::Text),
               Type::Text, kPresent};
     }
@@ -3096,6 +3373,12 @@ struct CodeGenerator::Impl {
       auto* result = builder.CreateCall(function, {input.value}, "reversed.list");
       return {adoptHeap(result, Type::List),
               Type::List, kPresent};
+    }
+    if (call.callee == "distinct") {
+      auto function = external("lan_list_distinct", llvmType(Type::List),
+                               {llvmType(Type::List)});
+      auto* result = builder.CreateCall(function, {input.value}, "distinct.list");
+      return {adoptHeap(result, Type::List), Type::List, kPresent};
     }
     if (call.callee == "flatten") {
       auto* status = builder.CreateAlloca(builder.getInt32Ty(), nullptr,
@@ -3285,6 +3568,8 @@ struct CodeGenerator::Impl {
     auto* textBlock = llvm::BasicBlock::Create(context, "text", printValueFunction);
     auto* listBlock = llvm::BasicBlock::Create(context, "list", printValueFunction);
     auto* recordBlock = llvm::BasicBlock::Create(context, "record", printValueFunction);
+    auto* regexBlock = llvm::BasicBlock::Create(context, "regex", printValueFunction);
+    auto* unitBlock = llvm::BasicBlock::Create(context, "unit", printValueFunction);
     auto* pointer = llvmType(Type::Text);
     auto printfFn = external("printf", builder.getInt32Ty(), {pointer}, true);
 
@@ -3301,6 +3586,16 @@ struct CodeGenerator::Impl {
     choices->addCase(builder.getInt32(3), textBlock);
     choices->addCase(builder.getInt32(4), listBlock);
     choices->addCase(builder.getInt32(5), recordBlock);
+    choices->addCase(builder.getInt32(6), regexBlock);
+    choices->addCase(builder.getInt32(7), unitBlock);
+
+    builder.SetInsertPoint(unitBlock);
+    builder.CreateCall(printfFn, {builder.CreateGlobalString("()")});
+    builder.CreateRetVoid();
+
+    builder.SetInsertPoint(regexBlock);
+    builder.CreateCall(printfFn, {builder.CreateGlobalString("<Regex>")});
+    builder.CreateRetVoid();
 
     builder.SetInsertPoint(missingBlock);
     builder.CreateCall(printfFn, {builder.CreateGlobalString("missing")});
@@ -3603,6 +3898,142 @@ struct CodeGenerator::Impl {
     return slots;
   }
 
+  TypedValue emitStandardIOBuiltin(const CallExpr& call) {
+    bool write = call.callee == "write_stdout";
+    llvm::Value* text = write
+        ? requirePresent(emitExpr(*call.args[0]), "write_stdout 的输入").value : nullptr;
+    auto savedIP = builder.saveIP();
+    auto savedCollections = std::move(diagnosticCollections);
+    diagnosticCollections.clear();
+    auto* pointer = llvmType(Type::Text);
+    auto* signature = llvm::FunctionType::get(builder.getVoidTy(), {pointer, pointer}, false);
+    auto* callback = llvm::Function::Create(signature, llvm::Function::InternalLinkage,
+                                            "lan.io." + call.callee, module.get());
+    builder.SetInsertPoint(llvm::BasicBlock::Create(context, "io.start", callback));
+    emitDiagnosticPush(call.callee);
+    auto* error = builder.CreateAlloca(builder.getInt8Ty(), builder.getInt64(512), "io.error");
+    std::vector<llvm::Type*> types;
+    std::vector<llvm::Value*> args;
+    if (write) {
+      auto capture = external("lan_io_capture_at", pointer, {pointer, builder.getInt64Ty()});
+      auto* storage = builder.CreateCall(capture, {callback->getArg(0), builder.getInt64(0)});
+      auto* value = builder.CreateLoad(taggedValueType(), storage);
+      types.push_back(pointer);
+      args.push_back(builder.CreateExtractValue(value, 2));
+    }
+    types.insert(types.end(), {pointer, pointer, builder.getInt64Ty()});
+    args.insert(args.end(), {callback->getArg(1), error, builder.getInt64(512)});
+    auto operation = external("lan_io_" + call.callee, builder.getInt32Ty(), types);
+    auto* status = builder.CreateCall(operation, args);
+    auto* success = llvm::BasicBlock::Create(context, "io.success", callback);
+    auto* failure = llvm::BasicBlock::Create(context, "io.failure", callback);
+    builder.CreateCondBr(builder.CreateICmpEQ(status, builder.getInt32(0)), success, failure);
+    builder.SetInsertPoint(failure);
+    emitRuntimeError(call.callee, error);
+    builder.SetInsertPoint(success);
+    emitDiagnosticPop();
+    builder.CreateRetVoid();
+    diagnosticCollections = std::move(savedCollections);
+    builder.restoreIP(savedIP);
+    auto create = external("lan_io_new", pointer, {pointer, builder.getInt64Ty()});
+    auto* action = adoptHeap(builder.CreateCall(create,
+        {callback, builder.getInt64(write ? 1 : 0)}, "io.action"), Type::IO);
+    if (write) {
+      auto capture = external("lan_io_capture", builder.getVoidTy(),
+          {pointer, builder.getInt64Ty(), builder.getInt32Ty(), builder.getDoubleTy(), pointer});
+      builder.CreateCall(capture, {action, builder.getInt64(0), builder.getInt32(tagFor(Type::Text)),
+          llvm::ConstantFP::get(builder.getDoubleTy(), 0.0), text});
+    }
+    return {action, Type::IO, kPresent};
+  }
+
+  TypedValue executeIO(TypedValue action, Type resultType) {
+    action = requirePresent(action, "执行的 IO action");
+    auto* output = builder.CreateAlloca(taggedValueType(), nullptr, "io.result");
+    auto run = external("lan_io_run", builder.getVoidTy(),
+                         {llvmType(Type::IO), llvmType(Type::Text)});
+    builder.CreateCall(run, {action.value, output});
+    auto* dynamic = builder.CreateLoad(taggedValueType(), output);
+    return adoptValue(decodeLookupValue(builder.getTrue(), dynamic, resultType));
+  }
+
+  TypedValue emitIO(const IOExpr& io) {
+    std::vector<std::pair<std::string, TypedValue>> captures;
+    for (const auto& name : freeVariables(*io.body)) {
+      bool found = false;
+      for (auto scope = scopes.rbegin(); scope != scopes.rend(); ++scope) {
+        if (auto value = scope->find(name); value != scope->end()) {
+          captures.emplace_back(name, value->second);
+          found = true;
+          break;
+        }
+      }
+      if (!found)
+        if (const auto* row = lazyTableRow(name))
+          captures.emplace_back(name, tableRowElement(row->table, row->index));
+    }
+
+    auto savedIP = builder.saveIP();
+    auto savedScopes = std::move(scopes);
+    auto savedRows = std::move(lazyTableRows);
+    auto savedCollections = std::move(diagnosticCollections);
+    auto* savedMissing = currentMissingTarget;
+    auto* savedRoot = rootMissingTarget;
+    auto* savedDiagnostic = currentDiagnosticExpression;
+    scopes.clear();
+    scopes.emplace_back();
+    lazyTableRows.clear();
+    diagnosticCollections.clear();
+    currentMissingTarget = rootMissingTarget = nullptr;
+    auto* pointer = llvmType(Type::Text);
+    auto* signature = llvm::FunctionType::get(builder.getVoidTy(), {pointer, pointer}, false);
+    auto* callback = llvm::Function::Create(signature, llvm::Function::InternalLinkage,
+                                            "lan.io.action", module.get());
+    builder.SetInsertPoint(llvm::BasicBlock::Create(context, "io.start", callback));
+    beginArcFrame();
+    emitDiagnosticPush("io@" + std::to_string(io.line) + ":" + std::to_string(io.column));
+    auto readCapture = external("lan_io_capture_at", pointer,
+                                 {pointer, builder.getInt64Ty()});
+    for (std::size_t i = 0; i < captures.size(); ++i) {
+      auto* storage = builder.CreateCall(readCapture,
+          {callback->getArg(0), builder.getInt64(i)}, "io.capture");
+      auto value = decodeLookupValue(builder.getTrue(),
+          builder.CreateLoad(taggedValueType(), storage), captures[i].second.type);
+      scopes.back().emplace(captures[i].first,
+                            convertPresence(value, captures[i].second.presence));
+    }
+    auto result = emitExpr(*io.body);
+    auto parts = dynamicParts(result);
+    llvm::Value* dynamic = llvm::UndefValue::get(taggedValueType());
+    for (unsigned i = 0; i < parts.size(); ++i)
+      dynamic = builder.CreateInsertValue(dynamic, parts[i], i);
+    builder.CreateStore(dynamic, callback->getArg(1));
+    emitDiagnosticPop();
+    endArcFrame(&result);
+    builder.CreateRetVoid();
+    if (rootMissingTarget)
+      throw std::runtime_error("内部错误：IO 步骤缺少表达式边界");
+
+    scopes = std::move(savedScopes);
+    lazyTableRows = std::move(savedRows);
+    diagnosticCollections = std::move(savedCollections);
+    currentMissingTarget = savedMissing;
+    rootMissingTarget = savedRoot;
+    currentDiagnosticExpression = savedDiagnostic;
+    builder.restoreIP(savedIP);
+    auto create = external("lan_io_new", pointer, {pointer, builder.getInt64Ty()});
+    auto* action = adoptHeap(builder.CreateCall(create,
+        {callback, builder.getInt64(captures.size())}, "io.action"), Type::IO);
+    auto capture = external("lan_io_capture", builder.getVoidTy(),
+        {pointer, builder.getInt64Ty(), builder.getInt32Ty(), builder.getDoubleTy(), pointer});
+    for (std::size_t i = 0; i < captures.size(); ++i) {
+      auto parts = dynamicParts(captures[i].second);
+      builder.CreateCall(capture,
+          {action, builder.getInt64(i), parts[0], parts[1], parts[2]});
+    }
+    return {action, Type::IO, kPresent};
+  }
+
   TypedValue emitExpr(const Expr& expr) {
     struct DiagnosticExpressionScope {
       const Expr*& current;
@@ -3615,10 +4046,27 @@ struct CodeGenerator::Impl {
     } diagnosticScope(currentDiagnosticExpression, expr);
     Type type = inference->expressionType(expr);
     Presence presence = inference->expressionPresence(expr);
+    if (auto* io = dynamic_cast<const IOExpr*>(&expr)) return emitIO(*io);
+    if (auto* execution = dynamic_cast<const IOBindExpr*>(&expr)) {
+      auto action = emitElementBoundary(*execution->action);
+      auto value = executeIO(action, inference->ioResultType(*execution->action));
+      scopes.emplace_back();
+      if (!execution->name.empty()) scopes.back().emplace(execution->name, value);
+      auto result = emitExpr(*execution->body);
+      scopes.pop_back();
+      return convertPresence(result, presence);
+    }
+    if (auto* final = dynamic_cast<const IOResultExpr*>(&expr)) {
+      auto value = emitElementBoundary(*final->value);
+      if (value.type == Type::IO) value = executeIO(value, type);
+      return convertPresence(value, presence);
+    }
     if (auto* number = dynamic_cast<const NumberExpr*>(&expr))
       return {llvm::ConstantFP::get(builder.getDoubleTy(), number->value), type, kPresent};
     if (auto* boolean = dynamic_cast<const BooleanExpr*>(&expr))
       return {builder.getInt1(boolean->value), type, kPresent};
+    if (dynamic_cast<const UnitExpr*>(&expr))
+      return {builder.getTrue(), type, kPresent};
     if (auto* text = dynamic_cast<const TextExpr*>(&expr)) {
       auto create = external("lan_text_from_cstr", llvmType(Type::Text),
                              {llvmType(Type::Text)});
@@ -3658,7 +4106,8 @@ struct CodeGenerator::Impl {
                 Type::Number, kPresent};
     }
     if (auto* let = dynamic_cast<const LetExpr*>(&expr)) {
-      auto value = emitExpr(*let->value);
+      auto value = let->expressionBoundary ? emitElementBoundary(*let->value)
+                                           : emitExpr(*let->value);
       scopes.emplace_back();
       scopes.back().emplace(let->name, value);
       auto result = emitExpr(*let->body);
@@ -3761,6 +4210,8 @@ struct CodeGenerator::Impl {
     if (auto* collection = dynamic_cast<const CollectionExpr*>(&expr))
       return emitCollection(*collection);
     if (auto* call = dynamic_cast<const CallExpr*>(&expr)) {
+      if (isStandardIOBuiltin(call->callee)) return emitStandardIOBuiltin(*call);
+      if (isRegexBuiltin(call->callee)) return emitRegexBuiltin(*call);
       if (call->callee == "is_missing") {
         auto value = emitExpr(*call->args[0]);
         return {builder.CreateNot(presentFlag(value), "is.missing"),
@@ -3797,7 +4248,8 @@ struct CodeGenerator::Impl {
       if (call->callee == "to_text" || call->callee == "parse_number")
         return emitConversionBuiltin(*call);
       if (call->callee == "concat" || call->callee == "flatten" ||
-          call->callee == "reverse" || call->callee == "sort" ||
+          call->callee == "reverse" || call->callee == "distinct" ||
+          call->callee == "sort" ||
           ((call->callee == "take" || call->callee == "drop") &&
            inference->expressionType(*call->args[0]) == Type::List))
         return emitListBuiltin(*call);
@@ -3934,6 +4386,8 @@ struct CodeGenerator::Impl {
     auto* raw = rawPayload(result);
     if (result.type == Type::Number) {
       builder.CreateCall(printfFn, {builder.CreateGlobalString("%g\n"), raw});
+    } else if (result.type == Type::Unit) {
+      builder.CreateCall(printfFn, {builder.CreateGlobalString("()\n")});
     } else if (result.type == Type::Text) {
       builder.CreateCall(printfFn, {builder.CreateGlobalString("%s\n"), raw});
     } else if (result.type == Type::Boolean) {
@@ -3941,6 +4395,8 @@ struct CodeGenerator::Impl {
       auto* no = builder.CreateGlobalString("false");
       auto* word = builder.CreateSelect(raw, yes, no, "boolean.text");
       builder.CreateCall(printfFn, {builder.CreateGlobalString("%s\n"), word});
+    } else if (result.type == Type::Regex) {
+      builder.CreateCall(printfFn, {builder.CreateGlobalString("<Regex>\n")});
     } else if (result.type == Type::List) {
       builder.CreateCall(printListFunction, {raw});
       builder.CreateCall(printfFn, {builder.CreateGlobalString("\n")});
@@ -3962,10 +4418,14 @@ struct CodeGenerator::Impl {
   }
 
   void emitProgramResult(const Program& program) {
-    auto* signature = llvm::FunctionType::get(builder.getInt32Ty(), {}, false);
+    auto* signature = llvm::FunctionType::get(builder.getInt32Ty(),
+        {builder.getInt32Ty(), llvmType(Type::Text)}, false);
     auto* mainFunction = llvm::Function::Create(signature, llvm::Function::ExternalLinkage,
                                                 "main", module.get());
     builder.SetInsertPoint(llvm::BasicBlock::Create(context, "start", mainFunction));
+    auto initialize = external("lan_io_initialize", builder.getVoidTy(),
+        {builder.getInt32Ty(), llvmType(Type::Text)});
+    builder.CreateCall(initialize, {mainFunction->getArg(0), mainFunction->getArg(1)});
     beginArcFrame();
     scopes.clear();
     scopes.emplace_back();
@@ -3975,7 +4435,20 @@ struct CodeGenerator::Impl {
     auto* pointer = llvmType(Type::Text);
     auto printfFn = external("printf", builder.getInt32Ty(), {pointer}, true);
     auto result = requirePresent(emitExpr(*program.result), "程序最终结果");
-    displayPresent(result, printfFn);
+    if (result.type == Type::IO) {
+      result = executeIO(result, inference->ioResultType(*program.result));
+      auto* present = llvm::BasicBlock::Create(context, "io.present", mainFunction);
+      auto* absent = llvm::BasicBlock::Create(context, "io.missing", mainFunction);
+      auto* done = llvm::BasicBlock::Create(context, "io.displayed", mainFunction);
+      builder.CreateCondBr(presentFlag(result), present, absent);
+      builder.SetInsertPoint(present);
+      displayPresent(result, printfFn);
+      builder.CreateBr(done);
+      builder.SetInsertPoint(absent);
+      builder.CreateCall(printfFn, {builder.CreateGlobalString("missing\n")});
+      builder.CreateBr(done);
+      builder.SetInsertPoint(done);
+    } else displayPresent(result, printfFn);
     emitDiagnosticPop();
     endArcFrame();
     auto assertArc = external("lan_arc_assert_empty", builder.getVoidTy(), {});
@@ -3997,6 +4470,13 @@ struct CodeGenerator::Impl {
 
 CodeGenerator::CodeGenerator() : impl_(std::make_unique<Impl>()) {}
 CodeGenerator::~CodeGenerator() = default;
+
+bool CodeGenerator::needsRegexRuntime() const {
+  for (const char* name : {"lan_regex_compile", "lan_regex_search"})
+    if (auto* function = impl_->module->getFunction(name))
+      if (!function->use_empty()) return true;
+  return false;
+}
 
 bool CodeGenerator::generate(const Program& program, std::string& error) {
   try {

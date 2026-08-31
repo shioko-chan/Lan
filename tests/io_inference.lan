@@ -1,0 +1,9 @@
+forward() = io { later() }
+wrap(action) = io { action }
+later() = io { [1, missing, 3] }
+
+io {
+  first <- forward();
+  second <- wrap(later());
+  {first: first + 10, second: second + 20}
+}

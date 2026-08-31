@@ -1,0 +1,11 @@
+output(text) = write_stdout(text)
+io {
+  unused = output("must not appear");
+  text <- read_stdin();
+  action = output(text);
+  action;
+  action;
+  args <- arguments();
+  write_stdout("\n");
+  {input_length: length(text), args: args}
+}

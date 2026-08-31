@@ -1,0 +1,8 @@
+finish(found) =
+  result = if found
+    ()
+  else
+    missing
+  result ?? ()
+
+finish(false)

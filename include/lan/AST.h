@@ -9,7 +9,7 @@ namespace lan {
 
 // Table is a compile-time refinement. Its LLVM/runtime representation is the
 // same Record pointer returned by table(record).
-enum class Type { Unknown, Number, Boolean, Text, List, Record, Table, Dynamic };
+enum class Type { Unknown, Number, Boolean, Unit, Text, List, Record, Table, Regex, IO, Dynamic };
 
 struct Expr {
   virtual ~Expr() = default;
@@ -33,6 +33,7 @@ struct TextExpr final : Expr {
 };
 
 struct MissingExpr final : Expr {};
+struct UnitExpr final : Expr {};
 
 struct ListExpr final : Expr {
   explicit ListExpr(std::vector<Expr*>* elements) {
@@ -196,6 +197,7 @@ struct LetExpr final : Expr {
   std::string name;
   std::unique_ptr<Expr> value;
   std::unique_ptr<Expr> body;
+  bool expressionBoundary = false;
 };
 
 struct IfExpr final : Expr {
@@ -204,6 +206,25 @@ struct IfExpr final : Expr {
   std::unique_ptr<Expr> condition;
   std::unique_ptr<Expr> thenValue;
   std::unique_ptr<Expr> elseValue;
+};
+
+struct IOExpr final : Expr {
+  explicit IOExpr(Expr* body) : body(body) {}
+  std::unique_ptr<Expr> body;
+};
+
+// An empty name executes and discards an action. Pure bindings remain LetExpr.
+struct IOBindExpr final : Expr {
+  IOBindExpr(std::string name, Expr* action, Expr* body)
+      : name(std::move(name)), action(action), body(body) {}
+  std::string name;
+  std::unique_ptr<Expr> action;
+  std::unique_ptr<Expr> body;
+};
+
+struct IOResultExpr final : Expr {
+  explicit IOResultExpr(Expr* value) : value(value) {}
+  std::unique_ptr<Expr> value;
 };
 
 struct Parameter {

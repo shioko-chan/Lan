@@ -1,8 +1,23 @@
 # Lan IO Monad 设计
 
-本文件定义尚未实现的 IO 语义。Lan 的普通表达式和函数保持纯函数；外部副作用只能
+本文件定义分阶段实现的 IO 语义。Lan 的普通表达式和函数保持纯函数；外部副作用只能
 通过显式 `IO<T>` 值描述，并由程序入口顺序执行。当前时间与随机数的专门规则记录在
 [`TIME_RANDOM_DESIGN.md`](TIME_RANDOM_DESIGN.md)。
+
+当前进度：已实现 `Unit`、`IO<T>`、`io` 块、`<-`、纯值 action 的延迟构造/执行、
+捕获环境 ARC、重复执行、标准输入输出和命令行参数。文件和其他外部 IO API 尚未实现。
+下文使用 `read_text`、`write_text` 等函数的示例仍是待实现规范。
+
+当前可运行的例子：
+
+```lan
+number(value) = io { value }
+io {
+  first <- number(10);
+  next = first + 2;
+  number(next)
+}
+```
 
 ## 目标与边界
 
@@ -19,7 +34,17 @@
 增加两个编译器内建类型：
 
 - `IO<T>`：执行后产生 `T` 的外部操作。
-- `Unit`：只有一个值 `unit`，表示操作成功但没有有意义的结果。
+- `Unit`：只有一个值 `()`，表示操作成功但没有有意义的结果。
+
+Unit 已实现的规则：
+
+- `()` 是单元字面量，不等于 `missing`；Unit 仍具有 Present/Missing/MaybeMissing 状态。
+- `unit` 是普通名称，不作为字面量或保留字；类型名仍为 `Unit`。
+- 可以作为函数参数、默认值、返回值、Record 字段以及 List 元素和 Table 列元素。
+- 允许 Unit 间的 `==`、`!=`、`same`，不允许算术、排序比较或当作 Boolean 条件。
+- `?`、`??`、`require` 和 `is_missing` 沿用普通值规则。
+- 调试显示和 `to_text` 输出 `()`；这不是 JSON 序列化支持。
+- 不分配 Unit 堆对象，可能缺失时编码为 `i1`；紧凑 List 以字节保存存在标记。
 
 `IO<T>` 与所有其他值一样具有 presence，因此 action 本身和执行结果的 missing 状态是
 不同层次。`IO<Option<Number>>` 表示 action 成功后得到一个可能缺失的 Number；IO 失败
@@ -61,7 +86,7 @@ copy(source, destination) = io
 program = io {
   text <- read_text("input.txt");
   write_stdout(text);
-  unit
+  ()
 }
 ```
 
@@ -71,6 +96,7 @@ program = io {
 
 - 文件最后产生普通值时，行为与当前版本一致：求值并显示结果。
 - 文件最后产生 `IO<T>` 时，运行器执行该 action 一次，并显示其最终 `T`。
+- action 本身为 missing 时拒绝执行；执行成功而数据结果为 missing 时显示 `missing`。
 - 没有到达文件最后结果的 action 只是未执行的普通值。
 - 构建产物不得在静态初始化或程序装载期间执行用户 IO。
 
@@ -95,6 +121,23 @@ read_stdin()            -> IO<Text>
 write_stdout(text)      -> IO<Unit>
 arguments()             -> IO<List<Text>>
 ```
+
+其中 `read_stdin`、`write_stdout`、`arguments` 已实现；文件 API 尚未实现。
+
+### 标准输入输出与参数的确定规则
+
+- 三个函数均只构造 action；未执行的 action 不读取、写入或验证外部数据。
+- `read_stdin()` 读取到 EOF，保留原有换行，空输入返回空 Text；每次执行继续消费输入，
+  已到 EOF 时再次执行返回空 Text。输入上限固定为 8 MiB（字节），超过立即拒绝。
+- 标准输入必须是有效 UTF-8；当前 Text 为 NUL 结尾表示，因此输入中的 NUL 被拒绝。
+  读取可能等待终端或管道的输入/EOF；资源上限不保证外部 IO 在有限时间内完成。
+- `write_stdout(text)` 要求存在的 Text，写入原文、不添加换行，成功前刷新输出，返回 `()`。
+  输出不是原子的，失败前可能已经写出部分内容；关闭的管道报告 IO 错误而不是因 SIGPIPE 终止。
+- `arguments()` 不包含可执行文件名，保留顺序、空参数及空格。执行时验证 UTF-8，
+  参数最多 65536 项、合计最多 8 MiB，每次执行返回新的不可变 List 快照。
+- `lanc --run program.lan -- 参数...` 原样转发参数；直接执行生成的程序也支持参数。
+- 运行时错误写入 stderr，保留 action 名、源码位置和调用链；系统错误附带 errno 和原因。
+  失败后不执行后续步骤。程序入口仍自动显示最终结果，包括 Unit 的 `()`。
 
 CSV 和 JSON 使用纯编解码函数组合：
 
@@ -204,6 +247,10 @@ niche 表示 missing，并遵循 ARC 与堆对象 DAG。它不提供任意逐字
 `OptionT IO` 的“退出整个 io 块”语义。需要拒绝 missing 时使用 `require`，需要条件执行
 action 时使用显式 `if`。
 
+每个 `=` 绑定的右侧、`<-` 的右侧、裸 action 和最后的表达式各自形成 `?` 的边界。
+纯绑定得到 missing 后继续后续步骤；若 `<-` 的右侧表达式得到 missing，则由于没有
+可执行 action 而拒绝。最后的纯表达式可返回 missing，最后的 action 则必须存在。
+
 ## 文件写入语义
 
 - 每个文件写入使用同目录临时文件并原子替换目标路径。
@@ -223,12 +270,14 @@ action 时使用显式 `if`。
 
 ## 实现阶段
 
-1. 增加 `Unit`、`IO<T>` 类型检查和禁止使用位置。
-2. 解析并验证缩进与花括号形式的 `io` 块和 `<-` 绑定。
-3. 实现只包含 `pure` 步骤的 IO lowering，验证顺序控制流和最终执行入口。
-4. 实现标准输入输出及结构化错误诊断。
+1. ~~增加 `Unit`、`IO<T>` 类型检查和禁止使用位置。~~ **已完成**。
+2. ~~解析并验证缩进与花括号形式的 `io` 块和 `<-` 绑定。~~ **已完成**。
+3. ~~实现只包含 `pure` 步骤的 IO lowering，验证顺序控制流和最终执行入口。~~ **已完成**。
+4. ~~实现标准输入输出、命令行参数及结构化错误诊断。~~ **已完成**。
 5. 实现受限的原子 Text 文件读写。
-6. 完成 action 捕获环境的 ARC、DAG 验证及重复执行测试。
+6. ~~完成 action 捕获环境的 ARC、DAG 验证及重复执行测试。~~ **纯 action 和标准 IO 已完成**：
+   只捕获现有不可变值，构造后不暴露环境更新接口；递归函数及无限嵌套类型被拒绝。
+   标准 IO 已验证 Text 捕获、Text/List 结果及错误路径的所有权；后续文件 API 需继续验证。
 7. 增加 `Bytes` 和受限二进制文件 IO。
 8. 实现 CSV 的纯转换和直接 Table IO，并验证确定列序、类型推断和单元格诊断。
 9. 完成受控 `Value` 类型细化后实现 JSON 转换与 IO。

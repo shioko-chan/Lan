@@ -1,0 +1,9 @@
+optional(found) = io { if found { () } else { missing } }
+
+io {
+  absent <- optional(false);
+  present <- optional(true);
+  skipped = absent? == ();
+  later <- io { 42 };
+  {absent: is_missing(absent), present: present, skipped: skipped, later: later}
+}

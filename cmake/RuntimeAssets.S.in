@@ -1,0 +1,36 @@
+#ifdef __APPLE__
+#define SYMBOL(x) _##x
+.section __TEXT,__const
+#else
+#define SYMBOL(x) x
+.section .rodata
+#endif
+.balign 16
+.globl SYMBOL(lan_record_bytes)
+SYMBOL(lan_record_bytes):
+.incbin "@LAN_RECORD_BITCODE@"
+.globl SYMBOL(lan_record_end)
+SYMBOL(lan_record_end):
+.balign 16
+.globl SYMBOL(lan_unicode_bytes)
+SYMBOL(lan_unicode_bytes):
+.incbin "@LAN_UTF8PROC_BITCODE@"
+.globl SYMBOL(lan_unicode_end)
+SYMBOL(lan_unicode_end):
+.balign 16
+.globl SYMBOL(lan_regex_bytes)
+SYMBOL(lan_regex_bytes):
+.incbin "@LAN_REGEX_ARCHIVE@"
+.globl SYMBOL(lan_regex_end)
+SYMBOL(lan_regex_end):
+.globl SYMBOL(lan_regex_licenses)
+SYMBOL(lan_regex_licenses):
+.ascii "RE2 2025-11-05 (https://github.com/google/re2)\n\n"
+.incbin "@LAN_RE2_SOURCE@/LICENSE"
+.ascii "\nAbseil 20250512.1 (https://github.com/abseil/abseil-cpp)\n\n"
+.incbin "@LAN_ABSEIL_SOURCE@/LICENSE"
+.globl SYMBOL(lan_regex_licenses_end)
+SYMBOL(lan_regex_licenses_end):
+#ifndef __APPLE__
+.section .note.GNU-stack,"",@progbits
+#endif

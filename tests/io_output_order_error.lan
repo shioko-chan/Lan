@@ -1,0 +1,6 @@
+io {
+  write_stdout("before\n");
+  failure = 1 / 0;
+  write_stdout("after\n");
+  ()
+}

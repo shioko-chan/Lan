@@ -39,7 +39,8 @@
 - [x] ~~`reverse(list)` 返回逆序 List。~~
 - [x] ~~将 `take(list, n)` 和 `drop(list, n)` 扩展到 List，并保持操作有界。~~
 - [x] ~~`sort(list)` 稳定排序 Number 或 Text List，missing 固定放在末尾。~~
-- [ ] `distinct(list)` 去重并保留每个值第一次出现的位置。
+- [x] ~~`distinct(list)` 使用结构化哈希与相等去重并保留第一次出现的位置；多个 missing
+  只保留一个；平均时间和额外空间均为线性，冲突不影响正确性。~~
 - [x] ~~不增加 `contains`；使用 `items |> any(. == target)` 表达。~~
 - [x] ~~不增加 `is_empty`；使用 `length(items) == 0` 表达。~~
 - [x] ~~不增加 `head`、`tail` 等同义名称；使用现有 `first`、`last`。~~
@@ -54,8 +55,9 @@
 - [x] ~~`text_contains(text, part)` 判断是否包含子文本。~~
 - [x] ~~`split(text, separator)` 返回 `List<Text>`，并拒绝空分隔符。~~
 - [x] ~~`join(parts, separator)` 将不存在 missing 元素的 `List<Text>` 连接成 Text。~~
-- [ ] 按 `REGEX_DESIGN.md` 增加基于 RE2 的不透明 `Regex` 类型、构造和第一阶段匹配 API；
-  ARC 前置条件已经满足。
+- [x] ~~按 `REGEX_DESIGN.md` 增加基于 RE2 的不透明 `Regex` 类型、构造和第一阶段匹配 API：
+  `regex_contains`、`regex_matches`、`regex_find`、`regex_find_all`、`regex_split`。
+  已接入 ARC、Unicode 空匹配前进、结构化错误诊断及按需静态链接。~~
 
 ## Number
 
@@ -121,11 +123,13 @@
 
 ## IO 与数据格式
 
+语言核心已支持 `IO<T>`、`io`/`<-`、纯值 action、标准输入输出及命令行参数；文件 IO 仍待实现。
+
 - [ ] `read_text(path) -> IO<Text>` 受权限范围和整文件大小上限约束。
 - [ ] `write_text(path, text) -> IO<Unit>` 使用同目录临时文件和原子替换。
-- [ ] `read_stdin() -> IO<Text>` 读取有限的 UTF-8 标准输入。
-- [ ] `write_stdout(text) -> IO<Unit>` 按 action 顺序写入标准输出。
-- [ ] `arguments() -> IO<List<Text>>` 返回不含可执行文件名的参数快照。
+- [x] ~~`read_stdin() -> IO<Text>` 读取到 EOF，最多 8 MiB；验证 UTF-8 并拒绝 NUL。~~
+- [x] ~~`write_stdout(text) -> IO<Unit>` 按 action 顺序写入并刷新标准输出，不自动加换行。~~
+- [x] ~~`arguments() -> IO<List<Text>>` 返回不含可执行文件名的参数快照；支持 `--run … -- 参数`。~~
 - [ ] 增加不透明 `Bytes`、`read_bytes` 和 `write_bytes`，仅用于有限二进制 IO 与编解码。
 - [ ] `parse_csv`、`format_csv` 提供纯转换；`read_csv`、`write_csv` 直接读写 Table。
 - [ ] 完成受控 `Value` 类型细化，并提供 JSON 的纯转换与文件 IO；对象数组只在显式

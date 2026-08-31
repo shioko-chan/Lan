@@ -1,0 +1,19 @@
+maybe_unit(found) = if found { () } else { missing }
+row_value(row) = row.done
+
+{
+  items = table({done: [(), missing, ()], id: [1, 2, 3]});
+  checks = [
+    row_count(items) == 3,
+    same(items.done, [(), missing, ()]),
+    same(items |> map(.done), [(), missing, ()]),
+    same(items |> map(row_value(.)), [(), missing, ()]),
+    same(items |> filter(not is_missing(.done)), {done: [(), ()], id: [1, 3]}),
+    same(items |> select({done: ()}), {done: [(), (), ()]}),
+    same(items |> map({done: ()}) |> table(), {done: [(), (), ()]}),
+    same(items |> add({extra: maybe_unit(.id > 1)}),
+         {done: [(), missing, ()], extra: [missing, (), ()], id: [1, 2, 3]}),
+    same(table([{done: ()}, {done: missing}]), {done: [(), missing]})
+  ];
+  checks |> all(.)
+}

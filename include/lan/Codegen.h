@@ -15,6 +15,7 @@ class CodeGenerator {
   bool generate(const Program& program, std::string& error);
   bool writeIR(const std::string& path, std::string& error) const;
   std::string getIR() const;
+  bool needsRegexRuntime() const;
 
  private:
   struct Impl;

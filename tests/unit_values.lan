@@ -1,0 +1,72 @@
+identity(value) = value
+maybe_unit(found) = if found { () } else { missing }
+default_unit(value = ()) = value
+accept_unit(value) = value == ()
+skip(found) = accept_unit(maybe_unit(found)?)
+choose(found) = maybe_unit(found) ?? ()
+partial(found) = {ready: (), stopped: maybe_unit(found)?}
+
+demo() = {
+  value = identity(());
+  items = [(), missing, ()];
+  holder = {value: value, absent: maybe_unit(false)};
+  key = "value";
+  dynamic_holder = {(key): value};
+  updated = holder with {value: maybe_unit(false)};
+  checks = [
+    not is_missing(()),
+    not same((), missing),
+    not same((), true),
+    same(value, ()),
+    value == (),
+    not (() != ()),
+    accept_unit(maybe_unit(true)),
+    same(default_unit(), ()),
+    same(default_unit(value = ()), ()),
+    is_missing(default_unit(missing)),
+    same(choose(false), ()),
+    same(choose(true), ()),
+    is_missing(skip(false)),
+    skip(true),
+    is_missing(partial(false)),
+    same(partial(true), {ready: (), stopped: ()}),
+    same(require(holder.value), ()),
+    same(dynamic_holder.(key), ()),
+    accept_unit(dynamic_holder.(key)),
+    is_missing(updated.value),
+    same(holder.value, ()),
+    to_text(()) == "()",
+    to_text(items) == "[(), missing, ()]",
+    to_text(dynamic_holder) == "{value: ()}",
+    same(items.0, ()),
+    is_missing(items.1),
+    is_missing(items.9),
+    same(items |> first(), ()),
+    same(items |> last(), ()),
+    is_missing(take(items, 0) |> first()),
+    same(items |> reverse(), items),
+    same(concat([()], [missing, ()]), items),
+    same(take(items, 2), [(), missing]),
+    same(drop(items, 1), [missing, ()]),
+    same([[()], [], [missing, ()]] |> flatten(), items),
+    same(items ?? (), [(), (), ()]),
+    same(items ?? [missing, ()], [(), ()]),
+    same(items == (), [true, missing, true]),
+    same(() != items, [false, missing, false]),
+    same([[(), missing], [()]] == [(), ()], [[true, missing], [true]]),
+    same(items |> map(identity(.)), items),
+    same(items |> map(accept_unit(.?)), [true, missing, true]),
+    same(items |> filter(not is_missing(.)), [(), ()]),
+    same(items |> find(.? == ()), ()),
+    is_missing(items |> find(false)),
+    count(items) == 2
+  ];
+  {
+    checks: checks |> all(.),
+    list: items,
+    optional: [maybe_unit(true), maybe_unit(false)],
+    value: value
+  }
+}
+
+demo()

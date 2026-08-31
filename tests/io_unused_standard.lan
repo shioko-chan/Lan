@@ -1,0 +1,6 @@
+{
+  read = read_stdin();
+  write = write_stdout("must not appear");
+  args = arguments();
+  42
+}

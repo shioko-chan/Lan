@@ -1,0 +1,13 @@
+{
+  numbers = [[[1, missing], []], missing, [[-2]]];
+  booleans = [[[true, missing], []], missing, [[false]]];
+  checks = [
+    same(-numbers, [[[-1, missing], []], missing, [[2]]]),
+    same(-(-numbers), numbers),
+    same(not booleans, [[[false, missing], []], missing, [[true]]]),
+    same(not (not booleans), booleans),
+    same(numbers, [[[1, missing], []], missing, [[-2]]]),
+    same(booleans, [[[true, missing], []], missing, [[false]]])
+  ];
+  checks |> all(.)
+}

@@ -1,0 +1,14 @@
+number(value) = io { value }
+run_twice(action) = io {
+  first <- action;
+  second <- action;
+  first + second
+}
+
+io {
+  ignored = io { 1 / 0 };
+  x <- number(10);
+  number(999);
+  result <- run_twice(number(x + 1));
+  result
+}

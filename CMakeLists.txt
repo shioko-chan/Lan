@@ -1,5 +1,8 @@
-cmake_minimum_required(VERSION 3.20)
-project(lan LANGUAGES C CXX)
+cmake_minimum_required(VERSION 3.22)
+project(lan LANGUAGES C CXX ASM)
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -8,15 +11,54 @@ find_package(BISON REQUIRED)
 find_package(FLEX REQUIRED)
 find_package(LLVM REQUIRED CONFIG)
 find_program(CLANG_EXECUTABLE clang HINTS ${LLVM_TOOLS_BINARY_DIR} REQUIRED)
+find_program(CLANGXX_EXECUTABLE clang++ HINTS ${LLVM_TOOLS_BINARY_DIR} REQUIRED)
+find_program(LLVM_AR_EXECUTABLE llvm-ar HINTS ${LLVM_TOOLS_BINARY_DIR} REQUIRED)
+add_subdirectory(runtime/regex)
+FetchContent_GetProperties(re2 SOURCE_DIR LAN_RE2_SOURCE)
+FetchContent_GetProperties(abseil SOURCE_DIR LAN_ABSEIL_SOURCE)
+
+# Bundle native archives as data, not executable compiler code. All Abseil
+# static targets share this bundle; the final linker extracts only used members.
+function(lan_collect_archives directory)
+  get_property(targets DIRECTORY "${directory}" PROPERTY BUILDSYSTEM_TARGETS)
+  foreach(target IN LISTS targets)
+    get_target_property(kind ${target} TYPE)
+    if(kind STREQUAL "STATIC_LIBRARY")
+      set_property(GLOBAL APPEND PROPERTY LAN_REGEX_ARCHIVE_TARGETS ${target})
+    endif()
+  endforeach()
+  get_property(children DIRECTORY "${directory}" PROPERTY SUBDIRECTORIES)
+  foreach(child IN LISTS children)
+    lan_collect_archives("${child}")
+  endforeach()
+endfunction()
+lan_collect_archives("${CMAKE_CURRENT_SOURCE_DIR}/runtime/regex")
+get_property(regex_targets GLOBAL PROPERTY LAN_REGEX_ARCHIVE_TARGETS)
+set(LAN_REGEX_ARCHIVE ${CMAKE_CURRENT_BINARY_DIR}/lan_regex_bundle.a)
+set(archive_script "CREATE \"${LAN_REGEX_ARCHIVE}\"\n")
+foreach(target IN LISTS regex_targets)
+  string(APPEND archive_script "ADDLIB \"$<TARGET_FILE:${target}>\"\n")
+endforeach()
+string(APPEND archive_script "SAVE\nEND\n")
+file(GENERATE OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/regex-archive-$<CONFIG>.mri
+     CONTENT "${archive_script}")
+add_custom_command(OUTPUT ${LAN_REGEX_ARCHIVE}
+  COMMAND ${CMAKE_COMMAND} -DARCHIVER=${LLVM_AR_EXECUTABLE}
+    -DSCRIPT=${CMAKE_CURRENT_BINARY_DIR}/regex-archive-$<CONFIG>.mri
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/MergeArchive.cmake
+  DEPENDS ${regex_targets} cmake/MergeArchive.cmake
+          ${CMAKE_CURRENT_BINARY_DIR}/regex-archive-$<CONFIG>.mri VERBATIM)
 
 set(LAN_RECORD_BITCODE ${CMAKE_CURRENT_BINARY_DIR}/lan_record_runtime.bc)
 set(LAN_UTF8PROC_BITCODE ${CMAKE_CURRENT_BINARY_DIR}/lan_utf8proc_runtime.bc)
 add_custom_command(
   OUTPUT ${LAN_RECORD_BITCODE}
-  COMMAND ${CLANG_EXECUTABLE} -std=c17 -O2 -emit-llvm -c
+  COMMAND ${CLANGXX_EXECUTABLE} -std=c++17 -fno-exceptions -fno-rtti -O2 -emit-llvm -c
           -I${CMAKE_CURRENT_SOURCE_DIR}/third_party/utf8proc
-          ${CMAKE_CURRENT_SOURCE_DIR}/runtime/record.c -o ${LAN_RECORD_BITCODE}
-  DEPENDS runtime/record.c third_party/utf8proc/utf8proc.h
+          ${CMAKE_CURRENT_SOURCE_DIR}/runtime/record.cpp -o ${LAN_RECORD_BITCODE}
+  DEPENDS runtime/record.cpp runtime/value.h runtime/ownership.hpp runtime/regex/ownership.h runtime/regex/regex.h
+          runtime/io/stdio.inc
+          third_party/utf8proc/utf8proc.h
   VERBATIM)
 add_custom_command(
   OUTPUT ${LAN_UTF8PROC_BITCODE}
@@ -28,7 +70,10 @@ add_custom_command(
           third_party/utf8proc/utf8proc_data.c
   VERBATIM)
 add_custom_target(lan_record_runtime
-  DEPENDS ${LAN_RECORD_BITCODE} ${LAN_UTF8PROC_BITCODE})
+  DEPENDS ${LAN_RECORD_BITCODE} ${LAN_UTF8PROC_BITCODE} ${LAN_REGEX_ARCHIVE})
+configure_file(cmake/RuntimeAssets.S.in ${CMAKE_CURRENT_BINARY_DIR}/RuntimeAssets.S @ONLY)
+set_source_files_properties(${CMAKE_CURRENT_BINARY_DIR}/RuntimeAssets.S PROPERTIES
+  OBJECT_DEPENDS "${LAN_RECORD_BITCODE};${LAN_UTF8PROC_BITCODE};${LAN_REGEX_ARCHIVE};${LAN_RE2_SOURCE}/LICENSE;${LAN_ABSEIL_SOURCE}/LICENSE")
 
 BISON_TARGET(LanParser src/parser.y ${CMAKE_CURRENT_BINARY_DIR}/parser.cpp
              DEFINES_FILE ${CMAKE_CURRENT_BINARY_DIR}/parser.hpp)
@@ -38,6 +83,7 @@ ADD_FLEX_BISON_DEPENDENCY(LanLexer LanParser)
 add_executable(lanc
   src/main.cpp
   src/Codegen.cpp
+  ${CMAKE_CURRENT_BINARY_DIR}/RuntimeAssets.S
   ${BISON_LanParser_OUTPUTS}
   ${FLEX_LanLexer_OUTPUTS}
 )
@@ -45,13 +91,149 @@ add_dependencies(lanc lan_record_runtime)
 
 target_include_directories(lanc PRIVATE include ${CMAKE_CURRENT_BINARY_DIR} ${LLVM_INCLUDE_DIRS})
 target_compile_definitions(lanc PRIVATE ${LLVM_DEFINITIONS})
-target_compile_definitions(lanc PRIVATE LAN_RECORD_BITCODE_PATH="${LAN_RECORD_BITCODE}")
-target_compile_definitions(lanc PRIVATE LAN_UTF8PROC_BITCODE_PATH="${LAN_UTF8PROC_BITCODE}")
 target_compile_definitions(lanc PRIVATE LAN_CLANG_PATH="${CLANG_EXECUTABLE}")
+target_compile_definitions(lanc PRIVATE LAN_CLANGXX_PATH="${CLANGXX_EXECUTABLE}")
 llvm_map_components_to_libnames(LLVM_LIBS Core Support Passes BitReader Linker)
 target_link_libraries(lanc PRIVATE ${LLVM_LIBS})
 
 enable_testing()
+add_executable(lan_io_runtime_test tests/io_runtime.c runtime/record.cpp
+  third_party/utf8proc/utf8proc.c)
+target_include_directories(lan_io_runtime_test PRIVATE third_party/utf8proc)
+target_link_libraries(lan_io_runtime_test PRIVATE lan_regex_runtime)
+add_test(NAME io_runtime COMMAND lan_io_runtime_test)
+add_executable(lan_runtime_ownership_test tests/runtime_ownership.cpp)
+target_include_directories(lan_runtime_ownership_test PRIVATE runtime)
+add_test(NAME runtime_ownership COMMAND lan_runtime_ownership_test)
+add_test(NAME io_standard_streams COMMAND ${CMAKE_COMMAND}
+  -DLANC=$<TARGET_FILE:lanc> -DROOT=${CMAKE_CURRENT_SOURCE_DIR}
+  -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/standard-io-test
+  -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_standard_io.cmake)
+set_tests_properties(io_standard_streams PROPERTIES TIMEOUT 90)
+foreach(case stdout_type stdin_arity arguments_arity stdout_arity standard_redefinition)
+  set(expected "参数|文字|保留")
+  add_test(NAME reject_io_${case} COMMAND ${CMAKE_COMMAND}
+    -DLANC=$<TARGET_FILE:lanc> -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/io_${case}_error.lan
+    "-DEXPECTED=${expected}" -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_compile_error.cmake)
+endforeach()
+add_test(NAME reject_io_stdout_missing COMMAND ${CMAKE_COMMAND}
+  -DLANC=$<TARGET_FILE:lanc> -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/io_stdout_missing_error.lan
+  -DEXPECTED=missing -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_runtime_error.cmake)
+foreach(case sequence layout presence captures nested missing_result collections inference)
+  if(case STREQUAL "sequence")
+    set(expected "22")
+  elseif(case STREQUAL "layout")
+    set(expected "12")
+  elseif(case STREQUAL "presence")
+    set(expected "{absent: true, later: 42, present: (), skipped: missing}")
+  elseif(case STREQUAL "captures")
+    set(expected "{changed: {list: [], match: false, text: \"new\"}, old: {list: [1, missing, 3], match: true, text: \"saved value\"}, same_results: true}")
+  elseif(case STREQUAL "nested")
+    set(expected "{captured: 22, first: 7, nested: 3, override: 9, result: missing, selected: 13, unit_value: ()}")
+  elseif(case STREQUAL "missing_result")
+    set(expected "missing")
+  elseif(case STREQUAL "inference")
+    set(expected "{first: [11, missing, 13], second: [21, missing, 23]}")
+  else()
+    set(expected "{name: [\"A\", \"B\"], score: [11, 21]}")
+  endif()
+  add_test(NAME io_${case} COMMAND ${CMAKE_COMMAND}
+    -DLANC=$<TARGET_FILE:lanc> -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/io_${case}.lan
+    "-DEXPECTED=${expected}" -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_success.cmake)
+endforeach()
+foreach(case record list same compare text pure_statement pure_bind outside_bind recursion types update)
+  set(expected "IO")
+  if(case STREQUAL "outside_bind")
+    set(expected "syntax error")
+  elseif(case STREQUAL "recursion")
+    set(expected "禁止递归")
+  elseif(case STREQUAL "types")
+    set(expected "种类不同")
+  endif()
+  add_test(NAME reject_io_${case} COMMAND ${CMAKE_COMMAND}
+    -DLANC=$<TARGET_FILE:lanc> -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/io_${case}_error.lan
+    "-DEXPECTED=${expected}" -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_compile_error.cmake)
+endforeach()
+foreach(case runtime missing_action unhandled_result)
+  set(expected "missing")
+  if(case STREQUAL "runtime")
+    set(expected "除数不能为零")
+  endif()
+  add_test(NAME reject_io_${case} COMMAND ${CMAKE_COMMAND}
+    -DLANC=$<TARGET_FILE:lanc> -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/io_${case}_error.lan
+    "-DEXPECTED=${expected}" -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_runtime_error.cmake)
+endforeach()
+foreach(case unit_literal unit_layout unit_values unit_table unit_name recursive_binary_arc recursive_unary_arc)
+  set(expected "true")
+  if(case STREQUAL "unit_literal" OR case STREQUAL "unit_layout")
+    set(expected "()")
+  elseif(case STREQUAL "unit_values")
+    set(expected "{checks: true, list: [(), missing, ()], optional: [(), missing], value: ()}")
+  endif()
+  add_test(NAME ${case} COMMAND ${CMAKE_COMMAND}
+    -DLANC=$<TARGET_FILE:lanc> -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/${case}.lan
+    "-DEXPECTED=${expected}" -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_success.cmake)
+endforeach()
+foreach(case type arithmetic condition)
+  add_test(NAME reject_unit_${case} COMMAND lanc
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/unit_${case}_error.lan)
+  set_tests_properties(reject_unit_${case} PROPERTIES WILL_FAIL TRUE)
+endforeach()
+add_test(NAME reject_unbound_unit_name COMMAND ${CMAKE_COMMAND}
+  -DLANC=$<TARGET_FILE:lanc>
+  -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/unit_unbound_error.lan
+  -DEXPECTED=找不到名称
+  -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_compile_error.cmake)
+foreach(case missing dynamic_type)
+  if(case STREQUAL "missing")
+    set(expected "missing")
+  else()
+    set(expected "不是Unit")
+  endif()
+  add_test(NAME reject_unit_${case} COMMAND ${CMAKE_COMMAND}
+    -DLANC=$<TARGET_FILE:lanc>
+    -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/unit_${case}_error.lan
+    -DEXPECTED=${expected}
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_runtime_error.cmake)
+endforeach()
+add_executable(lan_regex_runtime_test tests/regex_runtime.c)
+target_link_libraries(lan_regex_runtime_test PRIVATE lan_regex_runtime)
+add_test(NAME regex_runtime COMMAND lan_regex_runtime_test)
+set_tests_properties(regex_runtime PROPERTIES TIMEOUT 10)
+add_test(NAME regex_arc COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/regex_arc.lan)
+set_tests_properties(regex_arc PROPERTIES PASS_REGULAR_EXPRESSION
+  [=[early: missing.*table_rows: \{text: \["a", "aa"\]\}]=])
+add_test(NAME stdlib_regex COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib_regex.lan)
+set_tests_properties(stdlib_regex PROPERTIES PASS_REGULAR_EXPRESSION
+  [=[all: \["1", "22"\].*empty_all: \["", "", ""\].*empty_split: \["", "你", "好", ""\].*full: \[false, true\].*mapped: \["1", missing, "22"\].*propagated: missing.*same_patterns: true.*table_rows: \{text: \["a1", "22"\]\}]=])
+foreach(case type broadcast)
+  add_test(NAME reject_regex_${case} COMMAND lanc
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib_regex_${case}_error.lan)
+  set_tests_properties(reject_regex_${case} PROPERTIES WILL_FAIL TRUE)
+endforeach()
+foreach(case invalid missing serialization table boundary)
+  set(extra)
+  set(expected "missing")
+  if(case STREQUAL "invalid")
+    set(extra -DEXPECTED_INDEX=1)
+  elseif(case STREQUAL "table")
+    set(extra -DEXPECTED_ROW=1 -DEXPECTED_FIELD=.pattern)
+  elseif(case STREQUAL "serialization")
+    set(expected "to_text")
+  elseif(case STREQUAL "boundary")
+    set(expected "UTF-8")
+  endif()
+  add_test(NAME reject_regex_${case} COMMAND ${CMAKE_COMMAND}
+    -DLANC=$<TARGET_FILE:lanc>
+    -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib_regex_${case}_error.lan
+    -DEXPECTED=${expected} ${extra}
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_runtime_error.cmake)
+endforeach()
+file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/regex-link-test)
+add_test(NAME regex_optional_linking COMMAND ${CMAKE_COMMAND}
+  -DLANC=$<TARGET_FILE:lanc> -DROOT=${CMAKE_CURRENT_SOURCE_DIR}
+  -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/regex-link-test
+  -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_regex_linking.cmake)
 add_test(NAME collection_pipeline_semantics
   COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/collection_pipeline.lan)
 set_tests_properties(collection_pipeline_semantics PROPERTIES
@@ -194,6 +376,12 @@ add_test(NAME stdlib_direct_next
   COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib_direct_next.lan)
 set_tests_properties(stdlib_direct_next PROPERTIES PASS_REGULAR_EXPRESSION
   [=[contains: \[true, false, true\].*numbers: \[1, 1, 2, 3, missing\].*pipeline: \[1, 2, 3, 4\].*records: \{absent: \{name: "Alice"\}, merged: \{age: 21, city: "Sydney", name: "Alice"\}, original: \{age: 20, name: "Alice"\}, pipeline: \{b: 2\}, removed: \{name: "Alice"\}, removed_many: \{a: 1, b: 2, d: 4, e: 5\}, removed_only: \{\}\}.*texts: \["a", "b", "b", missing\]]=])
+add_test(NAME stdlib_distinct COMMAND ${CMAKE_COMMAND}
+  -DLANC=$<TARGET_FILE:lanc> -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib_distinct.lan
+  -DEXPECTED=true -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_success.cmake)
+add_test(NAME reject_stdlib_distinct_type
+  COMMAND lanc ${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib_distinct_type_error.lan)
+set_tests_properties(reject_stdlib_distinct_type PROPERTIES WILL_FAIL TRUE)
 add_test(NAME reject_stdlib_sort_type
   COMMAND lanc ${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib_sort_type_error.lan)
 set_tests_properties(reject_stdlib_sort_type PROPERTIES WILL_FAIL TRUE)

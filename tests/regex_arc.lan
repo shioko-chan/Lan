@@ -1,0 +1,27 @@
+make_pattern(source) = regex(source)
+identity(pattern) = pattern
+maybe_pattern(found) = if found { regex("x") } else { missing }
+partial_record() = {pattern: regex("a"), skipped: missing?}
+fallback_record() = ({pattern: regex("a"), skipped: missing?}) ?? {ok: true}
+
+{
+  pattern = identity(make_pattern("a"));
+  holder = {pattern: pattern};
+  copies = [pattern, missing, regex("b")];
+  {
+    matched: regex_contains("a", holder.pattern),
+    copied: same(copies.0, pattern),
+    found: regex_find("aaa", pattern),
+    all: regex_find_all("aaa", pattern),
+    split: regex_split("aaa", pattern),
+    empty_split: regex_split("你好", regex("")),
+    early: partial_record(),
+    caught: fallback_record(),
+    flattened: [[pattern], [regex("a")]] |> flatten() |> map(regex_matches("a", .)),
+    reversed: [pattern, regex("b")] |> reverse() |> map(regex_matches("b", .)),
+    mapped: ["a", "b", "aa"] |> map(regex_find(., pattern)),
+    table_rows: table({text: ["a", "b", "aa"]}) |> filter(regex_contains(.text, pattern)),
+    optional: maybe_pattern(true),
+    absent: maybe_pattern(false)
+  }
+}

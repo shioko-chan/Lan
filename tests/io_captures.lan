@@ -1,0 +1,16 @@
+make(seed) = {
+  text = "saved " + seed;
+  numbers = [1, missing, 3];
+  person = {name: text};
+  pattern = regex("saved");
+  io { {text: person.name, list: numbers, match: regex_contains(text, pattern)} }
+}
+
+io {
+  action = make("value");
+  first <- action;
+  second <- action;
+  action = io { {text: "new", list: [], match: false} };
+  changed <- action;
+  {same_results: same(first, second), old: first, changed: changed}
+}

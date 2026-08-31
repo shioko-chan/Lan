@@ -1,0 +1,6 @@
+io {
+  read = read_stdin();
+  first <- read;
+  second <- read;
+  {first: first, second: second}
+}
