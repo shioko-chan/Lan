@@ -9,7 +9,10 @@ namespace lan {
 
 // Table is a compile-time refinement. Its LLVM/runtime representation is the
 // same Record pointer returned by table(record).
-enum class Type { Unknown, Number, Boolean, Unit, Text, List, Record, Table, Regex, IO, Dynamic };
+enum class Type {
+  Unknown, Number, Boolean, Unit, Text, List, Record, Table, Regex, Instant,
+  IO, Dynamic
+};
 
 struct Expr {
   virtual ~Expr() = default;
@@ -197,7 +200,6 @@ struct LetExpr final : Expr {
   std::string name;
   std::unique_ptr<Expr> value;
   std::unique_ptr<Expr> body;
-  bool expressionBoundary = false;
 };
 
 struct IfExpr final : Expr {

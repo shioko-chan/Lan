@@ -32,7 +32,7 @@ demo() =
     old_age: person.age,
     updated_age: updated.age,
     dynamic_updated_age: dynamic_updated.age,
-    nested_city: person.address.city,
+    nested_city: require(person.address).city,
     adults: adults,
     first: [4, 5] |> first(),
     last: last([4, 5]),

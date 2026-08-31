@@ -23,7 +23,7 @@ demo() =
   adults = people |> filter(.age? >= 18)
   selected = adults |> select({
     name: .name,
-    adult: adult(.age)
+    adult: adult(require(.age))
   })
   added = people |> add({adjusted: .score + 5})
   replaced = added |> replace({score: .score + 1})

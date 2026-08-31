@@ -1,0 +1,72 @@
+double(value) = value * 2
+maybe_number(found) = if found { 10 } else { missing }
+identity(value) = value
+fallback(value = missing) = value ?? 7
+forward(value) = fallback(value = value)
+safe_increment(value) = if is_missing(value) { 0 } else { value + 1 }
+negated_guard(value) = if not is_missing(value) { value + 1 } else { 0 }
+maybe_list(found) = if found { [1, missing, 3] } else { missing }
+capture(value) = io { value }
+capture_list(value) = io { value }
+binding_boundary() = { stopped = missing? + 1; 42 }
+list_default(found) = maybe_list(found) ?? [9]
+fill_pair(values) = values ?? [8, 9]
+unused_list(values) = values |> map(. + 1)
+unused_io(action) = io { value <- action; value + 1 }
+
+io {
+  value = maybe_number(false);
+  skipped = double(value?) + require(missing);
+  continued = 42;
+  present_number <- capture(3);
+  optional_number <- capture(value);
+  optional_list <- capture_list(maybe_list(false));
+  retained = maybe_list(true) ?? [9];
+  empty = optional_list ?? [];
+  row = {age: value};
+  age = row.age;
+  refined = if is_missing(age) { 18 } else { age + 1 };
+  scoped = if is_missing(value) { 5 } else {
+    old = value;
+    value = missing;
+    old + (value ?? 0)
+  };
+  [
+    double(3) == 6,
+    double(value ?? 2) == 4,
+    double(require(maybe_number(true))) == 20,
+    is_missing(skipped),
+    continued == 42,
+    safe_increment(value) == 0,
+    safe_increment(maybe_number(true)) == 11,
+    negated_guard(value) == 0,
+    negated_guard(maybe_number(true)) == 11,
+    fallback() == 7,
+    forward(value) == 7,
+    forward(4) == 4,
+    same(identity(value), missing),
+    present_number + 1 == 4,
+    (optional_number ?? 8) + 1 == 9,
+    same(retained, [1, missing, 3]),
+    length(empty) == 0,
+    same(retained ?? 0, [1, 0, 3]),
+    same([1, 2, 3] |> map(double(.)), [2, 4, 6]),
+    same([1, missing, 3] |> map(double(.?)), [2, missing, 6]),
+    same([1, missing, 3] |> map(safe_increment(.)), [2, 0, 4]),
+    same(([1, missing] + 1) |> map(. ?? 0), [2, 0]),
+    same([[1], [2]] |> map(. |> map(double(.))), [[2], [4]]),
+    same(fill_missing([[1], missing], []) |> flatten(), [1]),
+    refined == 18,
+    scoped == 5,
+    binding_boundary() == 42,
+    same(list_default(false), [9]),
+    same(list_default(true), [1, missing, 3]),
+    same(fill_pair([missing, 2]), [8, 2]),
+    same(missing ?? [7], [7]),
+    join(missing ?? ["a"], ",") == "a",
+    same(([1, missing]) ?? 0, [1, 0]),
+    (require([[1], [2]].1).0 ?? 0) == 2,
+    join(["a", "b"], ",") == "a,b",
+    join(fill_missing(["a", missing], "b"), ",") == "a,b"
+  ] |> all(.)
+}

@@ -1,8 +1,12 @@
 # Lan
 
-Lan 是一门简洁的纯函数式 DSL，用于表达数据转换、业务规则和有限集合计算。
+Lan 是一门简单、简洁、优雅的通用脚本语言，采用纯函数式计算与显式 IO，使用 LLVM 编译为本地可执行文件。
 
-Lan 不试图成为自然语言、无代码工具或通用编程语言。
+Lan 面向日常脚本、自动化和数据处理，不局限于特定业务领域，也不以自然语言或无代码工具为目标。
+语言以不可变数据、表达式和集合管道为核心，通过标准库逐步扩展应用范围。
+
+通用脚本语言是应用定位，不表示所有能力均已实现：当前仍禁止递归和通用 `for`、`while` 循环，
+集合计算使用有限管道；已支持标准输入输出、命令行参数、时间和随机数，文件读写等能力仍在规划中。
 
 写 Lan 程序很像组织数学公式或数据处理管道：给事物起名字、描述计算关系，然后在文件最后写出想得到的结果。
 
@@ -273,7 +277,7 @@ program()  # 12
 - IO 可以作为函数参数、默认值、返回值及局部绑定；不能放进 List/Record/Table，不能比较、
   调用 `same` 或转换为 Text。`<-` 只能出现在 `io` 块的步骤位置。
 
-action 自身为 missing 时拒绝执行，可以先用 `??` 选择备用 action。执行成功后产生的
+action 自身可能为 missing 时编译拒绝执行，可以先用 `??` 选择备用 action。执行成功后产生的
 missing 是普通数据，后续步骤可用 `??`、`is_missing` 或 `require` 处理；程序入口显示
 IO 的最终数据结果时允许输出 `missing`。纯程序仍沿用最终 missing 必须显式 `?` 的规则。
 
@@ -299,6 +303,60 @@ IO 错误写入 stderr，包含 action、源码位置和调用链；系统错误
 入口仍自动显示最终结果，包括 `IO<Unit>` 的 `()`；这与 `write_stdout` 的显式输出是两回事。
 文件读写和文件访问权限控制尚未实现。完整规范见
 [`docs/IO_DESIGN.md`](docs/IO_DESIGN.md)。
+
+### 时间
+
+`Instant` 是 UTC 时间线上的瞬间，内部保存整数秒和纳秒，遵循普通 missing 规则。
+它可以保存在 List、Record 和 Table 中，支持比较、`same`、`sort` 和 `sort_by`。
+Instant 与 Number 不隐式转换，也不直接使用 `+`、`-` 做时间算术。
+
+```lan
+{
+  started = require(parse_time("2025-06-07T08:09:10.1234+10:00"));
+  finished = add_seconds(started, 2.5);
+  {
+    utc: format_time(started),         # "2025-06-06T22:09:10.1234Z"
+    elapsed: seconds_between(started, finished),  # 2.5
+    later: finished > started          # true
+  }
+}
+```
+
+纯时间函数：
+
+- `parse_time(text) -> Option<Instant>`：解析带 `Z` 或数字 UTC offset 的 RFC 3339
+  时间戳；格式或日期无效返回 missing。
+- `format_time(instant) -> Text`：输出规范 UTC 文本，最多九位小数秒并移除尾零。
+- `time_from_unix(seconds)` / `unix_seconds(instant)`：与 Unix 秒数显式转换。
+- `add_seconds(instant, seconds)`：添加有限秒数，返回新 Instant。
+- `seconds_between(start, end)`：返回 `end - start`，可以为负。
+
+第一阶段采用 Unix 时间模型：UTC 年份范围为 `0000` 至 `9999`，小数秒最多九位；
+不支持闰秒 `:60`、本地时区名称或日历月份运算。输入可用小写 `t`/`z`；`-00:00`
+按 UTC 解析，不保留原 offset。Number 输入的秒数舍入到最近纳秒，中点远离零；
+转换回 Number 受浮点精度限制。时间算术拒绝 missing、非有限数和范围溢出。
+这些函数不隐式广播；批量转换写为 `values |> map(parse_time(.))`。
+
+当前时间只能通过延迟 IO action 获取：
+
+```lan
+io {
+  clock = now();
+  first <- clock;
+  second <- clock;
+  seconds_between(first, second)
+}
+```
+
+每次执行 `now()` 都重新读取系统实时时钟，不缓存结果。它不是单调计时器，结果可能
+相同或因系统校时倒退。测试时可固定所有 `now()` 的结果：
+
+```sh
+./build/lanc --run report.lan --fixed-time 2025-06-07T08:09:10Z
+```
+
+固定时间不进入 `arguments()`。完整规则见
+[`docs/TIME_RANDOM_DESIGN.md`](docs/TIME_RANDOM_DESIGN.md)。
 
 ### 随机数
 
@@ -448,7 +506,7 @@ numbers() = [1, 2, 3]
 names() = ["小明", "小兰"]
 ```
 
-Number 和 Text List 可以稳定排序；missing 固定放在末尾：
+Number、Text 和 Instant List 可以稳定排序；missing 固定放在末尾：
 
 ```lan
 sort([3, missing, 1, 2])       # [1, 2, 3, missing]
@@ -457,7 +515,7 @@ names |> sort()                # 管道形式
 
 `distinct` 使用与 `same` 一致的结构化相等规则去重，保留每个值第一次出现的位置；多个
 missing 只保留一个。它支持所有 List 元素类型，返回的新 List 会共享而不是复制 Text、
-List、Record 和 Regex 元素：
+List、Record、Regex 和 Instant 元素：
 
 ```lan
 distinct([2, 1, 2, missing, 1, missing])  # [2, 1, missing]
@@ -533,7 +591,7 @@ count([10, missing, 20])     # 2
 
 聚合忽略列表内部的 `missing`。空列表或全 missing 列表的 `sum` 和 `count` 返回
 `0`；`average`、`min` 和 `max` 返回 `missing`。前四个函数要求 `List<Number>`，
-`count` 接受任意单类型 List。列表本身为 missing 时仍遵循普通参数规则并运行时拒绝。
+`count` 接受任意单类型 List。列表本身若是 `Option<List<T>>`，需要先显式解包；否则编译报错。
 
 `first(list)` 和 `last(list)` 分别读取第一个和最后一个元素，空列表返回 `missing`。
 
@@ -777,12 +835,13 @@ make_person()
 `{field: 21}` 的字段名固定为 `"field"`，而 `{(field): 21}` 使用变量 `field` 的值。
 动态键表达式必须产生 Text。
 
-不存在的字段得到 `missing`。可以用 `??` 提供默认值；如果把它直接用于普通运算，
-则按缺失值规则在运行时拒绝：
+不存在的字段得到 `missing`。无法证明存在的字段读取为 `Option<T>`，可以用 `??`
+提供默认值；未解包就用于普通运算会编译报错。编译器能跟踪不可变 Record 的已知固定
+字段和已验证 Table 的已知列；动态键或未知字段仍需显式处理。
 
 ```lan
 person.city ?? "未知"
-person.height + 1       # height 不存在时运行错误
+person.height + 1       # height 可能不存在时编译错误
 ```
 
 函数块中可以用简洁的更新写法添加或替换字段：
@@ -839,17 +898,18 @@ remove_field({name: "Alice", age: 20}, "age")  # {name: "Alice"}
 ```
 
 底层使用持久化 HAMT。更新只复制从根到目标字段的路径，其余分支由新旧 Record 共享，
-HAMT 节点用引用计数管理。Text、List、Record、Table 和 Regex 都纳入 ARC；复合值持有其子
+HAMT 节点用引用计数管理。Text、List、Record、Table、Regex、Instant 和 IO 都纳入 ARC；复合值持有其子
 对象，函数参数借用调用者的值，新建值由当前函数的所有权区域持有，返回值在区域清理前
 转移给调用者。运行时内部以 C++ RAII 表示临时拥有的引用，并通过 `owned`/`shared`
 容器写入区分所有权转交与共享；LLVM 边界仍使用稳定的 C ABI `LanValue`，不会暴露 C++
 对象布局。底层 retain/release 只集中在引用计数实现中。程序正常结束时会验证没有遗留堆对象。当前尚未启用“引用计数为 1 时原地
 更新”的优化，仍始终采用安全的路径复制。
 
-## 缺失值、运行时检查与显式传播
+## Option 类型、缺失值与显式解包
 
-任何类型的值都可以是 `missing`。语言类型系统统一按 `Option<T>` 理解值：它要么是
-`Value(value)`，要么是 `Missing`，但日常代码不需要手工书写包装名称。
+普通值默认是 `T`，只有可能缺失的值才是 `Option<T>`。类型由编译器推断，不需要手写
+类型注解或包装构造器。`T` 可以自动提升为 `Option<T>`，反向转换必须显式处理缺失。
+`missing` 是可选类型的缺失状态，其底层值类型由上下文推断。
 
 ```lan
 lookup(found) =
@@ -861,12 +921,12 @@ lookup(found) =
 lookup(false) ?? "没有找到"
 ```
 
-`??` 只在左侧缺失时计算并使用右侧默认值。普通运算不再自动传播缺失；如果实际
-使用的值是 `missing`，程序会在运行时拒绝这次运算：
+`??` 只在左侧缺失时计算并使用右侧默认值。普通运算和要求 `T` 的函数拒绝未经处理的
+`Option<T>`，即使某次运行碰巧能取得值，也必须先解包：
 
 ```lan
-missing + 1       # 运行错误
-length(missing)  # 运行错误
+missing + 1       # 编译错误
+length(missing)  # 编译错误
 
 choose_missing() =
   if missing
@@ -874,7 +934,7 @@ choose_missing() =
   else
     0
 
-choose_missing()  # 运行错误
+choose_missing()  # 编译错误：if 条件必须是 Boolean
 ```
 
 后缀 `?` 明确允许当前表达式传播缺失。运算仍然从左到右求值；被 `?` 检查的值一旦
@@ -884,7 +944,8 @@ choose_missing()  # 运行错误
 missing? + expensive_calculation()  # missing，不调用 expensive_calculation
 ```
 
-`?` 的传播边界是表达式，不是函数提前返回。外层 `??` 可以在同一个函数中接住传播
+`?` 的传播边界是表达式，不是函数提前返回。每个绑定的右侧都是独立边界，包括普通块和
+IO 块；绑定得到 missing 后，后续绑定继续执行。外层 `??` 也可以在同一个函数中接住传播
 出来的缺失：
 
 ```lan
@@ -894,8 +955,8 @@ missing? + expensive_calculation()  # missing，不调用 expensive_calculation
 这与 Rust 式 `?` 不同：上例会继续计算 `??` 的右侧，而不是提前退出 `lookup` 的
 调用者。`?` 的优先级高于算术、比较和 `??`。
 
-函数参数仍然可以接收 `missing`，让函数使用 `??` 主动处理；只有普通运算实际消费
-未处理的缺失值时才报错：
+函数可以接收、保存或返回 Option，只要函数体不隐式消费它。参数是否允许缺失根据函数体
+和调用处推断；命名参数、默认参数和跨函数调用使用相同检查规则：
 
 ```lan
 normalize(value) = value ?? 0
@@ -903,10 +964,52 @@ normalize(value) = value ?? 0
 normalize(missing)  # 0
 ```
 
-`and`、`or` 和 `not` 使用三值逻辑：`false and missing` 是 `false`，
-`true and missing` 是 `missing`，`true or missing` 是 `true`，
-`false or missing` 是 `missing`，而 `not missing` 仍是 `missing`。求值顺序保持从左到右；
-左侧已经决定结果时不会求值右侧，左侧为 missing 时则继续查看右侧是否能决定结果。
+四种解包方式：
+
+```lan
+double(value) = value * 2
+
+demo(text) = {
+  value = parse_number(text);             # Option<Number>
+  defaulted = value ?? 0;                 # Number
+  propagated = double(value?);            # Option<Number>
+  refined = if is_missing(value) { 0 } else { value + 1 }; # Number
+  asserted = require(value);              # Number，缺失时运行时拒绝
+  {defaulted: defaulted, propagated: propagated, refined: refined, asserted: asserted}
+}
+
+demo("10")
+```
+
+`?` 让当前计算继续使用 `T`，但整个表达式仍可能产生 `Option<U>`。
+`if is_missing(value)` 的 else 分支及 `if not is_missing(value)` 的 then 分支会把该
+局部绑定细化为 `T`。细化不泄漏到分支外，同名遮蔽后也不沿用旧绑定的证明。
+
+标量 `and`、`or`、`not` 只接受 Boolean，不隐式消费 `Option<Boolean>`。
+`false and missing` 会编译报错；`false and require(missing)` 合法且短路为 false。
+`missing? and false` 则立即短路为 missing，不再检查右侧。集合逐元素逻辑以及
+`any`、`all` 保留明确的三值逻辑规则。
+
+容器与元素的可选性分别推断：
+
+```text
+List<Number>          # 列表与元素均存在
+List<Option<Number>>  # 列表存在，元素可能缺失
+Option<List<Number>>  # 整个列表可能缺失
+IO<Option<Number>>    # action 存在，执行结果可能缺失
+Option<IO<Number>>    # action 本身可能缺失
+```
+
+`List<T>` 的下标读取、`first` 和 `last` 仍返回 Option，因为可能越界或列表为空。
+`map` 的元素上下文保留元素的可选性：`[1, 2] |> map(. + 1)` 合法，
+`[1, missing] |> map(. + 1)` 编译报错，后者可写成 `map(.? + 1)`。
+`join` 要求 `List<Text>`，`flatten` 要求每个子 List 存在；可以先用 `fill_missing`
+或 `map(require(.))` 处理缺失元素。
+
+左侧是 `Option<List<T>>` 时，`??` 为整个列表选择同类型默认值，例如 `maybe_list ?? []`；
+左侧列表确定存在时，`list ?? value` 仍是广播式的逐元素填补。
+同一函数内的同一个 `??` 若在不同调用中产生这两种不同解释，编译器会拒绝；要明确逐元素
+填补，请使用 `fill_missing`，不要让操作含义依赖调用处。
 
 普通除法遇到 `+0.0` 或 `-0.0` 会运行时拒绝，不产生 Infinity、NaN 或 missing。
 List 除法只检查实际参与运算且两侧都存在的元素；被较短长度截去的位置以及结果已经
@@ -946,10 +1049,11 @@ require(value)     # missing 时运行时拒绝，否则返回原值
 ```
 
 简单的 `if not is_missing(value)` 会把 then 分支中的 `value` 细化为确定存在。
-程序最终结果如果可能缺失，也必须使用 `?` 明确允许显示 `missing`。
+纯程序最终结果如果可能缺失，编译期要求使用 `?` 明确允许显示 `missing`；IO 的最终
+数据结果允许缺失。
 
-“所有值可缺失”是语言语义，不代表所有值都在运行时装箱。编译器同时推断值是否
-确定存在，并为不同类型选择紧凑表示：
+Option 类型检查与底层 presence 优化分开：类型检查规定如何消费值，presence 分析仍
+推断 `Present`、`Missing` 和 `MaybeMissing`，为不同类型选择紧凑表示，不强制装箱：
 
 | 情况                          | LLVM 表示                      |
 | ----------------------------- | ------------------------------ |
@@ -1058,6 +1162,8 @@ ctest --test-dir build --output-on-failure
 `-- 参数...` 只支持 `--run` 模式；程序直接继承标准输入、输出和错误流。
 `--random-seed` 同样只支持 `--run`，接受 `0` 到 `9007199254740991` 的整数；它必须写在
 程序参数分隔符 `--` 之前，分隔符之后的同名文本只是普通程序参数。
+`--fixed-time` 也只支持 `--run`，接受 RFC 3339 时间戳，必须写在 `--` 之前。
+固定时间在执行 `now()` 时验证；无效配置产生带源码位置的运行时错误。
 
 Lan/Unicode bitcode 和 RE2 静态库已内嵌到 `lanc`，无需运行时读取源码构建目录。
 使用正则的程序还会在自己的 `.lan/<程序名>/` 中生成 `lan_regex_runtime.a` 和

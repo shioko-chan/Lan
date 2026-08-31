@@ -6,11 +6,13 @@ enum { LAN_IO_TEXT_LIMIT = 8 * 1024 * 1024, LAN_IO_ARGUMENT_LIMIT = 65536 };
 static int32_t io_argc;
 static char** io_argv;
 extern "C" void lan_random_configure(const char* seed);
+extern "C" void lan_time_configure(const char* text);
 
 extern "C" void lan_io_initialize(int32_t argc, void* argv) {
   io_argc = argc;
   io_argv = static_cast<char**>(argv);
   lan_random_configure(getenv("LAN_INTERNAL_RANDOM_SEED"));
+  lan_time_configure(getenv("LAN_INTERNAL_FIXED_TIME"));
 }
 
 static int32_t io_error(char* error, uint64_t capacity, const char* action,

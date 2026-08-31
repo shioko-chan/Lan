@@ -6,7 +6,7 @@
 ## 定位与引擎
 
 Lan 采用 RE2 语法和执行模型，不自行实现正则引擎。RE2 对输入长度提供渐近线性的
-匹配时间保证，适合 Lan 通过限制表达能力换取有限、可预测执行的定位。相应地，不支持
+匹配时间保证，符合 Lan 对文本处理性能可预测性的要求。相应地，不支持
 反向引用、环视和其他需要任意回溯的 PCRE 扩展。
 
 - RE2 项目与执行保证：<https://github.com/google/re2>
@@ -76,7 +76,7 @@ input |> regex_contains(digits)
 input |> regex_find_all(digits)
 ```
 
-普通参数遇到 missing 时遵循现有规则并运行时拒绝；只有“没有找到”是
+普通参数必须存在，未经解包的 Option 在编译期拒绝；只有“没有找到”是
 `regex_find` 的正常 missing 结果。List 和 Table 不隐式广播，需要显式使用 `map` 或
 Table 元素表达式。集合中从左到右定位第一个模式错误或运行时错误。
 

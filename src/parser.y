@@ -250,8 +250,7 @@ io_items
   : expression { $$ = located(new lan::IOResultExpr($1), @1.first_line, @1.first_column); }
   | expression ';' { $$ = located(new lan::IOResultExpr($1), @1.first_line, @1.first_column); }
   | postfix '=' expression io_separator io_items
-    { $$ = makeBinding($1, $3, $5); if (!$$) YYERROR;
-      static_cast<lan::LetExpr*>($$)->expressionBoundary = true; }
+    { $$ = makeBinding($1, $3, $5); if (!$$) YYERROR; }
   | IDENTIFIER LEFT_ARROW expression io_separator io_items
     { $$ = located(new lan::IOBindExpr($1, $3, $5), @2.first_line, @2.first_column); free($1); }
   | expression io_separator io_items

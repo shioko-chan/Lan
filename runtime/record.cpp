@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/random.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "utf8proc.h"
@@ -28,6 +29,12 @@ typedef struct {
   uint32_t marker;
   char bytes[];
 } LanTextHeader;
+
+typedef struct {
+  uint32_t references;
+  int64_t seconds;
+  uint32_t nanoseconds;
+} LanInstant;
 
 enum { LAN_TEXT_MARKER = 0x4c414e54 };
 
@@ -62,6 +69,9 @@ typedef struct LanArcFrame {
 
 static thread_local LanArcFrame* arc_frame = static_cast<LanArcFrame*>(NULL);
 static thread_local int64_t arc_live_objects = 0;
+
+extern "C" char* lan_format_time(void* pointer);
+extern "C" int32_t lan_instant_compare(void* left, void* right);
 
 extern "C" void lan_arc_note_object_allocated(void) { ++arc_live_objects; }
 
@@ -175,6 +185,23 @@ extern "C" void lan_list_retain(void* pointer) {
   }
 }
 
+static void lan_instant_retain(void* pointer) {
+  LanInstant* instant = static_cast<LanInstant*>(pointer);
+  if (instant) {
+    if (instant->references == UINT32_MAX) abort();
+    ++instant->references;
+  }
+}
+
+static void lan_instant_release(void* pointer) {
+  LanInstant* instant = static_cast<LanInstant*>(pointer);
+  if (!instant) return;
+  if (!instant->references) abort();
+  if (--instant->references) return;
+  free(instant);
+  --arc_live_objects;
+}
+
 static void lan_list_release(void* pointer);
 
 static void retain_value(LanValue value) {
@@ -182,6 +209,7 @@ static void retain_value(LanValue value) {
   else if (value.tag == LAN_LIST) lan_list_retain(value.pointer);
   else if (value.tag == LAN_RECORD) lan_record_retain(value.pointer);
   else if (value.tag == LAN_REGEX) lan_regex_handle_retain(static_cast<LanRegex*>(value.pointer));
+  else if (value.tag == LAN_INSTANT) lan_instant_retain(value.pointer);
   else if (value.tag == LAN_IO && value.pointer) {
     LanIO* action = static_cast<LanIO*>(value.pointer);
     if (action->references == UINT32_MAX) abort();
@@ -201,7 +229,7 @@ extern "C" void lan_arc_push(void) {
 extern "C" void lan_arc_adopt(int32_t tag, double number, void* pointer) {
   if (!arc_frame || !pointer ||
       (tag != LAN_TEXT && tag != LAN_LIST && tag != LAN_RECORD &&
-       tag != LAN_REGEX && tag != LAN_IO)) return;
+       tag != LAN_REGEX && tag != LAN_IO && tag != LAN_INSTANT)) return;
   LanArcEntry* entry = static_cast<LanArcEntry*>(malloc(sizeof(*entry)));
   if (!entry) abort();
   entry->value = LanValue{tag, number, pointer};
@@ -272,6 +300,7 @@ static void release_value(LanValue value) {
   else if (value.tag == LAN_RECORD) lan_record_release(value.pointer);
   else if (value.tag == LAN_REGEX)
     arc_live_objects -= lan_regex_handle_release(static_cast<LanRegex*>(value.pointer));
+  else if (value.tag == LAN_INSTANT) lan_instant_release(value.pointer);
   else if (value.tag == LAN_IO && value.pointer) {
     LanIO* action = static_cast<LanIO*>(value.pointer);
     if (!action->references) abort();
@@ -601,7 +630,8 @@ static LanValue load_list_value(const LanList* list, uint64_t index) {
                         : LanValue{LAN_BOOLEAN, encoded == 2 ? 1.0 : 0.0, NULL};
   }
   if (list->storage_tag == LAN_TEXT || list->storage_tag == LAN_LIST ||
-      list->storage_tag == LAN_RECORD || list->storage_tag == LAN_REGEX) {
+      list->storage_tag == LAN_RECORD || list->storage_tag == LAN_REGEX ||
+      list->storage_tag == LAN_INSTANT) {
     void* pointer = static_cast<void*>(((void**)list->elements)[index]);
     return pointer ? LanValue{list->storage_tag, 0, pointer}
                    : LanValue{LAN_MISSING, 0, NULL};
@@ -651,6 +681,11 @@ static int32_t same_value(LanValue left, LanValue right) {
   if (left.tag == LAN_REGEX)
     return strcmp(((LanRegex*)left.pointer)->source,
                   ((LanRegex*)right.pointer)->source) == 0;
+  if (left.tag == LAN_INSTANT) {
+    LanInstant* a = static_cast<LanInstant*>(left.pointer);
+    LanInstant* b = static_cast<LanInstant*>(right.pointer);
+    return a->seconds == b->seconds && a->nanoseconds == b->nanoseconds;
+  }
   return 0;
 }
 
@@ -695,6 +730,11 @@ static uint64_t hash_value(LanValue value) {
     return mix_hash(hash ^ hash_text(static_cast<const char*>(value.pointer)));
   if (value.tag == LAN_REGEX)
     return mix_hash(hash ^ hash_text(static_cast<LanRegex*>(value.pointer)->source));
+  if (value.tag == LAN_INSTANT) {
+    LanInstant* instant = static_cast<LanInstant*>(value.pointer);
+    return mix_hash(hash ^ mix_hash((uint64_t)instant->seconds) ^
+                    instant->nanoseconds);
+  }
   if (value.tag == LAN_LIST) {
     LanList* list = static_cast<LanList*>(value.pointer);
     uint64_t combined = mix_hash(hash ^ list->length);
@@ -726,7 +766,8 @@ static LanList* make_typed_list(uint64_t length, int32_t storage_tag) {
   else if (storage_tag == LAN_BOOLEAN || storage_tag == LAN_UNIT)
     element_size = sizeof(uint8_t);
   else if (storage_tag == LAN_TEXT || storage_tag == LAN_LIST ||
-           storage_tag == LAN_RECORD || storage_tag == LAN_REGEX)
+           storage_tag == LAN_RECORD || storage_tag == LAN_REGEX ||
+           storage_tag == LAN_INSTANT)
     element_size = sizeof(void*);
   list->elements = length ? calloc(length, element_size) : NULL;
   if (length && !list->elements) abort();
@@ -798,7 +839,8 @@ static void store_list_owned(LanList* list, uint64_t index, OwnedValue owned) {
     return;
   }
   if (list->storage_tag == LAN_TEXT || list->storage_tag == LAN_LIST ||
-      list->storage_tag == LAN_RECORD || list->storage_tag == LAN_REGEX) {
+      list->storage_tag == LAN_RECORD || list->storage_tag == LAN_REGEX ||
+      list->storage_tag == LAN_INSTANT) {
     ((void**)list->elements)[index] =
         value.tag == LAN_MISSING ? NULL : value.pointer;
     return;
@@ -1515,6 +1557,8 @@ static LanValue scalar_binary(LanValue a, LanValue b, int32_t operation,
   if (a.tag == LAN_NUMBER || a.tag == LAN_BOOLEAN) equal = a.number == b.number;
   else if (a.tag == LAN_UNIT) equal = 1;
   else if (a.tag == LAN_TEXT) equal = strcmp(static_cast<const char*>(a.pointer), static_cast<const char*>(b.pointer)) == 0;
+  else if (a.tag == LAN_INSTANT)
+    equal = lan_instant_compare(a.pointer, b.pointer) == 0;
   else {
     *status = -3;
     return LanValue{LAN_MISSING, 0, NULL};
@@ -1522,10 +1566,16 @@ static LanValue scalar_binary(LanValue a, LanValue b, int32_t operation,
   value.tag = LAN_BOOLEAN;
   if (operation == 4 || operation == 5)
     value.number = operation == 4 ? equal : !equal;
-  else if (a.tag != LAN_NUMBER) *status = -3;
-  else value.number = operation == 6 ? a.number < b.number
-                    : operation == 7 ? a.number > b.number
-                    : operation == 8 ? a.number <= b.number : a.number >= b.number;
+  else if (a.tag == LAN_NUMBER)
+    value.number = operation == 6 ? a.number < b.number
+                 : operation == 7 ? a.number > b.number
+                 : operation == 8 ? a.number <= b.number : a.number >= b.number;
+  else if (a.tag == LAN_INSTANT) {
+    int compared = lan_instant_compare(a.pointer, b.pointer);
+    value.number = operation == 6 ? compared < 0
+                 : operation == 7 ? compared > 0
+                 : operation == 8 ? compared <= 0 : compared >= 0;
+  } else *status = -3;
   return value;
 }
 
@@ -1548,7 +1598,8 @@ static int32_t binary_result_storage_tag(LanValue a, uint32_t a_rank,
   int32_t element_tag = a_tag == LAN_MISSING ? b_tag : a_tag;
   if (element_tag == LAN_NUMBER || element_tag == LAN_BOOLEAN ||
       element_tag == LAN_TEXT || element_tag == LAN_LIST ||
-      element_tag == LAN_RECORD || element_tag == LAN_REGEX || element_tag == LAN_UNIT)
+      element_tag == LAN_RECORD || element_tag == LAN_REGEX ||
+      element_tag == LAN_INSTANT || element_tag == LAN_UNIT)
     return element_tag;
   return LAN_MISSING;
 }
@@ -2322,6 +2373,8 @@ static int compare_sort_items(const void* left, const void* right) {
              : a->value.number > b->value.number ? 1 : 0;
   } else if (a->value.tag == LAN_TEXT) {
     compared = strcmp(static_cast<const char*>(a->value.pointer), static_cast<const char*>(b->value.pointer));
+  } else if (a->value.tag == LAN_INSTANT) {
+    compared = lan_instant_compare(a->value.pointer, b->value.pointer);
   }
   if (compared) return compared;
   return a->index < b->index ? -1 : a->index > b->index;
@@ -2330,7 +2383,8 @@ static int compare_sort_items(const void* left, const void* right) {
 extern "C" void* lan_list_sort(void* list_pointer, int32_t* status) {
   LanList* list = static_cast<LanList*>(list_pointer);
   *status = 0;
-  if (list->storage_tag != LAN_NUMBER && list->storage_tag != LAN_TEXT) {
+  if (list->storage_tag != LAN_NUMBER && list->storage_tag != LAN_TEXT &&
+      list->storage_tag != LAN_INSTANT) {
     *status = -1;
     return NULL;
   }
@@ -2364,7 +2418,8 @@ extern "C" void* lan_table_sort_by(void* record, const char* key, int32_t* statu
   for (uint64_t i = 0; i < list->length; ++i) {
     LanValue value = load_list_value(list, i);
     if (value.tag != LAN_MISSING) {
-      if (value.tag != LAN_NUMBER && value.tag != LAN_BOOLEAN && value.tag != LAN_TEXT) {
+      if (value.tag != LAN_NUMBER && value.tag != LAN_BOOLEAN &&
+          value.tag != LAN_TEXT && value.tag != LAN_INSTANT) {
         *status = -2; return NULL;
       }
       if (observed != LAN_MISSING && observed != value.tag) {
@@ -2435,6 +2490,10 @@ static void format_value(LanTextBuilder* builder, LanValue value, int32_t nested
     if (nested) text_builder_append(builder, "\"");
     text_builder_append(builder, static_cast<const char*>(value.pointer));
     if (nested) text_builder_append(builder, "\"");
+  } else if (value.tag == LAN_INSTANT) {
+    char* text = lan_format_time(value.pointer);
+    text_builder_append(builder, text);
+    lan_text_release(text);
   } else if (value.tag == LAN_LIST) {
     LanList* list = static_cast<LanList*>(value.pointer);
     text_builder_append(builder, "[");
@@ -2517,6 +2576,11 @@ static void print_value(LanValue value) {
   else if (value.tag == LAN_TEXT) printf("\"%s\"", (char*)value.pointer);
   else if (value.tag == LAN_RECORD) lan_record_print(value.pointer);
   else if (value.tag == LAN_REGEX) printf("<Regex>");
+  else if (value.tag == LAN_INSTANT) {
+    char* text = lan_format_time(value.pointer);
+    printf("%s", text);
+    lan_text_release(text);
+  }
   else if (value.tag == LAN_LIST) {
     LanList* list = static_cast<LanList*>(value.pointer);
     printf("[");
@@ -2533,4 +2597,5 @@ extern "C" void lan_value_print(int32_t tag, double number, void* pointer) {
 }
 
 #include "io/stdio.inc"
+#include "io/time.inc"
 #include "io/random.inc"

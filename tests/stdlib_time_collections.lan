@@ -1,0 +1,44 @@
+identity(value) = value
+optional_time(found) = if found { time_from_unix(0) } else { missing }
+captured(value) = io { identity(value) }
+
+io {
+  epoch = time_from_unix(0);
+  later = add_seconds(epoch, 1);
+  values = [later, missing, epoch, later];
+  nested = [[epoch, missing], [later]];
+  key = "moment";
+  holder = {(key): later};
+  report = table({moment: values, label: ["b", "missing", "a", "c"]});
+  selected = report |> filter(.moment? >= later);
+  ordered = sort_by(report, "moment");
+  action = captured(later);
+  first <- action;
+  second <- action;
+  propagated = format_time(optional_time(false)?);
+  [
+    identity(epoch) == time_from_unix(0),
+    identity(epoch) != later,
+    epoch <= later and later > epoch and later >= epoch,
+    format_time(require(holder.(key))) == "1970-01-01T00:00:01Z",
+    same(optional_time(false) ?? later, later),
+    is_missing(propagated),
+    same(values < later, [false, missing, true, false]),
+    same(epoch <= values, [true, missing, true, true]),
+    same(values == [later, epoch], [true, missing]),
+    same(nested == epoch, [[true, missing], [false]]),
+    same(nested ?? epoch, [[epoch, epoch], [later]]),
+    same(fill_missing(values, epoch), [later, epoch, epoch, later]),
+    same(distinct(values), [later, missing, epoch]),
+    same(sort(values), [epoch, later, later, missing]),
+    same(reverse(values), [later, epoch, missing, later]),
+    same(concat(take(values, 1), drop(values, 2)), [later, epoch, later]),
+    same(flatten(nested), [epoch, missing, later]),
+    same(values |> map(format_time(.?)),
+         ["1970-01-01T00:00:01Z", missing, "1970-01-01T00:00:00Z", "1970-01-01T00:00:01Z"]),
+    same(selected.label, ["b", "c"]),
+    same(ordered.label, ["a", "b", "c", "missing"]),
+    same(first, later) and same(second, later),
+    to_text([epoch, later]) == "[1970-01-01T00:00:00Z, 1970-01-01T00:00:01Z]"
+  ] |> all(.)
+}

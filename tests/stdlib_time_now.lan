@@ -1,0 +1,9 @@
+io
+  clock = now()
+  first <- clock
+  second <- clock
+  {
+    first: format_time(first),
+    same: same(first, second),
+    seconds: seconds_between(first, second)
+  }

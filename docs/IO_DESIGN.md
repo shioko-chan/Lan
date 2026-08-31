@@ -46,9 +46,9 @@ Unit 已实现的规则：
 - 调试显示和 `to_text` 输出 `()`；这不是 JSON 序列化支持。
 - 不分配 Unit 堆对象，可能缺失时编码为 `i1`；紧凑 List 以字节保存存在标记。
 
-`IO<T>` 与所有其他值一样具有 presence，因此 action 本身和执行结果的 missing 状态是
-不同层次。`IO<Option<Number>>` 表示 action 成功后得到一个可能缺失的 Number；IO 失败
-不等于 missing。
+`IO<T>` 本身确定存在，`Option<IO<T>>` 才表示 action 可能缺失；`IO<Option<Number>>`
+表示 action 成功后得到一个可能缺失的 Number。两层可选性分别推断；执行 action 前必须
+消除外层 Option，消费执行结果时再按结果类型决定是否需要解包。IO 失败不等于 missing。
 
 第一阶段的 `IO<T>`：
 
@@ -248,8 +248,9 @@ niche 表示 missing，并遵循 ARC 与堆对象 DAG。它不提供任意逐字
 action 时使用显式 `if`。
 
 每个 `=` 绑定的右侧、`<-` 的右侧、裸 action 和最后的表达式各自形成 `?` 的边界。
-纯绑定得到 missing 后继续后续步骤；若 `<-` 的右侧表达式得到 missing，则由于没有
-可执行 action 而拒绝。最后的纯表达式可返回 missing，最后的 action 则必须存在。
+纯绑定得到 missing 后继续后续步骤；若 `<-` 的右侧表达式可能得到 missing，则编译期
+拒绝，必须先选用备用 action 或使用显式 `require`。最后的纯表达式可返回 missing，
+最后的 action 则必须存在。
 
 ## 文件写入语义
 

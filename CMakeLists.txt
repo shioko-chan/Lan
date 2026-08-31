@@ -57,7 +57,7 @@ add_custom_command(
           -I${CMAKE_CURRENT_SOURCE_DIR}/third_party/utf8proc
           ${CMAKE_CURRENT_SOURCE_DIR}/runtime/record.cpp -o ${LAN_RECORD_BITCODE}
   DEPENDS runtime/record.cpp runtime/value.h runtime/ownership.hpp runtime/regex/ownership.h runtime/regex/regex.h
-          runtime/io/stdio.inc runtime/io/random.inc
+          runtime/io/stdio.inc runtime/io/time.inc runtime/io/random.inc
           third_party/utf8proc/utf8proc.h
   VERBATIM)
 add_custom_command(
@@ -83,6 +83,7 @@ ADD_FLEX_BISON_DEPENDENCY(LanLexer LanParser)
 add_executable(lanc
   src/main.cpp
   src/Codegen.cpp
+  src/OptionCheck.cpp
   ${CMAKE_CURRENT_BINARY_DIR}/RuntimeAssets.S
   ${BISON_LanParser_OUTPUTS}
   ${FLEX_LanLexer_OUTPUTS}
@@ -97,11 +98,21 @@ llvm_map_components_to_libnames(LLVM_LIBS Core Support Passes BitReader Linker)
 target_link_libraries(lanc PRIVATE ${LLVM_LIBS})
 
 enable_testing()
+add_test(NAME option_types COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/option_types.lan)
+set_tests_properties(option_types PROPERTIES PASS_REGULAR_EXPRESSION "true")
+add_test(NAME option_compile_contracts COMMAND ${CMAKE_COMMAND}
+  -DLANC=$<TARGET_FILE:lanc> -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/option-contracts
+  -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_option_types.cmake)
 add_executable(lan_io_runtime_test tests/io_runtime.c runtime/record.cpp
   third_party/utf8proc/utf8proc.c)
 target_include_directories(lan_io_runtime_test PRIVATE third_party/utf8proc)
 target_link_libraries(lan_io_runtime_test PRIVATE lan_regex_runtime)
 add_test(NAME io_runtime COMMAND lan_io_runtime_test)
+add_executable(lan_time_runtime_test tests/time_runtime.cpp runtime/record.cpp
+  third_party/utf8proc/utf8proc.c)
+target_include_directories(lan_time_runtime_test PRIVATE third_party/utf8proc)
+target_link_libraries(lan_time_runtime_test PRIVATE lan_regex_runtime absl::time)
+add_test(NAME time_runtime COMMAND lan_time_runtime_test)
 add_executable(lan_runtime_ownership_test tests/runtime_ownership.cpp)
 target_include_directories(lan_runtime_ownership_test PRIVATE runtime)
 add_test(NAME runtime_ownership COMMAND lan_runtime_ownership_test)
@@ -115,6 +126,36 @@ add_test(NAME stdlib_random COMMAND ${CMAKE_COMMAND}
   -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/random-test
   -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_random.cmake)
 set_tests_properties(stdlib_random PROPERTIES TIMEOUT 90)
+add_test(NAME stdlib_time COMMAND ${CMAKE_COMMAND}
+  -DLANC=$<TARGET_FILE:lanc> -DROOT=${CMAKE_CURRENT_SOURCE_DIR}
+  -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/time-test
+  -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_time.cmake)
+set_tests_properties(stdlib_time PROPERTIES TIMEOUT 90)
+add_test(NAME stdlib_time_collections
+  COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib_time_collections.lan)
+set_tests_properties(stdlib_time_collections PROPERTIES PASS_REGULAR_EXPRESSION "true")
+add_test(NAME stdlib_time_display
+  COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib_time_display.lan)
+set_tests_properties(stdlib_time_display PROPERTIES PASS_REGULAR_EXPRESSION
+  [=[\[1970-01-01T00:00:00Z, missing, 1969-12-31T23:59:59.999999999Z\]]=])
+add_test(NAME reject_stdlib_time_missing COMMAND ${CMAKE_COMMAND}
+  -DLANC=$<TARGET_FILE:lanc>
+  -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib_time_missing_error.lan
+  -DEXPECTED=Option -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_compile_error.cmake)
+add_test(NAME stdlib_time_diagnostic COMMAND ${CMAKE_COMMAND}
+  -DLANC=$<TARGET_FILE:lanc>
+  -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib_time_diagnostic_error.lan
+  -DEXPECTED=add_seconds -DEXPECTED_ROW=1
+  -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_runtime_error.cmake)
+add_test(NAME reject_stdlib_time_range COMMAND ${CMAKE_COMMAND}
+  -DLANC=$<TARGET_FILE:lanc>
+  -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib_time_range_error.lan
+  -DEXPECTED=Instant -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_runtime_error.cmake)
+foreach(case type arity number list now_arity redefinition)
+  add_test(NAME reject_stdlib_time_${case}
+    COMMAND lanc ${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib_time_${case}_error.lan)
+  set_tests_properties(reject_stdlib_time_${case} PROPERTIES WILL_FAIL TRUE)
+endforeach()
 foreach(case bounds integer)
   add_test(NAME reject_stdlib_random_${case} COMMAND ${CMAKE_COMMAND}
     -DLANC=$<TARGET_FILE:lanc>
@@ -134,7 +175,7 @@ foreach(case stdout_type stdin_arity arguments_arity stdout_arity standard_redef
 endforeach()
 add_test(NAME reject_io_stdout_missing COMMAND ${CMAKE_COMMAND}
   -DLANC=$<TARGET_FILE:lanc> -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/io_stdout_missing_error.lan
-  -DEXPECTED=missing -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_runtime_error.cmake)
+  -DEXPECTED=Option -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_compile_error.cmake)
 foreach(case sequence layout presence captures nested missing_result collections inference)
   if(case STREQUAL "sequence")
     set(expected "22")
@@ -171,13 +212,15 @@ foreach(case record list same compare text pure_statement pure_bind outside_bind
     "-DEXPECTED=${expected}" -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_compile_error.cmake)
 endforeach()
 foreach(case runtime missing_action unhandled_result)
-  set(expected "missing")
+  set(expected "Option")
+  set(check_script check_compile_error.cmake)
   if(case STREQUAL "runtime")
     set(expected "除数不能为零")
+    set(check_script check_runtime_error.cmake)
   endif()
   add_test(NAME reject_io_${case} COMMAND ${CMAKE_COMMAND}
     -DLANC=$<TARGET_FILE:lanc> -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/io_${case}_error.lan
-    "-DEXPECTED=${expected}" -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_runtime_error.cmake)
+    "-DEXPECTED=${expected}" -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/${check_script})
 endforeach()
 foreach(case unit_literal unit_layout unit_values unit_table unit_name recursive_binary_arc recursive_unary_arc)
   set(expected "true")
@@ -229,6 +272,7 @@ foreach(case type broadcast)
 endforeach()
 foreach(case invalid missing serialization table boundary)
   set(extra)
+  set(check_script check_runtime_error.cmake)
   set(expected "missing")
   if(case STREQUAL "invalid")
     set(extra -DEXPECTED_INDEX=1)
@@ -238,12 +282,15 @@ foreach(case invalid missing serialization table boundary)
     set(expected "to_text")
   elseif(case STREQUAL "boundary")
     set(expected "UTF-8")
+  elseif(case STREQUAL "missing")
+    set(expected "Option")
+    set(check_script check_compile_error.cmake)
   endif()
   add_test(NAME reject_regex_${case} COMMAND ${CMAKE_COMMAND}
     -DLANC=$<TARGET_FILE:lanc>
     -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib_regex_${case}_error.lan
     -DEXPECTED=${expected} ${extra}
-    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_runtime_error.cmake)
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/${check_script})
 endforeach()
 file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/regex-link-test)
 add_test(NAME regex_optional_linking COMMAND ${CMAKE_COMMAND}
@@ -254,10 +301,10 @@ add_test(NAME collection_pipeline_semantics
   COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/collection_pipeline.lan)
 set_tests_properties(collection_pipeline_semantics PROPERTIES
   PASS_REGULAR_EXPRESSION [=[all_positive: false.*filtered: \[1, 3\].*found: 3.*has_large: true.*mapped: \[2, 0, -4, 6\].*names: \["Alice", "Bob", "Carol"\]]=])
-add_test(NAME boolean_three_value_logic
-  COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/three_value_logic.lan)
-set_tests_properties(boolean_three_value_logic PROPERTIES
-  PASS_REGULAR_EXPRESSION [=[missing_and_false: false.*missing_or_true: true.*refined: 5]=])
+add_test(NAME boolean_explicit_options
+  COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/boolean_options.lan)
+set_tests_properties(boolean_explicit_options PROPERTIES
+  PASS_REGULAR_EXPRESSION [=[false_and_missing: false.*missing_and_false: missing.*missing_or_true: missing.*refined: 5]=])
 foreach(error_case
     normal_function_broadcast
     element_binding_outside
@@ -411,9 +458,8 @@ add_test(NAME reject_stdlib_flatten_missing
   COMMAND ${CMAKE_COMMAND}
           -DLANC=$<TARGET_FILE:lanc>
           -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib_flatten_missing_error.lan
-          -DEXPECTED=子列表不能是\ missing
-          -DEXPECTED_INDEX=1
-          -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_runtime_error.cmake)
+          -DEXPECTED=Option
+          -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_compile_error.cmake)
 foreach(stdlib_runtime_error split_empty clamp_range list_take)
   add_test(NAME reject_stdlib_${stdlib_runtime_error}
     COMMAND ${CMAKE_COMMAND}
@@ -426,9 +472,8 @@ add_test(NAME reject_stdlib_join_missing
   COMMAND ${CMAKE_COMMAND}
           -DLANC=$<TARGET_FILE:lanc>
           -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib_join_missing_error.lan
-          -DEXPECTED=join
-          -DEXPECTED_INDEX=1
-          -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_runtime_error.cmake)
+          -DEXPECTED=Option
+          -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_compile_error.cmake)
 add_test(NAME structured_runtime_diagnostic
   COMMAND ${CMAKE_COMMAND}
           -DLANC=$<TARGET_FILE:lanc>
@@ -484,9 +529,10 @@ add_test(NAME missing_propagates_left_to_right
 set_tests_properties(missing_propagates_left_to_right
   PROPERTIES PASS_REGULAR_EXPRESSION
   [=[\{number_missing: missing, number_value: 19, text_missing: missing, text_value: true\}]=])
-add_test(NAME reject_unhandled_missing_at_runtime
-  COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/missing_runtime_error.lan)
-set_tests_properties(reject_unhandled_missing_at_runtime PROPERTIES WILL_FAIL TRUE)
+add_test(NAME reject_unhandled_missing_at_compile_time
+  COMMAND ${CMAKE_COMMAND} -DLANC=$<TARGET_FILE:lanc>
+    -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/missing_runtime_error.lan
+    -DEXPECTED=Option -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_compile_error.cmake)
 add_test(NAME reject_unhandled_final_missing
   COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/missing_final_error.lan)
 set_tests_properties(reject_unhandled_final_missing PROPERTIES WILL_FAIL TRUE)

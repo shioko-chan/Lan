@@ -35,10 +35,10 @@
 - [x] ~~`find` 从左到右返回第一个匹配元素或 missing。~~
 - [x] ~~`any`、`all` 使用三值逻辑并从左到右短路。~~
 - [x] ~~`concat(left, right)` 连接两个元素类型相同的 List。~~
-- [x] ~~`flatten(lists)` 只展开一层嵌套 List；missing 子列表运行时拒绝。~~
+- [x] ~~`flatten(lists)` 只展开一层嵌套 List；子列表为 Option 时须先显式处理，否则编译拒绝。~~
 - [x] ~~`reverse(list)` 返回逆序 List。~~
 - [x] ~~将 `take(list, n)` 和 `drop(list, n)` 扩展到 List，并保持操作有界。~~
-- [x] ~~`sort(list)` 稳定排序 Number 或 Text List，missing 固定放在末尾。~~
+- [x] ~~`sort(list)` 稳定排序 Number、Text 或 Instant List，missing 固定放在末尾。~~
 - [x] ~~`distinct(list)` 使用结构化哈希与相等去重并保留第一次出现的位置；多个 missing
   只保留一个；平均时间和额外空间均为线性，冲突不影响正确性。~~
 - [x] ~~不增加 `contains`；使用 `items |> any(. == target)` 表达。~~
@@ -76,7 +76,7 @@
 
 ## 转换
 
-- [x] ~~`to_text(value)` 将 Number、Boolean、Text、List、Record 和 Table 转换为确定的 Text 表示。~~
+- [x] ~~`to_text(value)` 将 Number、Boolean、Unit、Text、Instant、List、Record 和 Table 转换为确定的 Text 表示。~~
 - [x] ~~`parse_number(text)` 严格解析有限 Number；解析失败返回 missing。~~
 - [x] ~~不增加 `to_number`、`try_number` 等同义入口；严格解析使用 `require(parse_number(text))`。~~
 
@@ -137,13 +137,13 @@
 - [ ] 增加复用 `Record<Table>` 的 Workbook 静态细化，并提供 XLSX 的纯转换、文件 IO
   和 `sheet(workbook, name)`。
 - [x] ~~TXT 直接使用 UTF-8 Text API，不增加 `read_txt`、`write_txt` 同义名称。~~
-- [x] ~~第一阶段不提供文件句柄、追加写入、目录遍历、网络、当前时间、随机数、交互式逐行输入或无限数据流。~~
+- [x] ~~第一阶段不提供文件句柄、追加写入、目录遍历、网络、交互式逐行输入或无限数据流；时间和随机数由独立 IO action 提供。~~
 
 ## Time 与 Random
 
-- [ ] 增加可比较、可存入集合的 UTC `Instant` 值类型。
-- [ ] `now() -> IO<Instant>`，并为测试运行器提供 `--fixed-time`。
-- [ ] `parse_time`、`format_time`、Unix 秒数转换、`add_seconds` 和 `seconds_between`。
+- [x] ~~增加可比较、可存入集合的 UTC `Instant` 值类型；支持结构比较、去重和稳定排序。~~
+- [x] ~~`now() -> IO<Instant>`，并为测试运行器提供 `--fixed-time`。~~
+- [x] ~~`parse_time`、`format_time`、Unix 秒数转换、`add_seconds` 和 `seconds_between`。~~
 - [x] ~~`random()` 和 `random_between` 产生连续 Number 样本。~~
 - [x] ~~`random_integer` 使用安全整数边界和无偏拒绝采样。~~
 - [x] ~~`choose(list)` 从非 missing 元素抽样；`shuffle(list)` 使用 Fisher–Yates。~~
@@ -156,7 +156,7 @@
 - [x] ~~操作名保持普通标识符；`map`、`filter`、`select`、`add`、`replace`、`find`、`any`、`all` 只在管道位置具有上下文含义。~~
 - [x] ~~普通用户函数不自动广播；逐元素调用必须显式位于集合操作中。~~
 - [x] ~~不保留 `where`、`add_column`、`replace_column` 等过时并行入口。~~
-- [x] ~~普通参数遇到 missing 时运行时拒绝，除非函数明确接受或返回 Option。~~
+- [x] ~~要求 T 的参数在编译期拒绝未经解包的 Option<T>；显式接受 Option 的函数与集合元素缺失策略另行定义。~~
 - [x] ~~每项能力只保留一个规范名称，不增加同义别名。~~
 - [x] ~~所有集合操作保证有限，所有可观察输出顺序必须确定。~~
 - [x] ~~纯标准库不加入隐式副作用；文件与终端能力只通过显式 `IO<T>` 提供。~~

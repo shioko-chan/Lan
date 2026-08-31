@@ -20,6 +20,15 @@ int32_t lan_io_random_between(double minimum, double maximum,
                               LanValue* output, char* error, uint64_t capacity);
 int32_t lan_io_random_integer(double minimum, double maximum,
                               LanValue* output, char* error, uint64_t capacity);
+void lan_time_configure(const char* text);
+int32_t lan_parse_time(const char*, void**);
+char* lan_format_time(void*);
+int32_t lan_time_from_unix(double, void**);
+double lan_unix_seconds(void*);
+int32_t lan_add_seconds(void*, double, void**);
+double lan_seconds_between(void*, void*);
+int32_t lan_instant_compare(void*, void*);
+int32_t lan_io_now(LanValue*, char*, uint64_t);
 void lan_io_initialize(int32_t, void*);
 int32_t lan_io_read_stdin(LanValue*, char*, uint64_t);
 int32_t lan_io_write_stdout(const char*, LanValue*, char*, uint64_t);
@@ -120,6 +129,45 @@ static void check_random_runtime(void) {
   lan_arc_assert_empty();
 }
 
+static void check_time_runtime(void) {
+  char error[512] = {0};
+  void *first, *second;
+  CHECK(lan_parse_time("1969-12-31T23:59:59.75Z", &first));
+  CHECK(lan_time_from_unix(-0.25, &second) == 0);
+  CHECK(lan_instant_compare(first, second) == 0);
+  CHECK(lan_unix_seconds(first) == -0.25);
+  void* added;
+  CHECK(lan_add_seconds(first, 0.5, &added) == 0);
+  CHECK(lan_seconds_between(first, added) == 0.5);
+  char* text = lan_format_time(added);
+  CHECK(strcmp(text, "1970-01-01T00:00:00.25Z") == 0);
+  lan_value_release(3, 0, text);
+  lan_value_release(9, 0, first);
+  lan_value_release(9, 0, second);
+  lan_value_release(9, 0, added);
+
+  CHECK(!lan_parse_time("2024-02-30T00:00:00Z", &first));
+  CHECK(!lan_parse_time("2024-01-01T00:00:60Z", &first));
+  CHECK(!lan_parse_time("2024-01-01T00:00:00.1234567890Z", &first));
+  CHECK(lan_parse_time("9999-01-01T00:00:00.123456789Z", &first));
+  CHECK(lan_add_seconds(first, 0, &second) == 0);
+  CHECK(lan_instant_compare(first, second) == 0);
+  lan_value_release(9, 0, first);
+  lan_value_release(9, 0, second);
+  lan_time_configure("2000-01-01T01:30:00.5+01:30");
+  LanValue now;
+  CHECK(lan_io_now(&now, error, sizeof(error)) == 0 && now.tag == 9);
+  text = lan_format_time(now.pointer);
+  CHECK(strcmp(text, "2000-01-01T00:00:00.5Z") == 0);
+  lan_value_release(3, 0, text);
+  lan_value_release(now.tag, now.number, now.pointer);
+  lan_time_configure("invalid");
+  CHECK(lan_io_now(&now, error, sizeof(error)) != 0);
+  CHECK(strstr(error, "固定时间") != NULL);
+  lan_time_configure(NULL);
+  lan_arc_assert_empty();
+}
+
 int main(void) {
   void* text = lan_text_from_cstr("captured");
   void* action = lan_io_new(execute, 1);
@@ -144,5 +192,6 @@ int main(void) {
   lan_arc_assert_empty();
   check_standard_io();
   check_random_runtime();
+  check_time_runtime();
   return 0;
 }

@@ -256,8 +256,8 @@ replace 返回字段值被替换的 Table
 操作数存在：
 
 ```lan
-missing + 1       # 运行时拒绝
-missing >= 18     # 运行时拒绝
+missing + 1       # 编译期拒绝
+missing >= 18     # 编译期拒绝
 ```
 
 处理 missing 使用四种显式操作：
@@ -295,7 +295,7 @@ missing -> 删除
 
 ```lan
 users |> filter(.active)       # active 为 missing 时删除
-users |> filter(.age >= 18)    # age 为 missing 时比较运算拒绝
+users |> filter(.age >= 18)    # age 为 Option<Number> 时编译拒绝
 users |> filter(.age? >= 18)   # age 为 missing 时 predicate 为 missing，随后删除
 users |> filter((.age ?? 0) >= 18)
 ```
@@ -303,9 +303,12 @@ users |> filter((.age ?? 0) >= 18)
 `find` 使用相同的 predicate 判断：`true` 表示命中，`false` 或 `missing` 表示继续
 查找。
 
-### 6.3 Boolean 三值逻辑
+### 6.3 Boolean 标量与集合逻辑
 
-`and`、`or` 和 `not` 是明确的 missing-aware Boolean 运算，采用三值逻辑：
+标量 `and`、`or` 和 `not` 要求 Boolean，未经解包的 Option<Boolean> 编译拒绝。
+`?` 在缺失时直接短路当前表达式，不查看右侧能否决定结果。
+
+集合逐元素运算保留三值逻辑，下面的表只描述集合元素计算，不是合法的标量源码：
 
 ```text
 not missing       -> missing
@@ -321,8 +324,8 @@ missing or true   -> true
 missing or false  -> missing
 ```
 
-求值顺序固定为从左到右。`and` 的左侧为 `false`、`or` 的左侧为 `true` 时不求值
-右侧；左侧为 missing 时，仍需根据右侧判断结果是否可以确定。
+标量求值顺序固定为从左到右。`and` 的左侧为 `false`、`or` 的左侧为 `true` 时不求值
+右侧。集合运算在元素层面根据上述三值表计算。
 
 ### 6.4 `any` 与 `all`
 
@@ -359,26 +362,28 @@ users |> all(.age? >= 0)
 
 ### 6.5 函数边界
 
-函数可以返回、传递或保存 missing；调用者不需要立即使用 `?`。只有严格消费者实际
-取得 missing 时才运行时拒绝：
+默认类型是 T，可能缺失的值才是 Option<T>。函数可以返回、传递或保存 Option；调用者
+不需要立即使用 `?`，但严格消费者会在编译期拒绝未经解包的 Option：
 
 ```lan
 value = find_age()
 value                    # 可以是 missing
-find_age() + 1           # 实际缺失时拒绝
+find_age() + 1           # 返回 Option<Number> 时编译拒绝
 find_age()? + 1          # 显式传播
 (find_age() ?? 0) + 1    # 显式替代
 ```
 
 普通函数仍然不自动广播，Option 行为也不能因为参数位于 List 或 Table 中而改变。
+List<T> 和 List<Option<T>> 的 map 上下文分别为 T 和 Option<T>；Option<List<T>> 则需先
+解包整个列表。IO<T> 与 IO<Option<T>> 的返回值也按各自的可选性检查。
 
 ### 6.6 missing 与运行时错误
 
 除零、无效转换、错误的动态类型和其他无效操作是运行时错误，不自动转换成 missing：
 
 ```lan
-1 / 0              # 运行时拒绝
-to_number("hello") # 运行时拒绝
+1 / 0                          # 运行时拒绝
+require(parse_number("hello")) # 显式断言失败，运行时拒绝
 ```
 
 除数为 `+0.0` 或 `-0.0` 都视为除零。List 只检查实际参与运算且两侧都存在的元素：
@@ -386,15 +391,14 @@ to_number("hello") # 运行时拒绝
 语言顺序扫描第一个有效的零除数，再执行 SIMD 除法，从而同时保持确定的错误顺序和
 紧凑列性能。
 
-需要安全转换时应使用显式返回 Option 的 `try_*` 操作，而不是改变普通转换的错误
-语义；具体转换集合另行定义。
+需要安全转换时使用返回 Option 的 `parse_number` 等操作，消费结果前显式处理缺失。
 
 聚合操作继续采用各自明确的 missing 策略：`sum`、`average`、`min` 和 `max` 忽略
 missing，`count` 统计非 missing 元素，`same` 将 missing 当作可比较的结构状态。
 
 ### 6.7 运行时诊断
 
-missing 或动态类型导致的运行时拒绝应报告：
+显式 require 失败或动态类型导致的运行时拒绝应报告：
 
 - 源文件、行和列。
 - 当前函数调用链。

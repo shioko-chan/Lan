@@ -1,6 +1,6 @@
 # Lan Time 与 Random 设计
 
-本文件定义时间与随机能力。随机部分已经实现，时间部分尚未实现。获取当前时间和随机样本会观察或改变宿主状态，
+本文件定义已经实现的第一阶段时间与随机能力。获取当前时间和随机样本会观察或改变宿主状态，
 因此只能构造显式 `IO<T>` action；时间解析、格式化和算术仍是普通纯函数。
 
 ## Time 类型
@@ -37,23 +37,55 @@ seconds_between(start, end)        -> Number
 - 时间算术拒绝 missing、NaN、无穷大以及内部秒数范围溢出。
 - `seconds_between(start, end)` 返回 `end - start`，因此结果可以为负数。
 
+### 第一阶段的精度与格式边界
+
+- 使用 Unix/POSIX 时间模型，不保存闰秒，`:60` 解析为 missing，不静默归一化。
+- 为保证每一个 Instant 都可输出四位年份的 RFC 3339，UTC 范围限定为
+  `0000-01-01T00:00:00Z` 至 `9999-12-31T23:59:59.999999999Z`。
+  offset 归一化后也必须在范围内；不合法解析返回 missing，算术越界运行时拒绝。
+- 必须完整匹配输入，无前后空白、无省略字段；接受 `T`/`t`、`Z`/`z`，输出统一大写。
+  小数秒为 1–9 位；更多位数拒绝，不静默截断。没有小数点也有效。
+- `-00:00` 表示当地 offset 未知但 UTC 时间已知；与 `+00:00` 对应同一瞬间。
+  Instant 不保存 offset 元数据。
+- Number 秒数先单独舍入到最近纳秒，中点远离零，再进行整数秒/纳秒进位和借位。
+  `add_seconds(t, 0)` 完整保留 t 的纳秒。转回 Number 时受 binary64 精度限制，不能
+  保证与原始 Instant 无损往返。
+- `==` 等比较沿用 List 的逐元素/尾维广播规则；`same` 比较实际秒数与纳秒，不比较
+  地址。`sort`/`sort_by` 按瞬间稳定排序，missing 放在最后；`distinct` 复用同一语义。
+- 纯时间函数不隐式广播；批量调用使用 `map`。普通 missing 输入拒绝；显式 `?`
+  和 `??` 与其他库函数一致。
+- `parse_time` 的时间开销为输入长度 O(n)、额外空间 O(1)；其余标量时间函数为 O(1)。
+  时间函数先从左到右求值并检查参数，不捕获普通运行时错误。
+
+格式规则参考 [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339)，Lan 对闰秒和超过纳秒
+精度的输入使用上述明确限制。现有 Abseil 的 `ParseTime` 会归一化 `:60`，因此没有直接
+将其宽松解析入口作为语言规则。有限 UTC 格式处理留在 LLVM bitcode 运行时内，避免时间
+程序为了日历转换而提取整个原生依赖包；日期换算测试与项目固定版本的 Abseil 对照，
+覆盖 0000–9999 每年每月共 120000 个日期。
+
 时区名称、当地日期格式、locale 和模糊自然语言日期不属于第一阶段。以后若加入 IANA
 时区，必须显式传入时区名称并固定所使用的时区数据库版本。
 
 ## Time 的执行与测试
 
 ```lan
-program = io
+program() = io
   started <- now()
   result = build_report()
   finished <- now()
   write_stdout(to_text(seconds_between(started, finished)))
   result
+
+program()
 ```
 
 两个 `now()` action 严格按源码顺序执行。运行器提供测试选项
 `--fixed-time <RFC3339>`；启用后，本次运行内所有 `now()` 都返回同一个 Instant。这样测试
 不需要模拟或替换用户函数。
+
+`--fixed-time` 仅用于 `--run`，必须放在 `--` 程序参数分隔符之前，不进入 `arguments()`。
+固定时间配置在执行 `now()` 时验证；无效配置报带源码位置和调用链的运行时错误。
+仅构造未执行的 action 不读取系统时钟，也不会因无效的测试时钟配置失败。
 
 `now()` 使用实时时钟，不用于精确性能测量。若将来需要计时器，应增加不能与 Instant
 混用的 MonotonicInstant，而不是改变 `now()` 语义。
@@ -139,9 +171,9 @@ program = io
 
 ## 实现顺序
 
-1. 增加 Instant 类型、比较、presence 表示和确定格式化。
-2. 实现纯 `parse_time`、`format_time` 及秒数转换和算术。
-3. 在 IO runtime 中实现 `now()` 与 `--fixed-time` 测试时钟。
+1. ~~增加 Instant 类型、比较、presence 表示和确定格式化。~~ **已完成**。
+2. ~~实现纯 `parse_time`、`format_time` 及秒数转换和算术。~~ **已完成**。
+3. ~~在 IO runtime 中实现 `now()` 与 `--fixed-time` 测试时钟。~~ **已完成**。
 4. ~~实现版本化 PCG64 状态、宿主熵初始化和 `--random-seed`。~~ **已完成**。
 5. ~~实现标量随机 action，再实现泛型 `choose` 与 `shuffle`。~~ **已完成**。
-6. ~~覆盖重复 action、错误不消耗样本、调用链和集合诊断测试。~~ **随机部分已完成**。
+6. ~~覆盖重复 action、错误不消耗样本、调用链和集合诊断测试。~~ **已完成**。

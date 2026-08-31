@@ -1,6 +1,6 @@
 maybe_adults(people) =
   people
-    |> map({adult: .age? >= 18})
+    |> map(({adult: .age? >= 18}) ?? {adult: missing})
     |> table()
 
 maybe_adults(table({age: [20, missing]}))

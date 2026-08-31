@@ -1,0 +1,1 @@
+format_time(parse_time("not a time"))

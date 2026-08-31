@@ -30,7 +30,8 @@ void usage(const char* executable) {
             << "  " << executable << " [--emit-ir] <程序.lan> [-o 输出.ll]\n"
             << "  " << executable << " --build <程序.lan>\n"
             << "  " << executable
-            << " --run <程序.lan> [--random-seed 整数] [-- 参数...]\n";
+            << " --run <程序.lan> [--random-seed 整数]"
+               " [--fixed-time RFC3339] [-- 参数...]\n";
 }
 
 std::string shellQuote(const std::string& value) {
@@ -56,6 +57,8 @@ int main(int argc, char** argv) {
   std::vector<std::string> programArguments;
   std::string randomSeed;
   bool hasRandomSeed = false;
+  std::string fixedTime;
+  bool hasFixedTime = false;
   bool hasArgumentSeparator = false;
   for (int i = 1; i < argc; ++i) {
     std::string argument = argv[i];
@@ -78,6 +81,10 @@ int main(int argc, char** argv) {
       randomSeed = argv[++i];
       hasRandomSeed = true;
     }
+    else if (argument == "--fixed-time" && i + 1 < argc) {
+      fixedTime = argv[++i];
+      hasFixedTime = true;
+    }
     else if (argument == "-o" && i + 1 < argc) outputPath = argv[++i];
     else if (!argument.empty() && argument[0] == '-') {
       usage(argv[0]);
@@ -98,6 +105,10 @@ int main(int argc, char** argv) {
   }
   if (hasRandomSeed && mode != Mode::Run) {
     std::cerr << "Lan：--random-seed 只能用于 --run\n";
+    return 2;
+  }
+  if (hasFixedTime && mode != Mode::Run) {
+    std::cerr << "Lan：--fixed-time 只能用于 --run\n";
     return 2;
   }
   if (hasRandomSeed) {
@@ -233,6 +244,14 @@ int main(int argc, char** argv) {
     }
   } else {
     unsetenv("LAN_INTERNAL_RANDOM_SEED");
+  }
+  if (hasFixedTime) {
+    if (setenv("LAN_INTERNAL_FIXED_TIME", fixedTime.c_str(), 1) != 0) {
+      std::cerr << "Lan：无法配置固定时间：" << std::strerror(errno) << "\n";
+      return 1;
+    }
+  } else {
+    unsetenv("LAN_INTERNAL_FIXED_TIME");
   }
   std::vector<char*> runArguments{executable.data()};
   for (auto& argument : programArguments) runArguments.push_back(argument.data());

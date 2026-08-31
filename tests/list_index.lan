@@ -9,6 +9,6 @@ people = table({name: ["A", "B"]});
   past_end: numbers.10 ?? -1,
   negative: numbers.(-1) ?? -1,
   fractional: numbers.(1.5) ?? -1,
-  nested: [[1, 2], [3, 4]].1.0,
+  nested: require([[1, 2], [3, 4]].1).0,
   table_text: people.name.0
 }}

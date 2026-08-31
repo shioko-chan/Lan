@@ -1,0 +1,16 @@
+{before_epoch = require(parse_time("1969-12-31T23:59:59.75Z"));
+after_epoch = add_seconds(before_epoch, 0.5);
+offset = require(parse_time("2000-01-01T01:30:00.123400000+01:30"));
+result = {
+  added: format_time(after_epoch),
+  between: seconds_between(before_epoch, after_epoch),
+  broadcast: [before_epoch, after_epoch] < after_epoch,
+  canonical: format_time(offset),
+  comparisons: before_epoch < after_epoch and after_epoch >= before_epoch,
+  leap_rejected: is_missing(parse_time("2016-12-31T23:59:60Z")),
+  negative_unix: same(before_epoch, time_from_unix(-0.25)),
+  parsed_invalid: is_missing(parse_time("2024-02-30T00:00:00Z")),
+  sorted: sort([after_epoch, before_epoch]),
+  unix: unix_seconds(before_epoch)
+};
+result}

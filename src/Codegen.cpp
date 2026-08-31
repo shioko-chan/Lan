@@ -1,6 +1,7 @@
 #include "lan/Codegen.h"
 #include "lan/RuntimeAssets.h"
 #include "lan/FreeVariables.h"
+#include "lan/OptionCheck.h"
 
 #include <llvm/Bitcode/BitcodeReader.h>
 #include <llvm/IR/BasicBlock.h>
@@ -39,6 +40,7 @@ const char* typeName(Type type) {
     case Type::Record: return "Record";
     case Type::Table: return "Table";
     case Type::Regex: return "Regex";
+    case Type::Instant: return "Instant";
     case Type::Unit: return "Unit";
     case Type::IO: return "IO";
     case Type::Dynamic: return "动态值";
@@ -71,17 +73,25 @@ bool isRegexBuiltin(const std::string& name) {
       name == "regex_find_all" || name == "regex_split";
 }
 
-bool isStandardIOBuiltin(const std::string& name) {
+bool isIOBuiltin(const std::string& name) {
   return name == "read_stdin" || name == "write_stdout" || name == "arguments" ||
+      name == "now" ||
       name == "random" || name == "random_between" ||
       name == "random_integer" || name == "choose" || name == "shuffle";
+}
+
+bool isTimeBuiltin(const std::string& name) {
+  return name == "parse_time" || name == "format_time" ||
+      name == "time_from_unix" || name == "unix_seconds" ||
+      name == "add_seconds" || name == "seconds_between";
 }
 
 class Inference {
  public:
   explicit Inference(const Program& program) {
     for (const auto& function : program.functions) {
-      if (isRegexBuiltin(function->name) || isStandardIOBuiltin(function->name) ||
+      if (isRegexBuiltin(function->name) || isIOBuiltin(function->name) ||
+          isTimeBuiltin(function->name) ||
           function->name == "main" || function->name == "length" ||
           function->name == "table" || function->name == "row_count" ||
           function->name == "sum" || function->name == "average" ||
@@ -248,6 +258,13 @@ class Inference {
           resolved(variable) == Type::Table || resolved(variable) == Type::Regex)
         fail("列表、Record、Table 和 Regex 不能使用 == 或 != 整体比较，请使用 same");
     }
+    for (int variable : orderedVariables_) {
+      Type type = resolved(variable);
+      if (type == Type::Unknown) bind(variable, Type::Number, "顺序比较");
+      else if (type != Type::Number && type != Type::Instant)
+        fail("顺序比较只能用于 Number 或 Instant，不能用于" +
+             std::string(typeName(type)));
+    }
     for (int variable : recordLikeVariables_) {
       Type type = resolved(variable);
       if (type == Type::Unknown) bind(variable, Type::Record, "字段访问左侧");
@@ -258,8 +275,9 @@ class Inference {
     for (int element : sortableListElements_) {
       Type type = resolved(element);
       if (type == Type::Unknown) bind(element, Type::Number, "sort 的列表元素");
-      else if (type != Type::Number && type != Type::Text)
-        fail("sort 只能用于 Number 或 Text List，不能用于" +
+      else if (type != Type::Number && type != Type::Text &&
+               type != Type::Instant)
+        fail("sort 只能用于 Number、Text 或 Instant List，不能用于" +
              std::string(typeName(type)) + " List");
     }
     for (const auto& [expression, variable] : expressions_)
@@ -272,6 +290,18 @@ class Inference {
       int root = find(node.parent);
       if (nodes_[root].type == Type::Unknown) nodes_[root].type = Type::Number;
     }
+    checkOptions(program, {
+        [&](const Expr& expr) { return optionShape(expressions_.at(&expr)); },
+        [&](const Function& fn, std::size_t i) {
+          return optionShape(functions_.at(fn.name).params[i]);
+        },
+        [&](const BinaryExpr& expr, bool vector) {
+          auto [found, inserted] = coalesceKinds_.emplace(&expr, vector);
+          if (!inserted && found->second != vector)
+            fail("Option 类型错误：同一 ?? 不能在不同调用中同时表示整值默认和逐元素填补；逐元素填补请显式使用 fill_missing");
+          if (vector) vectorOperations_.insert(&expr);
+          else vectorOperations_.erase(&expr);
+        }});
     analyzePresence(program);
   }
 
@@ -337,6 +367,7 @@ class Inference {
   std::vector<std::unordered_map<std::string, int>> scopes_;
   std::vector<int> plusVariables_;
   std::vector<int> equalityVariables_;
+  std::vector<int> orderedVariables_;
   std::vector<int> recordLikeVariables_;
   struct DynamicAccess {
     int object;
@@ -347,6 +378,7 @@ class Inference {
   std::vector<int> tableColumnElements_;
   std::vector<int> sortableListElements_;
   std::unordered_set<const BinaryExpr*> vectorOperations_;
+  std::unordered_map<const BinaryExpr*, bool> coalesceKinds_;
   struct CollectionConstraint {
     int collection;
     int element;
@@ -385,6 +417,18 @@ class Inference {
   std::vector<UnaryConstraint> ioResults_;
   std::unordered_set<std::size_t> resolvedIOResults_;
   std::vector<const Function*> inferenceOrder_;
+
+  OptionType optionShape(int variable) {
+    OptionType shape;
+    shape.kind = resolved(variable);
+    if (shape.kind == Type::List || shape.kind == Type::IO) {
+      auto element = optionShape(shape.kind == Type::List
+          ? listElement(variable, "Option 元素类型") : ioResult(variable));
+      element.optional = true;
+      shape.element = std::make_shared<const OptionType>(std::move(element));
+    }
+    return shape;
+  }
 
   void resolveIOResults(bool final = false) {
     std::vector<unsigned char> visited(ioResults_.size());
@@ -920,13 +964,14 @@ class Inference {
           unify(leftElement, rightElement, "整列比较");
           equalityVariables_.push_back(leftElement);
           bind(resultElement, Type::Boolean, "整列比较结果");
+        } else if (op == "<" || op == ">" || op == "<=" || op == ">=") {
+          unify(leftElement, rightElement, "整列顺序比较");
+          orderedVariables_.push_back(leftElement);
+          bind(resultElement, Type::Boolean, "整列比较结果");
         } else {
           bind(leftElement, Type::Number, "整列运算左侧");
           bind(rightElement, Type::Number, "整列运算右侧");
-          bind(resultElement,
-               (op == "<" || op == ">" || op == "<=" || op == ">=")
-                   ? Type::Boolean : Type::Number,
-               "整列运算结果");
+          bind(resultElement, Type::Number, "整列运算结果");
         }
         return result;
       }
@@ -950,8 +995,8 @@ class Inference {
         equalityVariables_.push_back(lhs);
         bind(result, Type::Boolean, "比较结果");
       } else {
-        bind(lhs, Type::Number, "比较号“" + op + "”左边");
-        bind(rhs, Type::Number, "比较号“" + op + "”右边");
+        unify(lhs, rhs, "比较号“" + op + "”两边");
+        orderedVariables_.push_back(lhs);
         bind(result, Type::Boolean, "比较结果");
       }
       return result;
@@ -1004,7 +1049,12 @@ class Inference {
                                   [](const std::string& name) { return !name.empty(); });
       if (hasNamed && !functions_.count(call->callee))
         fail("内置函数“" + call->callee + "”暂不接受命名参数");
-      if (isStandardIOBuiltin(call->callee)) {
+      if (isIOBuiltin(call->callee)) {
+        if (call->callee == "now") {
+          if (!call->args.empty()) fail("now 不接受参数");
+          bind(ioResult(result), Type::Instant, "now 的结果");
+          return result;
+        }
         if (call->callee == "random") {
           if (!call->args.empty()) fail("random 不接受参数");
           bind(ioResult(result), Type::Number, "random 的结果");
@@ -1036,6 +1086,39 @@ class Inference {
         if (call->callee == "arguments")
           bind(listElement(payload, "arguments 的结果"), Type::Text, "命令行参数");
         else bind(payload, write ? Type::Unit : Type::Text, "IO 执行结果");
+        return result;
+      }
+      if (isTimeBuiltin(call->callee)) {
+        if (call->callee == "parse_time") {
+          if (call->args.size() != 1) fail("parse_time 需要 1 个 Text");
+          bind(infer(*call->args[0]), Type::Text, "parse_time 的输入");
+          bind(result, Type::Instant, "parse_time 的结果");
+          return result;
+        }
+        if (call->callee == "format_time" || call->callee == "unix_seconds") {
+          if (call->args.size() != 1)
+            fail("函数“" + call->callee + "”需要 1 个 Instant");
+          bind(infer(*call->args[0]), Type::Instant,
+               "函数“" + call->callee + "”的输入");
+          bind(result, call->callee == "format_time" ? Type::Text : Type::Number,
+               "函数“" + call->callee + "”的结果");
+          return result;
+        }
+        if (call->callee == "time_from_unix") {
+          if (call->args.size() != 1) fail("time_from_unix 需要 1 个 Number");
+          bind(infer(*call->args[0]), Type::Number, "time_from_unix 的输入");
+          bind(result, Type::Instant, "time_from_unix 的结果");
+          return result;
+        }
+        if (call->args.size() != 2)
+          fail("函数“" + call->callee + "”需要 2 个参数");
+        bind(infer(*call->args[0]), Type::Instant,
+             "函数“" + call->callee + "”的第一个参数");
+        bind(infer(*call->args[1]),
+             call->callee == "add_seconds" ? Type::Number : Type::Instant,
+             "函数“" + call->callee + "”的第二个参数");
+        bind(result, call->callee == "add_seconds" ? Type::Instant : Type::Number,
+             "函数“" + call->callee + "”的结果");
         return result;
       }
       if (isRegexBuiltin(call->callee)) {
@@ -1423,7 +1506,7 @@ class Inference {
         result = kPresent;
     } else if (auto* let = dynamic_cast<const LetExpr*>(&expr)) {
       Presence value = presenceOf(*let->value);
-      if (let->expressionBoundary) presenceMayEscape_ = false;
+      presenceMayEscape_ = false;
       presenceScopes_.emplace_back();
       presenceScopes_.back().emplace(let->name, value);
       result = presenceOf(*let->body);
@@ -1495,9 +1578,14 @@ class Inference {
         result = propagate(lhs, rhs);
       }
     } else if (auto* call = dynamic_cast<const CallExpr*>(&expr)) {
-      if (isStandardIOBuiltin(call->callee)) {
+      if (isIOBuiltin(call->callee)) {
         for (const auto& argument : call->args) presenceOf(*argument);
         result = kPresent;
+      } else if (isTimeBuiltin(call->callee)) {
+        result = presenceOf(*call->args[0]);
+        for (std::size_t i = 1; i < call->args.size(); ++i)
+          result = propagate(result, presenceOf(*call->args[i]));
+        if (call->callee == "parse_time") result = kMaybeMissing;
       } else if (isRegexBuiltin(call->callee)) {
         result = kPresent;
         for (const auto& argument : call->args)
@@ -1737,6 +1825,7 @@ struct CodeGenerator::Impl {
       case Type::Record: return llvm::PointerType::get(context, 0);
       case Type::Table: return llvm::PointerType::get(context, 0);
       case Type::Regex: return llvm::PointerType::get(context, 0);
+      case Type::Instant: return llvm::PointerType::get(context, 0);
       case Type::IO: return llvm::PointerType::get(context, 0);
       case Type::Dynamic: return taggedValueType();
       case Type::Unknown: break;
@@ -1980,6 +2069,7 @@ struct CodeGenerator::Impl {
       case Type::Regex: return 6;
       case Type::Unit: return 7;
       case Type::IO: return 8;
+      case Type::Instant: return 9;
       case Type::Dynamic: break;
       case Type::Unknown: break;
     }
@@ -1998,7 +2088,8 @@ struct CodeGenerator::Impl {
   TypedValue adoptValue(TypedValue value) {
     if (value.type != Type::Text && value.type != Type::List &&
         value.type != Type::Record && value.type != Type::Table &&
-        value.type != Type::Dynamic && value.type != Type::Regex && value.type != Type::IO)
+        value.type != Type::Dynamic && value.type != Type::Regex &&
+        value.type != Type::Instant && value.type != Type::IO)
       return value;
     auto parts = dynamicParts(value);
     auto adopt = external("lan_arc_adopt", builder.getVoidTy(),
@@ -2255,7 +2346,8 @@ struct CodeGenerator::Impl {
     else if (storageType == Type::Boolean || storageType == Type::Unit)
       elementStorage = builder.getInt8Ty();
     else if (storageType == Type::Text || storageType == Type::List ||
-             storageType == Type::Record || storageType == Type::Regex)
+             storageType == Type::Record || storageType == Type::Regex ||
+             storageType == Type::Instant)
       elementStorage = llvmType(Type::Text);
     else
       storageType = Type::Dynamic;
@@ -2312,7 +2404,8 @@ struct CodeGenerator::Impl {
       return;
     }
     if (storage.elementType == Type::Text || storage.elementType == Type::List ||
-        storage.elementType == Type::Record || storage.elementType == Type::Regex) {
+        storage.elementType == Type::Record || storage.elementType == Type::Regex ||
+        storage.elementType == Type::Instant) {
       auto parts = dynamicParts(value);
       auto retain = external("lan_value_retain", builder.getVoidTy(),
           {builder.getInt32Ty(), builder.getDoubleTy(), llvmType(Type::Text)});
@@ -3077,7 +3170,8 @@ struct CodeGenerator::Impl {
       return {adoptHeap(result, Type::List), Type::List, kPresent};
     }
     auto compactLeaf = [](Type type) {
-      return type == Type::Number || type == Type::Boolean || type == Type::Text;
+      return type == Type::Number || type == Type::Boolean ||
+          type == Type::Text || type == Type::Instant;
     };
     bool compactFlat = std::max(leftRank, rightRank) == 1 &&
         compactLeaf(leftLeaf) && compactLeaf(rightLeaf);
@@ -3389,6 +3483,61 @@ struct CodeGenerator::Impl {
     return {option, Type::Number, kMaybeMissing};
   }
 
+  TypedValue emitTimeBuiltin(const CallExpr& call) {
+    auto first = requirePresent(emitExpr(*call.args[0]),
+                                "函数“" + call.callee + "”的第一个参数");
+    auto* pointer = llvmType(Type::Text);
+    if (call.callee == "parse_time") {
+      auto* output = builder.CreateAlloca(pointer, nullptr, "parsed.time");
+      builder.CreateStore(llvm::ConstantPointerNull::get(
+          llvm::cast<llvm::PointerType>(pointer)), output);
+      auto function = external("lan_parse_time", builder.getInt32Ty(),
+                               {pointer, llvm::PointerType::get(context, 0)});
+      builder.CreateCall(function, {first.value, output});
+      auto* result = builder.CreateLoad(pointer, output, "time.value");
+      return {adoptHeap(result, Type::Instant), Type::Instant, kMaybeMissing};
+    }
+    if (call.callee == "format_time") {
+      auto function = external("lan_format_time", pointer, {pointer});
+      auto* result = builder.CreateCall(function, {first.value}, "formatted.time");
+      return {adoptHeap(result, Type::Text), Type::Text, kPresent};
+    }
+    if (call.callee == "unix_seconds") {
+      auto function = external("lan_unix_seconds", builder.getDoubleTy(), {pointer});
+      return {builder.CreateCall(function, {first.value}, "unix.seconds"),
+              Type::Number, kPresent};
+    }
+    if (call.callee == "seconds_between") {
+      auto second = requirePresent(emitExpr(*call.args[1]),
+                                   "seconds_between 的结束时间");
+      auto function = external("lan_seconds_between", builder.getDoubleTy(),
+                               {pointer, pointer});
+      return {builder.CreateCall(function, {first.value, second.value},
+                                 "seconds.between"),
+              Type::Number, kPresent};
+    }
+
+    auto* output = builder.CreateAlloca(pointer, nullptr, "time.result");
+    llvm::Value* status;
+    if (call.callee == "time_from_unix") {
+      auto function = external("lan_time_from_unix", builder.getInt32Ty(),
+          {builder.getDoubleTy(), llvm::PointerType::get(context, 0)});
+      status = builder.CreateCall(function, {first.value, output});
+    } else {
+      auto added = requirePresent(emitExpr(*call.args[1]),
+                                  "add_seconds 的秒数");
+      auto function = external("lan_add_seconds", builder.getInt32Ty(),
+          {pointer, builder.getDoubleTy(), llvm::PointerType::get(context, 0)});
+      status = builder.CreateCall(function, {first.value, added.value, output});
+    }
+    requireRuntimeSuccess(status,
+        call.callee == "time_from_unix"
+            ? "time_from_unix 要求有限且处于 Instant 支持范围内的 Unix 秒数"
+            : "add_seconds 要求有限秒数，且结果不能超出 Instant 支持范围");
+    auto* result = builder.CreateLoad(pointer, output, "time.value");
+    return {adoptHeap(result, Type::Instant), Type::Instant, kPresent};
+  }
+
   TypedValue emitListBuiltin(const CallExpr& call) {
     auto input = requirePresent(emitExpr(*call.args[0]),
                                 "函数“" + call.callee + "”的 List");
@@ -3424,7 +3573,7 @@ struct CodeGenerator::Impl {
       auto* result = builder.CreateCall(function, {input.value, status},
                                         "sorted.list");
       requireRuntimeSuccess(builder.CreateLoad(builder.getInt32Ty(), status),
-                            "sort 只能用于 Number 或 Text List");
+                            "sort 只能用于 Number、Text 或 Instant List");
       return {adoptHeap(result, Type::List), Type::List, kPresent};
     }
     if (call.callee == "concat") {
@@ -3587,68 +3736,12 @@ struct CodeGenerator::Impl {
   }
 
   void emitPrintValueHelper() {
-    auto* entry = llvm::BasicBlock::Create(context, "start", printValueFunction);
-    auto* numberBlock = llvm::BasicBlock::Create(context, "number", printValueFunction);
-    auto* booleanBlock = llvm::BasicBlock::Create(context, "boolean", printValueFunction);
-    auto* textBlock = llvm::BasicBlock::Create(context, "text", printValueFunction);
-    auto* listBlock = llvm::BasicBlock::Create(context, "list", printValueFunction);
-    auto* recordBlock = llvm::BasicBlock::Create(context, "record", printValueFunction);
-    auto* regexBlock = llvm::BasicBlock::Create(context, "regex", printValueFunction);
-    auto* unitBlock = llvm::BasicBlock::Create(context, "unit", printValueFunction);
-    auto* pointer = llvmType(Type::Text);
-    auto printfFn = external("printf", builder.getInt32Ty(), {pointer}, true);
-
-    auto argument = printValueFunction->arg_begin();
-    llvm::Value* tag = &*argument++;
-    llvm::Value* number = &*argument++;
-    llvm::Value* payload = &*argument;
-    builder.SetInsertPoint(entry);
-    auto* missingBlock = llvm::BasicBlock::Create(context, "missing", printValueFunction);
-    auto* choices = builder.CreateSwitch(tag, missingBlock, 6);
-    choices->addCase(builder.getInt32(0), missingBlock);
-    choices->addCase(builder.getInt32(1), numberBlock);
-    choices->addCase(builder.getInt32(2), booleanBlock);
-    choices->addCase(builder.getInt32(3), textBlock);
-    choices->addCase(builder.getInt32(4), listBlock);
-    choices->addCase(builder.getInt32(5), recordBlock);
-    choices->addCase(builder.getInt32(6), regexBlock);
-    choices->addCase(builder.getInt32(7), unitBlock);
-
-    builder.SetInsertPoint(unitBlock);
-    builder.CreateCall(printfFn, {builder.CreateGlobalString("()")});
-    builder.CreateRetVoid();
-
-    builder.SetInsertPoint(regexBlock);
-    builder.CreateCall(printfFn, {builder.CreateGlobalString("<Regex>")});
-    builder.CreateRetVoid();
-
-    builder.SetInsertPoint(missingBlock);
-    builder.CreateCall(printfFn, {builder.CreateGlobalString("missing")});
-    builder.CreateRetVoid();
-
-    builder.SetInsertPoint(numberBlock);
-    builder.CreateCall(printfFn, {builder.CreateGlobalString("%g"), number});
-    builder.CreateRetVoid();
-
-    builder.SetInsertPoint(booleanBlock);
-    auto* truth = builder.CreateFCmpONE(number,
-                                        llvm::ConstantFP::get(builder.getDoubleTy(), 0.0));
-    auto* booleanText = builder.CreateSelect(truth, builder.CreateGlobalString("true"),
-                                             builder.CreateGlobalString("false"));
-    builder.CreateCall(printfFn, {builder.CreateGlobalString("%s"), booleanText});
-    builder.CreateRetVoid();
-
-    builder.SetInsertPoint(textBlock);
-    builder.CreateCall(printfFn, {builder.CreateGlobalString("\"%s\""), payload});
-    builder.CreateRetVoid();
-
-    builder.SetInsertPoint(listBlock);
-    builder.CreateCall(printListFunction, {payload});
-    builder.CreateRetVoid();
-
-    builder.SetInsertPoint(recordBlock);
-    auto recordPrint = external("lan_record_print", builder.getVoidTy(), {pointer});
-    builder.CreateCall(recordPrint, {payload});
+    builder.SetInsertPoint(llvm::BasicBlock::Create(context, "start", printValueFunction));
+    auto print = external("lan_value_print", builder.getVoidTy(),
+                          {builder.getInt32Ty(), builder.getDoubleTy(), llvmType(Type::Text)});
+    builder.CreateCall(print, {printValueFunction->getArg(0),
+                              printValueFunction->getArg(1),
+                              printValueFunction->getArg(2)});
     builder.CreateRetVoid();
   }
 
@@ -3788,59 +3881,28 @@ struct CodeGenerator::Impl {
   }
 
   TypedValue emitLogical(const BinaryExpr& binary) {
-    auto lhs = emitExpr(*binary.lhs);
+    auto lhs = requirePresent(emitExpr(*binary.lhs), "逻辑运算左侧");
     auto* function = builder.GetInsertBlock()->getParent();
-    auto* leftPresentBlock = llvm::BasicBlock::Create(context, "logic.left.value", function);
     auto* rhsBlock = llvm::BasicBlock::Create(context, "logic.next", function);
-    auto* missingRhsBlock = llvm::BasicBlock::Create(context, "logic.missing.next", function);
     auto* shortcutBlock = llvm::BasicBlock::Create(context, "logic.shortcut", function);
     auto* mergeBlock = llvm::BasicBlock::Create(context, "logic.result", function);
     const bool isAnd = binary.op == "and";
-    Presence resultPresence = inference->expressionPresence(binary);
-    auto* resultAddress = builder.CreateAlloca(
-        encodedType(Type::Boolean, resultPresence), nullptr, "logic.storage");
-
-    if (lhs.presence == kPresent) builder.CreateBr(leftPresentBlock);
-    else if (lhs.presence == kMissing) builder.CreateBr(missingRhsBlock);
-    else builder.CreateCondBr(presentFlag(lhs), leftPresentBlock, missingRhsBlock);
-
-    builder.SetInsertPoint(leftPresentBlock);
     if (isAnd) builder.CreateCondBr(rawPayload(lhs), rhsBlock, shortcutBlock);
     else builder.CreateCondBr(rawPayload(lhs), shortcutBlock, rhsBlock);
 
     builder.SetInsertPoint(rhsBlock);
-    auto rhs = convertPresence(emitExpr(*binary.rhs), resultPresence);
-    builder.CreateStore(rhs.value, resultAddress);
+    auto rhs = requirePresent(emitExpr(*binary.rhs), "逻辑运算右侧");
+    auto* rhsEnd = builder.GetInsertBlock();
     builder.CreateBr(mergeBlock);
 
     builder.SetInsertPoint(shortcutBlock);
-    builder.CreateStore(
-        encodePresent(builder.getInt1(!isAnd), Type::Boolean, resultPresence),
-        resultAddress);
-    builder.CreateBr(mergeBlock);
-
-    builder.SetInsertPoint(missingRhsBlock);
-    auto missingRhs = emitExpr(*binary.rhs);
-    auto* rhsPresent = presentFlag(missingRhs);
-    auto* rhsDecides = builder.CreateAnd(
-        rhsPresent, isAnd ? builder.CreateNot(rawPayload(missingRhs))
-                          : rawPayload(missingRhs));
-    auto* decidedBlock = llvm::BasicBlock::Create(context, "logic.decided", function);
-    auto* remainsMissingBlock = llvm::BasicBlock::Create(context, "logic.missing", function);
-    builder.CreateCondBr(rhsDecides, decidedBlock, remainsMissingBlock);
-    builder.SetInsertPoint(decidedBlock);
-    builder.CreateStore(
-        encodePresent(builder.getInt1(!isAnd), Type::Boolean, resultPresence),
-        resultAddress);
-    builder.CreateBr(mergeBlock);
-    builder.SetInsertPoint(remainsMissingBlock);
-    builder.CreateStore(missingValue(Type::Boolean, resultPresence), resultAddress);
     builder.CreateBr(mergeBlock);
 
     builder.SetInsertPoint(mergeBlock);
-    return {builder.CreateLoad(encodedType(Type::Boolean, resultPresence),
-                               resultAddress, "logic"),
-            Type::Boolean, resultPresence};
+    auto* result = builder.CreatePHI(builder.getInt1Ty(), 2, "logic");
+    result->addIncoming(rawPayload(rhs), rhsEnd);
+    result->addIncoming(builder.getInt1(!isAnd), shortcutBlock);
+    return {result, Type::Boolean, kPresent};
   }
 
   TypedValue emitCoalesce(const BinaryExpr& binary) {
@@ -3924,10 +3986,11 @@ struct CodeGenerator::Impl {
   }
 
   TypedValue emitStandardIOBuiltin(const CallExpr& call) {
-    if (call.callee == "random" || call.callee == "random_between" ||
+    if (call.callee == "now" || call.callee == "random" ||
+        call.callee == "random_between" ||
         call.callee == "random_integer" || call.callee == "choose" ||
         call.callee == "shuffle")
-      return emitRandomBuiltin(call);
+      return emitStatefulIOBuiltin(call);
     bool write = call.callee == "write_stdout";
     llvm::Value* text = write
         ? requirePresent(emitExpr(*call.args[0]), "write_stdout 的输入").value : nullptr;
@@ -3976,7 +4039,7 @@ struct CodeGenerator::Impl {
     return {action, Type::IO, kPresent};
   }
 
-  TypedValue emitRandomBuiltin(const CallExpr& call) {
+  TypedValue emitStatefulIOBuiltin(const CallExpr& call) {
     std::vector<TypedValue> captures;
     for (const auto& argument : call.args)
       captures.push_back(requirePresent(emitExpr(*argument),
@@ -4197,8 +4260,7 @@ struct CodeGenerator::Impl {
                 Type::Number, kPresent};
     }
     if (auto* let = dynamic_cast<const LetExpr*>(&expr)) {
-      auto value = let->expressionBoundary ? emitElementBoundary(*let->value)
-                                           : emitExpr(*let->value);
+      auto value = emitElementBoundary(*let->value);
       scopes.emplace_back();
       scopes.back().emplace(let->name, value);
       auto result = emitExpr(*let->body);
@@ -4222,16 +4284,9 @@ struct CodeGenerator::Impl {
       return emitNestedRecordUpdate(*update);
     if (auto* unary = dynamic_cast<const UnaryExpr*>(&expr)) {
       if (type == Type::List) return emitListUnary(*unary);
-      auto operand = emitExpr(*unary->operand);
+      auto operand = requirePresent(emitExpr(*unary->operand), "一元运算");
       if (unary->op == '!') {
-        if (operand.presence == kPresent)
-          return {builder.CreateNot(operand.value, "not"), Type::Boolean, kPresent};
-        Presence resultPresence = inference->expressionPresence(expr);
-        auto* inverted = builder.CreateNot(rawPayload(operand), "not.value");
-        auto* present = encodePresent(inverted, Type::Boolean, resultPresence);
-        return {builder.CreateSelect(presentFlag(operand), present,
-                                     missingValue(Type::Boolean), "not.option"),
-                Type::Boolean, resultPresence};
+        return {builder.CreateNot(operand.value, "not"), Type::Boolean, kPresent};
       }
       return guarded({operand}, type, presence, [&]() {
         auto* raw = rawPayload(operand);
@@ -4258,6 +4313,12 @@ struct CodeGenerator::Impl {
             equal = builder.CreateICmpEQ(compared, builder.getInt32(0), "text.equal");
           } else if (lhs.type == Type::Number) {
             equal = builder.CreateFCmpOEQ(left, right, "equal");
+          } else if (lhs.type == Type::Instant) {
+            auto compare = external("lan_instant_compare", builder.getInt32Ty(),
+                                    {llvmType(Type::Instant), llvmType(Type::Instant)});
+            equal = builder.CreateICmpEQ(
+                builder.CreateCall(compare, {left, right}), builder.getInt32(0),
+                "instant.equal");
           } else {
             equal = builder.CreateICmpEQ(left, right, "equal");
           }
@@ -4292,6 +4353,16 @@ struct CodeGenerator::Impl {
           return op == "/" ? builder.CreateFDiv(left, right, "quotient")
                            : floorModulo(left, right);
         }
+        if (lhs.type == Type::Instant) {
+          auto compare = external("lan_instant_compare", builder.getInt32Ty(),
+                                  {llvmType(Type::Instant), llvmType(Type::Instant)});
+          auto* compared = builder.CreateCall(compare, {left, right},
+                                               "instant.compare");
+          if (op == "<") return builder.CreateICmpSLT(compared, builder.getInt32(0));
+          if (op == ">") return builder.CreateICmpSGT(compared, builder.getInt32(0));
+          if (op == "<=") return builder.CreateICmpSLE(compared, builder.getInt32(0));
+          return builder.CreateICmpSGE(compared, builder.getInt32(0));
+        }
         if (op == "<") return builder.CreateFCmpOLT(left, right, "less");
         if (op == ">") return builder.CreateFCmpOGT(left, right, "greater");
         if (op == "<=") return builder.CreateFCmpOLE(left, right, "at.most");
@@ -4301,7 +4372,7 @@ struct CodeGenerator::Impl {
     if (auto* collection = dynamic_cast<const CollectionExpr*>(&expr))
       return emitCollection(*collection);
     if (auto* call = dynamic_cast<const CallExpr*>(&expr)) {
-      if (isStandardIOBuiltin(call->callee)) return emitStandardIOBuiltin(*call);
+      if (isIOBuiltin(call->callee)) return emitStandardIOBuiltin(*call);
       if (isRegexBuiltin(call->callee)) return emitRegexBuiltin(*call);
       if (call->callee == "is_missing") {
         auto value = emitExpr(*call->args[0]);
@@ -4338,6 +4409,7 @@ struct CodeGenerator::Impl {
         return emitNumberBuiltin(*call);
       if (call->callee == "to_text" || call->callee == "parse_number")
         return emitConversionBuiltin(*call);
+      if (isTimeBuiltin(call->callee)) return emitTimeBuiltin(*call);
       if (call->callee == "concat" || call->callee == "flatten" ||
           call->callee == "reverse" || call->callee == "distinct" ||
           call->callee == "sort" ||
@@ -4488,6 +4560,12 @@ struct CodeGenerator::Impl {
       builder.CreateCall(printfFn, {builder.CreateGlobalString("%s\n"), word});
     } else if (result.type == Type::Regex) {
       builder.CreateCall(printfFn, {builder.CreateGlobalString("<Regex>\n")});
+    } else if (result.type == Type::Instant) {
+      auto format = external("lan_format_time", llvmType(Type::Text),
+                             {llvmType(Type::Instant)});
+      auto* text = builder.CreateCall(format, {raw}, "display.time");
+      adoptHeap(text, Type::Text);
+      builder.CreateCall(printfFn, {builder.CreateGlobalString("%s\n"), text});
     } else if (result.type == Type::List) {
       builder.CreateCall(printListFunction, {raw});
       builder.CreateCall(printfFn, {builder.CreateGlobalString("\n")});

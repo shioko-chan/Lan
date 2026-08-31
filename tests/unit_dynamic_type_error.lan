@@ -2,5 +2,5 @@ expect_unit(value) = value == ()
 {
   key = "value";
   holder = {(key): true};
-  expect_unit(holder.(key))
+  expect_unit(require(holder.(key)))
 }
