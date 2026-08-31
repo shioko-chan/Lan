@@ -57,7 +57,7 @@ add_custom_command(
           -I${CMAKE_CURRENT_SOURCE_DIR}/third_party/utf8proc
           ${CMAKE_CURRENT_SOURCE_DIR}/runtime/record.cpp -o ${LAN_RECORD_BITCODE}
   DEPENDS runtime/record.cpp runtime/value.h runtime/ownership.hpp runtime/regex/ownership.h runtime/regex/regex.h
-          runtime/io/stdio.inc
+          runtime/io/stdio.inc runtime/io/random.inc
           third_party/utf8proc/utf8proc.h
   VERBATIM)
 add_custom_command(
@@ -110,6 +110,22 @@ add_test(NAME io_standard_streams COMMAND ${CMAKE_COMMAND}
   -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/standard-io-test
   -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_standard_io.cmake)
 set_tests_properties(io_standard_streams PROPERTIES TIMEOUT 90)
+add_test(NAME stdlib_random COMMAND ${CMAKE_COMMAND}
+  -DLANC=$<TARGET_FILE:lanc> -DROOT=${CMAKE_CURRENT_SOURCE_DIR}
+  -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/random-test
+  -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_random.cmake)
+set_tests_properties(stdlib_random PROPERTIES TIMEOUT 90)
+foreach(case bounds integer)
+  add_test(NAME reject_stdlib_random_${case} COMMAND ${CMAKE_COMMAND}
+    -DLANC=$<TARGET_FILE:lanc>
+    -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib_random_${case}_error.lan
+    -DEXPECTED=random -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_runtime_error.cmake)
+endforeach()
+foreach(case type arity)
+  add_test(NAME reject_stdlib_random_${case}
+    COMMAND lanc ${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib_random_${case}_error.lan)
+  set_tests_properties(reject_stdlib_random_${case} PROPERTIES WILL_FAIL TRUE)
+endforeach()
 foreach(case stdout_type stdin_arity arguments_arity stdout_arity standard_redefinition)
   set(expected "参数|文字|保留")
   add_test(NAME reject_io_${case} COMMAND ${CMAKE_COMMAND}

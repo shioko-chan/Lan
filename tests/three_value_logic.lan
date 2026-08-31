@@ -1,11 +1,11 @@
-choose(flag) =
+decide(flag) =
   if flag
     4
   else
     missing
 
 demo(flag) =
-  value = choose(flag)
+  value = decide(flag)
   refined = if not is_missing(value)
     value + 1
   else

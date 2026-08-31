@@ -1,0 +1,7 @@
+io {
+  empty <- choose([]);
+  absent <- choose([missing, missing]);
+  shuffled <- shuffle([]);
+  sample <- random();
+  {empty: empty, absent: absent, shuffled: shuffled, sample: sample}
+}

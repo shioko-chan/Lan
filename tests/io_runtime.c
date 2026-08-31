@@ -14,6 +14,12 @@ char* lan_text_from_cstr(const char*);
 char* lan_text_concat(const char*, const char*);
 void lan_value_release(int32_t, double, void*);
 void lan_arc_assert_empty(void);
+void lan_random_configure(const char* seed);
+int32_t lan_io_random(LanValue* output, char* error, uint64_t capacity);
+int32_t lan_io_random_between(double minimum, double maximum,
+                              LanValue* output, char* error, uint64_t capacity);
+int32_t lan_io_random_integer(double minimum, double maximum,
+                              LanValue* output, char* error, uint64_t capacity);
 void lan_io_initialize(int32_t, void*);
 int32_t lan_io_read_stdin(LanValue*, char*, uint64_t);
 int32_t lan_io_write_stdout(const char*, LanValue*, char*, uint64_t);
@@ -92,6 +98,28 @@ static void check_standard_io(void) {
   lan_arc_assert_empty();
 }
 
+static void check_random_runtime(void) {
+  char error[512] = {0};
+  LanValue after_error, reference;
+  lan_random_configure("42");
+  CHECK(lan_io_random_between(2, 1, &after_error, error, sizeof(error)) != 0);
+  CHECK(strstr(error, "random_between") != NULL);
+  CHECK(lan_io_random(&after_error, error, sizeof(error)) == 0);
+  lan_random_configure("42");
+  CHECK(lan_io_random(&reference, error, sizeof(error)) == 0);
+  CHECK(after_error.tag == 1 && after_error.number == reference.number);
+
+  lan_random_configure("42");
+  CHECK(lan_io_random_integer(1.5, 3, &after_error, error, sizeof(error)) != 0);
+  CHECK(lan_io_random(&after_error, error, sizeof(error)) == 0);
+  CHECK(after_error.number == reference.number);
+
+  lan_random_configure("invalid");
+  CHECK(lan_io_random(&after_error, error, sizeof(error)) != 0);
+  CHECK(strstr(error, "随机种子") != NULL);
+  lan_arc_assert_empty();
+}
+
 int main(void) {
   void* text = lan_text_from_cstr("captured");
   void* action = lan_io_new(execute, 1);
@@ -115,5 +143,6 @@ int main(void) {
   lan_value_release(second.tag, second.number, second.pointer);
   lan_arc_assert_empty();
   check_standard_io();
+  check_random_runtime();
   return 0;
 }

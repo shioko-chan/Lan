@@ -1,2 +1,2 @@
-choose(found) = if found { io { () } } else { missing }
-io { result <- choose(false); result }
+decide(found) = if found { io { () } } else { missing }
+io { result <- decide(false); result }

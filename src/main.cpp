@@ -29,7 +29,8 @@ void usage(const char* executable) {
   std::cerr << "用法：\n"
             << "  " << executable << " [--emit-ir] <程序.lan> [-o 输出.ll]\n"
             << "  " << executable << " --build <程序.lan>\n"
-            << "  " << executable << " --run <程序.lan> [-- 参数...]\n";
+            << "  " << executable
+            << " --run <程序.lan> [--random-seed 整数] [-- 参数...]\n";
 }
 
 std::string shellQuote(const std::string& value) {
@@ -53,6 +54,8 @@ int main(int argc, char** argv) {
   std::string inputPath;
   std::string outputPath;
   std::vector<std::string> programArguments;
+  std::string randomSeed;
+  bool hasRandomSeed = false;
   bool hasArgumentSeparator = false;
   for (int i = 1; i < argc; ++i) {
     std::string argument = argv[i];
@@ -71,6 +74,10 @@ int main(int argc, char** argv) {
       mode = requested;
       explicitMode = true;
     }
+    else if (argument == "--random-seed" && i + 1 < argc) {
+      randomSeed = argv[++i];
+      hasRandomSeed = true;
+    }
     else if (argument == "-o" && i + 1 < argc) outputPath = argv[++i];
     else if (!argument.empty() && argument[0] == '-') {
       usage(argv[0]);
@@ -88,6 +95,25 @@ int main(int argc, char** argv) {
   if (hasArgumentSeparator && mode != Mode::Run) {
     std::cerr << "Lan：程序参数只能用于 --run，并放在 -- 后面\n";
     return 2;
+  }
+  if (hasRandomSeed && mode != Mode::Run) {
+    std::cerr << "Lan：--random-seed 只能用于 --run\n";
+    return 2;
+  }
+  if (hasRandomSeed) {
+    uint64_t value = 0;
+    if (randomSeed.empty()) {
+      std::cerr << "Lan：随机种子必须是 0 到 9007199254740991 之间的整数\n";
+      return 2;
+    }
+    for (char digit : randomSeed) {
+      unsigned next = digit >= '0' && digit <= '9' ? (unsigned)(digit - '0') : 10;
+      if (next > 9 || value > (UINT64_C(9007199254740991) - next) / 10) {
+        std::cerr << "Lan：随机种子必须是 0 到 9007199254740991 之间的整数\n";
+        return 2;
+      }
+      value = value * 10 + next;
+    }
   }
   if (mode != Mode::EmitIR && !outputPath.empty()) {
     std::cerr << "Lan：--build 和 --run 不能和 -o 同时使用\n";
@@ -200,6 +226,14 @@ int main(int argc, char** argv) {
     return 0;
   }
   std::string executable = executablePath.string();
+  if (hasRandomSeed) {
+    if (setenv("LAN_INTERNAL_RANDOM_SEED", randomSeed.c_str(), 1) != 0) {
+      std::cerr << "Lan：无法配置随机种子：" << std::strerror(errno) << "\n";
+      return 1;
+    }
+  } else {
+    unsetenv("LAN_INTERNAL_RANDOM_SEED");
+  }
   std::vector<char*> runArguments{executable.data()};
   for (auto& argument : programArguments) runArguments.push_back(argument.data());
   runArguments.push_back(nullptr);

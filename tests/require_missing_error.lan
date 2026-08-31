@@ -1,7 +1,7 @@
-choose(found) =
+decide(found) =
   if found
     10
   else
     missing
 
-require(choose(false))
+require(decide(false))

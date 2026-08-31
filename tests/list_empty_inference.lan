@@ -1,7 +1,7 @@
-choose(flag) =
+decide(flag) =
   if flag
     []
   else
     ["text"]
 
-choose(false)
+decide(false)

@@ -1,4 +1,4 @@
-choose(flag) =
+decide(flag) =
   if flag {
     value = 20;
     value + 1
@@ -7,4 +7,4 @@ choose(flag) =
     0
   }
 
-choose(true)
+decide(true)

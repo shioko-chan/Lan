@@ -6,6 +6,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/random.h>
+#include <unistd.h>
 
 #include "utf8proc.h"
 #include "regex/ownership.h"
@@ -2531,3 +2533,4 @@ extern "C" void lan_value_print(int32_t tag, double number, void* pointer) {
 }
 
 #include "io/stdio.inc"
+#include "io/random.inc"

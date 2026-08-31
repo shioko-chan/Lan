@@ -300,6 +300,34 @@ IO 错误写入 stderr，包含 action、源码位置和调用链；系统错误
 文件读写和文件访问权限控制尚未实现。完整规范见
 [`docs/IO_DESIGN.md`](docs/IO_DESIGN.md)。
 
+### 随机数
+
+随机操作是延迟执行的 IO action；构造 action 不读取系统熵，也不推进随机序列：
+
+```lan
+io {
+  probability <- random();                 # [0, 1)
+  temperature <- random_between(-10, 35);  # [-10, 35)
+  die <- random_integer(1, 6);              # 两端都包含
+  item <- choose(["red", missing, "blue"]);
+  order <- shuffle([1, 2, 3, 4]);
+  {probability: probability, die: die, item: item, order: order}
+}
+```
+
+`choose` 只在非 missing 元素中等概率选择；空 List 或全 missing List 返回 missing。
+`shuffle` 使用 Fisher–Yates，保留全部元素及 missing 状态。无效边界会在 action 执行时
+拒绝，并且不会消耗随机样本。同一个 action 每执行一次都会取得下一个样本。
+
+默认种子来自操作系统熵源。测试和复现可以指定 `lan-pcg64-v1` 的安全整数种子：
+
+```sh
+./build/lanc --run simulation.lan --random-seed 42
+```
+
+相同 Lan 版本、种子、输入和 action 顺序产生相同序列。该随机库不用于密码学密钥、
+令牌或安全随机字节。完整规则见 [`docs/TIME_RANDOM_DESIGN.md`](docs/TIME_RANDOM_DESIGN.md)。
+
 ### Text、Number 与转换函数
 
 `length` 同时接受 Text 和 List。Text 长度按用户看到的 Unicode grapheme cluster 计算，
@@ -1028,6 +1056,8 @@ ctest --test-dir build --output-on-failure
 ```
 
 `-- 参数...` 只支持 `--run` 模式；程序直接继承标准输入、输出和错误流。
+`--random-seed` 同样只支持 `--run`，接受 `0` 到 `9007199254740991` 的整数；它必须写在
+程序参数分隔符 `--` 之前，分隔符之后的同名文本只是普通程序参数。
 
 Lan/Unicode bitcode 和 RE2 静态库已内嵌到 `lanc`，无需运行时读取源码构建目录。
 使用正则的程序还会在自己的 `.lan/<程序名>/` 中生成 `lan_regex_runtime.a` 和

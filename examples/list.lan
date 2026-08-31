@@ -1,7 +1,7 @@
-choose(flag) =
+decide(flag) =
   if flag
     [1, 2, 3]
   else
     [4]
 
-choose(true)
+decide(true)

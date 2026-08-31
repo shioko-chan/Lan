@@ -1,0 +1,6 @@
+{
+  unused = random();
+  unused_between = random_between(2, 1);
+  unused_choose = choose([1, 2, 3]);
+  42
+}

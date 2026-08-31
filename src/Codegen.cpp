@@ -72,7 +72,9 @@ bool isRegexBuiltin(const std::string& name) {
 }
 
 bool isStandardIOBuiltin(const std::string& name) {
-  return name == "read_stdin" || name == "write_stdout" || name == "arguments";
+  return name == "read_stdin" || name == "write_stdout" || name == "arguments" ||
+      name == "random" || name == "random_between" ||
+      name == "random_integer" || name == "choose" || name == "shuffle";
 }
 
 class Inference {
@@ -1003,6 +1005,29 @@ class Inference {
       if (hasNamed && !functions_.count(call->callee))
         fail("内置函数“" + call->callee + "”暂不接受命名参数");
       if (isStandardIOBuiltin(call->callee)) {
+        if (call->callee == "random") {
+          if (!call->args.empty()) fail("random 不接受参数");
+          bind(ioResult(result), Type::Number, "random 的结果");
+          return result;
+        }
+        if (call->callee == "random_between" || call->callee == "random_integer") {
+          if (call->args.size() != 2)
+            fail("函数“" + call->callee + "”需要 minimum 和 maximum");
+          bind(infer(*call->args[0]), Type::Number, call->callee + " 的 minimum");
+          bind(infer(*call->args[1]), Type::Number, call->callee + " 的 maximum");
+          bind(ioResult(result), Type::Number, call->callee + " 的结果");
+          return result;
+        }
+        if (call->callee == "choose" || call->callee == "shuffle") {
+          if (call->args.size() != 1)
+            fail("函数“" + call->callee + "”需要 1 个 List");
+          int input = infer(*call->args[0]);
+          int element = listElement(input, call->callee + " 的输入");
+          int payload = ioResult(result);
+          if (call->callee == "choose") unify(payload, element, "choose 的结果");
+          else unify(payload, input, "shuffle 的结果");
+          return result;
+        }
         bool write = call->callee == "write_stdout";
         if (call->args.size() != (write ? 1u : 0u))
           fail(call->callee + (write ? " 需要 1 个 Text 参数" : " 不接受参数"));
@@ -3899,6 +3924,10 @@ struct CodeGenerator::Impl {
   }
 
   TypedValue emitStandardIOBuiltin(const CallExpr& call) {
+    if (call.callee == "random" || call.callee == "random_between" ||
+        call.callee == "random_integer" || call.callee == "choose" ||
+        call.callee == "shuffle")
+      return emitRandomBuiltin(call);
     bool write = call.callee == "write_stdout";
     llvm::Value* text = write
         ? requirePresent(emitExpr(*call.args[0]), "write_stdout 的输入").value : nullptr;
@@ -3943,6 +3972,68 @@ struct CodeGenerator::Impl {
           {pointer, builder.getInt64Ty(), builder.getInt32Ty(), builder.getDoubleTy(), pointer});
       builder.CreateCall(capture, {action, builder.getInt64(0), builder.getInt32(tagFor(Type::Text)),
           llvm::ConstantFP::get(builder.getDoubleTy(), 0.0), text});
+    }
+    return {action, Type::IO, kPresent};
+  }
+
+  TypedValue emitRandomBuiltin(const CallExpr& call) {
+    std::vector<TypedValue> captures;
+    for (const auto& argument : call.args)
+      captures.push_back(requirePresent(emitExpr(*argument),
+          "函数“" + call.callee + "”的参数"));
+
+    auto savedIP = builder.saveIP();
+    auto savedCollections = std::move(diagnosticCollections);
+    diagnosticCollections.clear();
+    auto* pointer = llvmType(Type::Text);
+    auto* signature = llvm::FunctionType::get(builder.getVoidTy(), {pointer, pointer}, false);
+    auto* callback = llvm::Function::Create(signature, llvm::Function::InternalLinkage,
+                                            "lan.io." + call.callee, module.get());
+    builder.SetInsertPoint(llvm::BasicBlock::Create(context, "io.start", callback));
+    emitDiagnosticPush(call.callee);
+    auto* error = builder.CreateAlloca(builder.getInt8Ty(), builder.getInt64(512), "io.error");
+    std::vector<llvm::Type*> types;
+    std::vector<llvm::Value*> args;
+    if (!captures.empty()) {
+      auto captureAt = external("lan_io_capture_at", pointer,
+                                {pointer, builder.getInt64Ty()});
+      for (std::size_t i = 0; i < captures.size(); ++i) {
+        auto* storage = builder.CreateCall(
+            captureAt, {callback->getArg(0), builder.getInt64(i)});
+        auto* value = builder.CreateLoad(taggedValueType(), storage);
+        if (captures[i].type == Type::Number) {
+          types.push_back(builder.getDoubleTy());
+          args.push_back(builder.CreateExtractValue(value, 1));
+        } else {
+          types.push_back(pointer);
+          args.push_back(builder.CreateExtractValue(value, 2));
+        }
+      }
+    }
+    types.insert(types.end(), {pointer, pointer, builder.getInt64Ty()});
+    args.insert(args.end(), {callback->getArg(1), error, builder.getInt64(512)});
+    auto operation = external("lan_io_" + call.callee, builder.getInt32Ty(), types);
+    auto* status = builder.CreateCall(operation, args);
+    auto* success = llvm::BasicBlock::Create(context, "io.success", callback);
+    auto* failure = llvm::BasicBlock::Create(context, "io.failure", callback);
+    builder.CreateCondBr(builder.CreateICmpEQ(status, builder.getInt32(0)), success, failure);
+    builder.SetInsertPoint(failure);
+    emitRuntimeError(call.callee, error);
+    builder.SetInsertPoint(success);
+    emitDiagnosticPop();
+    builder.CreateRetVoid();
+    diagnosticCollections = std::move(savedCollections);
+    builder.restoreIP(savedIP);
+
+    auto create = external("lan_io_new", pointer, {pointer, builder.getInt64Ty()});
+    auto* action = adoptHeap(builder.CreateCall(create,
+        {callback, builder.getInt64(captures.size())}, "io.action"), Type::IO);
+    auto capture = external("lan_io_capture", builder.getVoidTy(),
+        {pointer, builder.getInt64Ty(), builder.getInt32Ty(), builder.getDoubleTy(), pointer});
+    for (std::size_t i = 0; i < captures.size(); ++i) {
+      auto parts = dynamicParts(captures[i]);
+      builder.CreateCall(capture,
+          {action, builder.getInt64(i), parts[0], parts[1], parts[2]});
     }
     return {action, Type::IO, kPresent};
   }

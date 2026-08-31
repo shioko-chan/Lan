@@ -1,6 +1,6 @@
 # Lan Time 与 Random 设计
 
-本文件定义尚未实现的时间与随机能力。获取当前时间和随机样本会观察或改变宿主状态，
+本文件定义时间与随机能力。随机部分已经实现，时间部分尚未实现。获取当前时间和随机样本会观察或改变宿主状态，
 因此只能构造显式 `IO<T>` action；时间解析、格式化和算术仍是普通纯函数。
 
 ## Time 类型
@@ -68,6 +68,8 @@ choose(list)                     -> IO<Option<T>>
 shuffle(list)                    -> IO<List<T>>
 ```
 
+以上五个 API 均已实现。
+
 - `random()` 均匀产生 `[0, 1)` 内的 Number。
 - `random_between` 均匀产生 `[minimum, maximum)` 内的 Number，并要求两个边界有限且
   `minimum < maximum`。
@@ -89,6 +91,10 @@ shuffle(list)                    -> IO<List<T>>
 - 给定相同 Lan 版本、种子、输入和 action 顺序，必须产生完全相同的随机结果。
 - 算法固定为带版本标识的 PCG64；初始版本标识为 `lan-pcg64-v1`。
 - 改变算法或种子展开方式属于可观察的语言版本变更，不能静默替换。
+
+`lan-pcg64-v1` 具体使用 PCG XSL RR 128/64、固定奇数 stream increment，并以
+`state = 0; step; state += seed; step` 展开 53 位安全整数种子。连续 Number 使用输出的
+高 53 位；整数范围使用拒绝采样，因此固定种子的序列不带取模偏差。
 
 第一阶段不提供运行中重新设种子、全局纯 `random()`、隐式线程局部状态或把随机状态作为
 可变用户对象。需要多条独立随机序列时，再设计显式不可变 RandomState 及状态线程 API。
@@ -136,6 +142,6 @@ program = io
 1. 增加 Instant 类型、比较、presence 表示和确定格式化。
 2. 实现纯 `parse_time`、`format_time` 及秒数转换和算术。
 3. 在 IO runtime 中实现 `now()` 与 `--fixed-time` 测试时钟。
-4. 实现版本化 PCG64 状态、宿主熵初始化和 `--random-seed`。
-5. 实现标量随机 action，再实现泛型 `choose` 与 `shuffle`。
-6. 覆盖重复 action、错误不消耗样本、调用链和集合诊断测试。
+4. ~~实现版本化 PCG64 状态、宿主熵初始化和 `--random-seed`。~~ **已完成**。
+5. ~~实现标量随机 action，再实现泛型 `choose` 与 `shuffle`。~~ **已完成**。
+6. ~~覆盖重复 action、错误不消耗样本、调用链和集合诊断测试。~~ **随机部分已完成**。

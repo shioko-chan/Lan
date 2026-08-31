@@ -1,0 +1,21 @@
+io {
+  first <- random();
+  bounded <- random_between(-10, 10);
+  integer <- random_integer(-5, 5);
+  fixed <- random_integer(7, 7);
+  chosen <- choose([missing, "a", "b", missing, "c"]);
+  shuffled <- shuffle([1, missing, 2, 3]);
+  repeated = random();
+  repeat_first <- repeated;
+  repeat_second <- repeated;
+  {
+    first: first,
+    bounded: bounded,
+    integer: integer,
+    fixed: fixed,
+    chosen: chosen,
+    shuffled: shuffled,
+    repeat_first: repeat_first,
+    repeat_second: repeat_second
+  }
+}

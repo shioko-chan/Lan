@@ -1,0 +1,4 @@
+io {
+  value <- random_integer(1.5, 3);
+  value
+}

@@ -1,0 +1,4 @@
+io {
+  value <- random_between(2, 1);
+  value
+}

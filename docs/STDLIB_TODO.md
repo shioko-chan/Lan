@@ -144,10 +144,10 @@
 - [ ] 增加可比较、可存入集合的 UTC `Instant` 值类型。
 - [ ] `now() -> IO<Instant>`，并为测试运行器提供 `--fixed-time`。
 - [ ] `parse_time`、`format_time`、Unix 秒数转换、`add_seconds` 和 `seconds_between`。
-- [ ] `random()` 和 `random_between` 产生连续 Number 样本。
-- [ ] `random_integer` 使用整数边界和无偏拒绝采样。
-- [ ] `choose(list)` 从非 missing 元素抽样；`shuffle(list)` 使用 Fisher–Yates。
-- [ ] 使用版本化 `lan-pcg64-v1` 序列，并通过 `--random-seed` 支持跨平台复现。
+- [x] ~~`random()` 和 `random_between` 产生连续 Number 样本。~~
+- [x] ~~`random_integer` 使用安全整数边界和无偏拒绝采样。~~
+- [x] ~~`choose(list)` 从非 missing 元素抽样；`shuffle(list)` 使用 Fisher–Yates。~~
+- [x] ~~使用版本化 `lan-pcg64-v1` 序列，并通过 `--random-seed` 支持跨平台复现。~~
 - [x] ~~Time 和 Random 只能通过显式 IO action 观察宿主状态，不提供伪装成纯函数的全局状态。~~
 - [x] ~~第一阶段不提供 sleep、后台定时器、时区数据库、密码学随机数或统计分布。~~
 

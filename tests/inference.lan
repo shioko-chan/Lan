@@ -1,7 +1,7 @@
-choose(flag, first, second) =
+decide(flag, first, second) =
   if flag
     first
   else
     second
 
-choose(not false, 42, 0)
+decide(not false, 42, 0)
