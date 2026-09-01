@@ -76,8 +76,9 @@ copy(source, destination) = io
 - `name <- action` 要求右侧为 `IO<T>`，执行 action 并将结果绑定为 `name`。
 - `name = expression` 是普通纯绑定，不执行 IO。
 - 非末尾的裸表达式必须产生 IO action；执行后丢弃其结果。
+- 返回 Result 的非末尾 IO 步骤不能隐式丢弃结果；绑定后处理，或用 `_ <- action` 明确忽略。
 - 最后一行是块的结果。纯值自动提升为 `IO<T>`；IO action 则直接作为最后一步执行。
-- 块严格从上到下执行，任何 action 失败都会停止后续 action。
+- 块严格从上到下执行，运行时拒绝会停止后续 action；返回 `err(error)` 是普通数据，不自动短路。
 - 缩进与花括号/分号形式必须降低为同一个 AST。
 
 编译器可以在内部将其理解为 `bind` 和 `pure`，但不向用户暴露这些函数或内部 lambda。
@@ -241,7 +242,8 @@ niche 表示 missing，并遵循 ARC 与堆对象 DAG。它不提供任意逐字
 - 标准输入或标准输出失败。
 
 诊断必须包含源码位置、Lan 调用链、action 名称、相关路径和宿主系统错误。第一阶段不
-提供错误捕获；未来如果需要恢复，单独设计 `Result<T, E>`，不把 IO 错误转换为 missing。
+提供宿主错误捕获；语言已支持 `Result<T, E>`、ok/err、match 与 require，但标准 IO
+尚未迁移为可恢复 Result 接口。Result 不自动捕获运行时拒绝，也不把 IO 错误转换为 missing。
 
 `missing` 继续只表示数据层面的缺失。`?` 只传播 missing，不捕获 IO 错误，也不采用
 `OptionT IO` 的“退出整个 io 块”语义。需要拒绝 missing 时使用 `require`，需要条件执行

@@ -14,6 +14,8 @@ struct OptionType {
   bool optional = false;
   bool missingOnly = false;
   std::shared_ptr<const OptionType> element;
+  std::shared_ptr<const OptionType> error;
+  unsigned resultStates = 3;  // 1 = ok, 2 = err; payload facts only apply to that arm.
   // Proven fields of this immutable value, not a structural Record type.
   std::map<std::string, OptionType> fields;
   bool completeFields = false;

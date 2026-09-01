@@ -219,6 +219,7 @@ message("小明", 20)
 - 文字：`"Hello"`、`"你好"`
 - 单类型列表：`[1, 2, 3]`、`["红", "绿", "蓝"]`
 - Record：`{name: "小明", age: 20}`
+- Result：`ok(value)` / `err(error)`，类型为 `Result<T, E>`
 - 数字计算：`+`、`-`、`*`、`/`、`%`
 - 文字连接：`"Hello, " + name`
 - 比较：`==`、`!=`、`<`、`>`、`<=`、`>=`
@@ -271,6 +272,7 @@ program()  # 12
 
 - `name = expression` 是纯绑定，右侧即使是 IO 也不会自动执行。
 - `name <- action` 执行 IO；块内非末尾的裸表达式也必须是 IO，执行后丢弃结果。
+- 若非末尾 IO 步骤返回 Result，不能隐式丢弃：必须绑定后处理，或写 `_ <- action` 明确忽略。
 - 最后一个表达式若为纯值则作为结果，若为 IO 则执行它并使用结果，不产生嵌套 IO。
 - 未使用的 action 不执行；同一 action 多次用于 `<-` 时，每次都会重新执行，不缓存结果。
 - 每个步骤按顺序执行，错误立即停止后续步骤。`?` 只结束所在步骤的表达式，不跳过整个块。
@@ -280,6 +282,8 @@ program()  # 12
 action 自身可能为 missing 时编译拒绝执行，可以先用 `??` 选择备用 action。执行成功后产生的
 missing 是普通数据，后续步骤可用 `??`、`is_missing` 或 `require` 处理；程序入口显示
 IO 的最终数据结果时允许输出 `missing`。纯程序仍沿用最终 missing 必须显式 `?` 的规则。
+`err(error)` 也是普通返回数据，不等于运行时拒绝，不会自动停止 IO 后续步骤；`<-` 只执行
+IO，不解包 Result。现有标准 IO 的宿主错误仍运行时拒绝，尚未改成可恢复 Result 接口。
 
 已实现以下标准 IO 函数，调用只构造 action，执行时才访问外部环境：
 
@@ -1011,6 +1015,132 @@ Option<IO<Number>>    # action 本身可能缺失
 同一函数内的同一个 `??` 若在不同调用中产生这两种不同解释，编译器会拒绝；要明确逐元素
 填补，请使用 `fill_missing`，不要让操作含义依赖调用处。
 
+### 模式匹配
+
+`match` 是表达式，可以直接把 `Option<T>` 分成 missing 和存在两种情况：
+
+```lan
+normalize(input) =
+  match input
+    missing => 0
+    value(number) => number + 1
+```
+
+`value(name)` 只匹配存在值，并把解包后的 `T` 绑定给 `name`；`value(_)` 忽略该值。
+`missing` 只匹配缺失。普通名称和 `_` 是剩余情况模式：名称会绑定剩余值，`_` 不绑定。
+如果前面的模式已经覆盖 missing，剩余名称会被细化为 `T`：
+
+```lan
+describe(input) = match input {
+  missing => "没有数据";
+  number => to_text(number)
+}
+```
+
+模式还可以使用 Number、Text、Boolean 和 Unit 字面量：
+
+```lan
+category(number) = match number {
+  -1 => "negative one";
+  0 => "zero";
+  _ => "other"
+}
+
+enabled(flag) = match flag {
+  true => "yes";
+  false => "no";
+  missing => "unknown"
+}
+```
+
+分支按源码顺序测试，输入只求值一次，只有命中的分支求值。重复模式、被前面模式完全
+覆盖的分支和未穷尽的 match 都会编译报错。对于既可能存在又可能缺失的 `Option<T>`，
+两种情况都必须覆盖；对于确定存在的 `T`，不要求 missing 分支；对于确定缺失的输入，
+只覆盖 missing 即可。Boolean 的 `true`/`false` 可以覆盖
+全部存在值，Unit 的 `()` 也能覆盖全部存在值；Number 和 Text 字面量仍需 `_`、普通
+名称或 `value(name)` 覆盖其他值。
+
+分支绑定只在自己的分支内有效，并允许遮蔽外层同名绑定。匹配原局部名称时，编译器也
+会在相应分支细化原名称。分支返回值必须具有同一种底层类型，`T` 与 `Option<T>` 可以按
+通常规则合并。
+
+`?` 仍使用表达式边界：写在 match 输入上时，missing 会在进入任何分支前传播；写在
+分支中时，会让整个 match 表达式得到 missing。List 和 Record 暂不支持结构解构；可以
+先匹配 `value(list)` / `value(record)`，再使用现有下标和字段读取。模式匹配不是运行时
+类型分派，字面量模式必须与输入具有相同静态类型。
+
+## Result 与可恢复失败
+
+`Result<T, E>` 表示成功并携带 `T`，或失败并携带 `E`。类型仍由编译器推断，不需要
+手写类型注解。`ok`、`err` 是内置构造器而非语法关键字，各接受一个位置参数，不能被
+用户函数重定义。普通值不隐式包装为 Result，Result 也不隐式解包：
+
+```lan
+divide(a, b) =
+  if b == 0 { err("除数不能为零") } else { ok(a / b) }
+
+message = match divide(10, 0) {
+  ok(number) => to_text(number);
+  err(error) => "计算失败：" + error
+}
+
+message
+```
+
+函数返回 `Result<Number, Text>`。`ok(())` 表示成功但没有额外数据；错误载荷也可以是
+Record、List 或其他数据值。同一 Result 的成功载荷统一为 T，失败载荷统一为 E，二者
+不要求相同。构造器尚未确定的另一侧类型由使用上下文约束；不自动将其定义为 Unit。
+
+`ok(name)`、`err(name)` 模式分别绑定解包后的载荷，支持 `_` 忽略载荷；没有兜底分支时
+必须覆盖两个状态，即使输入写作 `ok(1)`。对于 `Option<Result<T, E>>`，还必须处理
+外层 missing。普通名称模式绑定的是完整的剩余 Result，不会自动取出载荷；
+`value(name)` 也只处理外层 Option，不解包 Result。模式可用缩进书写，但第一版构造器
+内只支持名称或 `_`；嵌套载荷使用另一个 match，不支持 `ok(err(e))` 这样的嵌套模式。
+
+```lan
+ok(missing)      # 成功，载荷是缺失值；不等于 missing 或 err(...)
+ok(err("bad"))  # 成功，载荷本身是另一个失败的 Result
+```
+
+`require(result)` 是显式断言：成功返回载荷，失败输出错误载荷与源码诊断并终止程序。
+它只解开一层 Result，不同时去掉成功载荷的 Option：
+
+```lan
+require(ok(42))              # 42
+require(ok(missing)) ?? 0     # 0，成功载荷仍可能缺失
+require(err("bad"))          # 运行时拒绝
+```
+
+对于外层可选的 Result，先用 match、`?` 或 `??` 处理外层缺失，再使用 require。
+`?`、`??`、`is_missing` 仍只观察 Option，不传播、填补或检测 err；例如 `err("bad")?`
+仍是同一个 Result，而不是函数提前返回或 IO 块短路。已有除零等运行时拒绝不会被自动
+捕获为 err，现有 `parse_number` 等 Option 接口也不改变。
+
+Result 可以作为函数参数、默认值、返回值、List 元素和 Record 字段，也可以作为 IO
+的结果并被 action 捕获。载荷不能包含 IO action，应使用 `IO<Result<T, E>>`：
+
+```lan
+read_config() = io { err("尚未提供配置") }
+
+io {
+  result <- read_config();
+  match result {
+    ok(text) => write_stdout(text);
+    err(error) => write_stdout(error)
+  }
+}
+```
+
+`<-` 不解包 Result，err 不自动停止后续步骤。执行 IO 的错误恢复 API 尚未接入标准库；
+这里的 `read_config` 只演示返回普通 Result 数据。
+
+整体比较使用 `same`，同时比较状态和载荷，不支持 Result 的 `==`、算术或排序。
+`to_text` 和结果显示保留 `ok(...)` / `err(...)` 包装；含 Regex 的值仍不能转换为 Text。
+第一版 Result 是持有一个带标签载荷的 ARC 堆对象，构造时保留载荷引用，解构时借用，
+离开作用域按现有 ARC 规则释放；外层 missing 使用空指针，不会复制内部 List/Record。
+
+## 运算错误与运行时表示
+
 普通除法遇到 `+0.0` 或 `-0.0` 会运行时拒绝，不产生 Infinity、NaN 或 missing。
 List 除法只检查实际参与运算且两侧都存在的元素；被较短长度截去的位置以及结果已经
 由 missing 决定的位置不会执行除法。
@@ -1045,7 +1175,7 @@ Table 行号：1
 
 ```lan
 is_missing(value)  # 总是返回 Boolean
-require(value)     # missing 时运行时拒绝，否则返回原值
+require(value)     # 对 Option：missing 时运行时拒绝，否则返回原值；Result 规则见上节
 ```
 
 简单的 `if not is_missing(value)` 会把 then 分支中的 `value` 细化为确定存在。

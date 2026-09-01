@@ -70,6 +70,8 @@ typedef struct LanArcFrame {
 static thread_local LanArcFrame* arc_frame = static_cast<LanArcFrame*>(NULL);
 static thread_local int64_t arc_live_objects = 0;
 
+#include "result.inc"
+
 extern "C" char* lan_format_time(void* pointer);
 extern "C" int32_t lan_instant_compare(void* left, void* right);
 
@@ -210,6 +212,7 @@ static void retain_value(LanValue value) {
   else if (value.tag == LAN_RECORD) lan_record_retain(value.pointer);
   else if (value.tag == LAN_REGEX) lan_regex_handle_retain(static_cast<LanRegex*>(value.pointer));
   else if (value.tag == LAN_INSTANT) lan_instant_retain(value.pointer);
+  else if (value.tag == LAN_RESULT) result_retain(value.pointer);
   else if (value.tag == LAN_IO && value.pointer) {
     LanIO* action = static_cast<LanIO*>(value.pointer);
     if (action->references == UINT32_MAX) abort();
@@ -229,7 +232,7 @@ extern "C" void lan_arc_push(void) {
 extern "C" void lan_arc_adopt(int32_t tag, double number, void* pointer) {
   if (!arc_frame || !pointer ||
       (tag != LAN_TEXT && tag != LAN_LIST && tag != LAN_RECORD &&
-       tag != LAN_REGEX && tag != LAN_IO && tag != LAN_INSTANT)) return;
+       tag != LAN_REGEX && tag != LAN_IO && tag != LAN_INSTANT && tag != LAN_RESULT)) return;
   LanArcEntry* entry = static_cast<LanArcEntry*>(malloc(sizeof(*entry)));
   if (!entry) abort();
   entry->value = LanValue{tag, number, pointer};
@@ -301,6 +304,7 @@ static void release_value(LanValue value) {
   else if (value.tag == LAN_REGEX)
     arc_live_objects -= lan_regex_handle_release(static_cast<LanRegex*>(value.pointer));
   else if (value.tag == LAN_INSTANT) lan_instant_release(value.pointer);
+  else if (value.tag == LAN_RESULT) result_release(value.pointer);
   else if (value.tag == LAN_IO && value.pointer) {
     LanIO* action = static_cast<LanIO*>(value.pointer);
     if (!action->references) abort();
@@ -670,6 +674,11 @@ static int32_t same_record(LanRecordNode* left, LanRecordNode* right) {
 
 static int32_t same_value(LanValue left, LanValue right) {
   if (left.tag != right.tag) return 0;
+  if (left.tag == LAN_RESULT) {
+    auto* a = static_cast<LanResult*>(left.pointer);
+    auto* b = static_cast<LanResult*>(right.pointer);
+    return a->success == b->success && same_value(a->payload, b->payload);
+  }
   if (left.tag == LAN_MISSING || left.tag == LAN_UNIT) return 1;
   if (left.tag == LAN_NUMBER || left.tag == LAN_BOOLEAN)
     return left.number == right.number;
@@ -717,6 +726,10 @@ static uint64_t hash_record_node(const LanRecordNode* node) {
 
 static uint64_t hash_value(LanValue value) {
   uint64_t hash = mix_hash((uint64_t)(uint32_t)value.tag);
+  if (value.tag == LAN_RESULT) {
+    auto* result = static_cast<LanResult*>(value.pointer);
+    return mix_hash(hash ^ mix_hash(result->success) ^ hash_value(result->payload));
+  }
   if (value.tag == LAN_MISSING || value.tag == LAN_UNIT) return hash;
   if (value.tag == LAN_NUMBER) {
     uint64_t bits = 0;
@@ -2475,7 +2488,12 @@ static void text_builder_append(LanTextBuilder* builder, const char* text) {
 }
 
 static void format_value(LanTextBuilder* builder, LanValue value, int32_t nested) {
-  if (value.tag == LAN_MISSING) {
+  if (value.tag == LAN_RESULT) {
+    auto* result = static_cast<LanResult*>(value.pointer);
+    text_builder_append(builder, result->success ? "ok(" : "err(");
+    format_value(builder, result->payload, 1);
+    text_builder_append(builder, ")");
+  } else if (value.tag == LAN_MISSING) {
     text_builder_append(builder, "missing");
   } else if (value.tag == LAN_UNIT) {
     text_builder_append(builder, "()");
@@ -2490,6 +2508,8 @@ static void format_value(LanTextBuilder* builder, LanValue value, int32_t nested
     if (nested) text_builder_append(builder, "\"");
     text_builder_append(builder, static_cast<const char*>(value.pointer));
     if (nested) text_builder_append(builder, "\"");
+  } else if (value.tag == LAN_REGEX) {
+    text_builder_append(builder, "<Regex>");
   } else if (value.tag == LAN_INSTANT) {
     char* text = lan_format_time(value.pointer);
     text_builder_append(builder, text);
@@ -2523,6 +2543,8 @@ static void format_value(LanTextBuilder* builder, LanValue value, int32_t nested
 
 static int32_t contains_regex(LanValue value) {
   if (value.tag == LAN_REGEX) return 1;
+  if (value.tag == LAN_RESULT)
+    return contains_regex(static_cast<LanResult*>(value.pointer)->payload);
   if (value.tag == LAN_LIST) {
     LanList* list = static_cast<LanList*>(value.pointer);
     for (uint64_t i = 0; i < list->length; ++i)
@@ -2551,6 +2573,13 @@ extern "C" char* lan_value_to_text(int32_t tag, double number, void* pointer) {
   return result;
 }
 
+extern "C" char* lan_result_error_text(void* pointer) {
+  LanTextBuilder builder;
+  text_builder_append(&builder, "require 收到 ");
+  format_value(&builder, LanValue{LAN_RESULT, 0, pointer}, 0);
+  return static_cast<char*>(lan_text_from_cstr(builder.data));
+}
+
 extern "C" void lan_record_print(void* record) {
   LanRecordNode* root = static_cast<LanRecordNode*>(record);
   uint32_t count = entry_count(root);
@@ -2569,7 +2598,13 @@ extern "C" void lan_record_print(void* record) {
   }
 
 static void print_value(LanValue value) {
-  if (value.tag == LAN_MISSING) printf("missing");
+  if (value.tag == LAN_RESULT) {
+    auto* result = static_cast<LanResult*>(value.pointer);
+    printf("%s(", result->success ? "ok" : "err");
+    print_value(result->payload);
+    printf(")");
+  }
+  else if (value.tag == LAN_MISSING) printf("missing");
   else if (value.tag == LAN_UNIT) printf("()");
   else if (value.tag == LAN_NUMBER) printf("%g", value.number);
   else if (value.tag == LAN_BOOLEAN) printf(value.number != 0 ? "true" : "false");

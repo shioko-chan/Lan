@@ -32,7 +32,14 @@ static int braceDepth = 0;
 static int rawIndentDepth = 0;
 static std::vector<int> layoutDepths;
 static int lastSourceToken = 0;
-static bool ifAwaitingLayout = false;
+static int explicitDepth = 0;
+static std::vector<int> pendingHeaders;
+
+static bool endsExpression(int token) {
+  return token == IDENTIFIER || token == NUMBER || token == INDEX || token == TEXT ||
+         token == TRUE || token == FALSE || token == MISSING || token == ')' ||
+         token == ']' || token == '}' || token == '?' || token == '.';
+}
 
 struct BufferedToken {
   int token;
@@ -98,6 +105,8 @@ ID [A-Za-z_\200-\377][A-Za-z0-9_\200-\377]*
 }
 
 <INITIAL>"if"       return IF;
+<INITIAL>"match"    return MATCH;
+<INITIAL>"match"/[ ]*":" { yylval.text = strdup(yytext); return IDENTIFIER; }
 <INITIAL>"else"     return ELSE;
 <INITIAL>"true"     return TRUE;
 <INITIAL>"false"    return FALSE;
@@ -118,6 +127,7 @@ ID [A-Za-z_\200-\377][A-Za-z0-9_\200-\377]*
 <INITIAL>"|>"       return PIPE_ARROW;
 <INITIAL>"=>"       return FAT_ARROW;
 <INITIAL>"if"/[ ]*"("       return IF;
+<INITIAL>"match"/[ ]*"("    return MATCH;
 <INITIAL>"else"/[ ]*"("     return ELSE;
 <INITIAL>"true"/[ ]*"("     return TRUE;
 <INITIAL>"false"/[ ]*"("    return FALSE;
@@ -127,8 +137,9 @@ ID [A-Za-z_\200-\377][A-Za-z0-9_\200-\377]*
 <INITIAL>"and"/[ ]*"("      return AND;
 <INITIAL>"or"/[ ]*"("       return OR;
 <INITIAL>"not"/[ ]*"("      return NOT;
-<INITIAL>{ID}/[ ]*"("[^\n]*")"[ ]*"="[^=] {
+<INITIAL>{ID}/[ ]*"("[^\n]*")"[ ]*"="[^=>] {
   if (std::strcmp(yytext, "io") == 0) return IO_KEYWORD;
+  if (std::strcmp(yytext, "match") == 0) return MATCH;
   yylval.text = strdup(yytext);
   return FUNCTION_NAME;
 }
@@ -196,10 +207,12 @@ int yylex(void) {
     int token = nextRawToken();
 
     if (token == NEWLINE) {
+      bool headerLayout = !pendingHeaders.empty() && pendingHeaders.back() == explicitDepth;
       bool opensLayout = lastSourceToken == '=' || lastSourceToken == ELSE ||
                          lastSourceToken == IO_KEYWORD || lastSourceToken == LEFT_ARROW ||
-                         ifAwaitingLayout;
-      ifAwaitingLayout = false;
+                         lastSourceToken == FAT_ARROW ||
+                         headerLayout;
+      if (headerLayout) pendingHeaders.pop_back();
 
       int next = nextRawToken();
       while (next == INDENT || next == DEDENT) {
@@ -268,8 +281,23 @@ int yylex(void) {
   yylval = buffered.value;
   yylloc = buffered.location;
 
-  if (token == IF) ifAwaitingLayout = true;
-  if (token == '{' && ifAwaitingLayout) ifAwaitingLayout = false;
+  // The definition lookahead can also span a constructor call inside a
+  // parameter default: f(value = ok(1)) = ... . Definitions are top-level.
+  if (token == FUNCTION_NAME && explicitDepth > 0) token = CALL_IDENTIFIER;
+
+  if (token == MATCH && lastSourceToken == '.') {
+    token = IDENTIFIER;
+    yylval.text = strdup("match");
+  }
+  if (token == IF || token == MATCH)
+    pendingHeaders.push_back(explicitDepth);
+  // A Record literal inside a header is part of its subject, not its body.
+  // Nested if/match headers and parenthesized subjects keep their own depth.
+  if (token == '{' && !pendingHeaders.empty() && pendingHeaders.back() == explicitDepth &&
+      endsExpression(lastSourceToken))
+    pendingHeaders.pop_back();
+  if (token == '(' || token == '[' || token == '{') ++explicitDepth;
+  if (token == ')' || token == ']' || token == '}') --explicitDepth;
   if (token != VIRTUAL_OPEN && token != VIRTUAL_SEMICOLON &&
       token != VIRTUAL_CLOSE && token != 0)
     lastSourceToken = token;

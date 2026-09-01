@@ -150,9 +150,11 @@ static lan::Expr* makeRecordWith(lan::Expr* record,
   std::vector<lan::CallArgument>* call_args;
   std::vector<lan::Parameter>* params;
   std::vector<lan::RecordField>* fields;
+  lan::MatchPattern* pattern;
+  std::vector<lan::MatchArm>* arms;
 }
 
-%token IF ELSE TRUE FALSE MISSING IO_KEYWORD LEFT_ARROW WITH PIPE_ARROW FAT_ARROW
+%token IF ELSE MATCH TRUE FALSE MISSING IO_KEYWORD LEFT_ARROW WITH PIPE_ARROW FAT_ARROW
 %token NEWLINE INDENT DEDENT
 %token VIRTUAL_SEMICOLON VIRTUAL_CLOSE
 %token BAD_INDENT
@@ -171,6 +173,8 @@ static lan::Expr* makeRecordWith(lan::Expr* record,
 %type <fields> record_fields record_field_list
 %type <parameter> parameter
 %type <text> field_name
+%type <pattern> match_pattern
+%type <arms> match_arms match_arm_list match_block
 %type <function> function
 %type <program> functions
 
@@ -238,7 +242,53 @@ block_items
 expression
   : IF expression block ELSE block
     { $$ = located(new lan::IfExpr($2, $3, $5), @1.first_line, @1.first_column); }
+  | MATCH expression match_block
+    { $$ = located(new lan::MatchExpr($2, $3), @1.first_line, @1.first_column); }
   | pipeline { $$ = $1; }
+  ;
+
+match_block
+  : '{' match_arms '}' { $$ = $2; }
+  | VIRTUAL_OPEN match_arms VIRTUAL_CLOSE { $$ = $2; }
+  ;
+
+match_arms
+  : match_arm_list { $$ = $1; }
+  | match_arm_list ';' { $$ = $1; }
+  ;
+
+match_arm_list
+  : match_pattern FAT_ARROW expression
+    { $$ = new std::vector<lan::MatchArm>(); $$->emplace_back($1, $3); }
+  | match_arm_list ';' match_pattern FAT_ARROW expression
+    { $1->emplace_back($3, $5); $$ = $1; }
+  | match_arm_list VIRTUAL_SEMICOLON match_pattern FAT_ARROW expression
+    { $1->emplace_back($3, $5); $$ = $1; }
+  ;
+
+match_pattern
+  : MISSING { $$ = new lan::MatchPattern(lan::MatchPattern::Kind::Missing); }
+  | IDENTIFIER
+    { $$ = new lan::MatchPattern(std::strcmp($1, "_") == 0
+          ? lan::MatchPattern::Kind::Wildcard : lan::MatchPattern::Kind::Binding, $1); free($1); }
+  | CALL_IDENTIFIER '(' IDENTIFIER ')'
+    {
+      auto kind = lan::MatchPattern::Kind::Present;
+      if (std::strcmp($1, "ok") == 0) kind = lan::MatchPattern::Kind::Ok;
+      else if (std::strcmp($1, "err") == 0) kind = lan::MatchPattern::Kind::Err;
+      else if (std::strcmp($1, "value") != 0) {
+        lan_parse_error = "模式构造器只支持 value(name)、ok(name)、err(name)";
+        free($1); free($3); YYERROR;
+      }
+      $$ = new lan::MatchPattern(kind, $3);
+      free($1); free($3);
+    }
+  | NUMBER { $$ = new lan::MatchPattern(located(new lan::NumberExpr($1), @1.first_line, @1.first_column)); }
+  | '-' NUMBER { $$ = new lan::MatchPattern(located(new lan::NumberExpr(-$2), @1.first_line, @1.first_column)); }
+  | TEXT { $$ = new lan::MatchPattern(located(new lan::TextExpr($1), @1.first_line, @1.first_column)); free($1); }
+  | TRUE { $$ = new lan::MatchPattern(located(new lan::BooleanExpr(true), @1.first_line, @1.first_column)); }
+  | FALSE { $$ = new lan::MatchPattern(located(new lan::BooleanExpr(false), @1.first_line, @1.first_column)); }
+  | '(' ')' { $$ = new lan::MatchPattern(located(new lan::UnitExpr(), @1.first_line, @1.first_column)); }
   ;
 
 io_block

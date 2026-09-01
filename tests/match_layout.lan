@@ -1,0 +1,44 @@
+normalize(input) =
+  match input
+    missing => 0
+    value(number) =>
+      doubled = number * 2
+      doubled + 1
+
+nested(input) =
+  match input
+    missing => 0
+    value(number) =>
+      match number
+        0 => 10
+        _ => 20
+
+record_subject() =
+  match {a: 1}
+    value(record) => record.a
+
+call_subject() =
+  match length([1, 2])
+    2 => 2
+    _ => 0
+
+conditional_subject(flag) =
+  match (if flag { 1 } else { 2 })
+    1 => 3
+    _ => 4
+
+field_subject() =
+  record = {match: 5}
+  match record.match
+    5 => 5
+    _ => 0
+
+{
+  a = normalize(3);
+  b = normalize(missing);
+  c = nested(0);
+  d = nested(9);
+  e = nested(missing);
+  same([a, b, c, d, e, record_subject(), call_subject(), conditional_subject(true), field_subject()],
+       [7, 0, 10, 20, 0, 1, 2, 3, 5])
+}

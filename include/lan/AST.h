@@ -11,7 +11,7 @@ namespace lan {
 // same Record pointer returned by table(record).
 enum class Type {
   Unknown, Number, Boolean, Unit, Text, List, Record, Table, Regex, Instant,
-  IO, Dynamic
+  IO, Result, Dynamic
 };
 
 struct Expr {
@@ -208,6 +208,30 @@ struct IfExpr final : Expr {
   std::unique_ptr<Expr> condition;
   std::unique_ptr<Expr> thenValue;
   std::unique_ptr<Expr> elseValue;
+};
+
+struct MatchPattern {
+  enum class Kind { Missing, Literal, Binding, Wildcard, Present, Ok, Err };
+  explicit MatchPattern(Kind kind, std::string name = {})
+      : kind(kind), name(std::move(name)) {}
+  explicit MatchPattern(Expr* literal) : kind(Kind::Literal), literal(literal) {}
+  Kind kind;
+  std::string name;
+  std::unique_ptr<Expr> literal;
+};
+
+struct MatchArm {
+  MatchArm(MatchPattern* pattern, Expr* body)
+      : pattern(std::move(*pattern)), body(body) { delete pattern; }
+  MatchPattern pattern;
+  std::unique_ptr<Expr> body;
+};
+
+struct MatchExpr final : Expr {
+  MatchExpr(Expr* subject, std::vector<MatchArm>* arms)
+      : subject(subject), arms(std::move(*arms)) { delete arms; }
+  std::unique_ptr<Expr> subject;
+  std::vector<MatchArm> arms;
 };
 
 struct IOExpr final : Expr {

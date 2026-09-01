@@ -12,7 +12,7 @@ typedef struct {
 
 enum { LAN_MISSING = 0, LAN_NUMBER = 1, LAN_BOOLEAN = 2,
        LAN_TEXT = 3, LAN_LIST = 4, LAN_RECORD = 5, LAN_REGEX = 6,
-       LAN_UNIT = 7, LAN_IO = 8, LAN_INSTANT = 9 };
+       LAN_UNIT = 7, LAN_IO = 8, LAN_INSTANT = 9, LAN_RESULT = 10 };
 
 #ifdef __cplusplus
 extern "C" {

@@ -1,4 +1,5 @@
 #include "lan/OptionCheck.h"
+#include "lan/Match.h"
 
 #include <optional>
 #include <stdexcept>
@@ -33,6 +34,7 @@ Value present(Value value) {
 Value plainParameter(Value value) {
   value = present(std::move(value));
   if (value.element) value = withChild(value, plainParameter(child(value)));
+  if (value.error) value.error = std::make_shared<const Value>(plainParameter(*value.error));
   return value;
 }
 
@@ -50,6 +52,15 @@ Value joined(const Value& left, const Value& right) {
       left.fields.size() == right.fields.size();
   if (left.element && right.element)
     result = withChild(result, joined(child(left), child(right)));
+  if (left.kind == Type::Result) {
+    result.resultStates = left.resultStates | right.resultStates;
+    if (!(left.resultStates & 1)) result.element = right.element;
+    else if (!(right.resultStates & 1)) result.element = left.element;
+    if (!(left.resultStates & 2)) result.error = right.error;
+    else if (!(right.resultStates & 2)) result.error = left.error;
+    else if (left.error && right.error)
+      result.error = std::make_shared<const Value>(joined(*left.error, *right.error));
+  }
   for (auto field = result.fields.begin(); field != result.fields.end();) {
     auto found = right.fields.find(field->first);
     if (found == right.fields.end()) {
@@ -69,6 +80,8 @@ void encode(const Value& value, std::string& key) {
   key += value.missingOnly ? '0' : '1';
   key += value.completeFields ? 'c' : 'o';
   if (value.element) { key += '['; encode(*value.element, key); key += ']'; }
+  if (value.error) { key += '<'; encode(*value.error, key); key += '>'; }
+  if (value.kind == Type::Result) key += std::to_string(value.resultStates);
   key += '{';
   for (const auto& [name, field] : value.fields) {
     key += std::to_string(name.size()) + ':' + name;
@@ -214,6 +227,45 @@ class Checker {
       auto local = scope;
       local[let->name] = value;
       result = eval(*let->body, local, escapes);
+    } else if (auto* match = dynamic_cast<const MatchExpr*>(&expr)) {
+      auto subject = eval(*match->subject, scope, escapes);
+      MatchCoverage covered;
+      std::optional<Value> combined;
+      for (const auto& arm : match->arms) {
+        auto narrowed = subject;
+        using Kind = MatchPattern::Kind;
+        bool possible = true;
+        if (resultPattern(arm.pattern)) {
+          narrowed.resultStates = arm.pattern.kind == Kind::Ok ? 1 : 2;
+          possible = (subject.resultStates & narrowed.resultStates) != 0;
+        }
+        if (arm.pattern.kind == Kind::Missing) {
+          narrowed.optional = narrowed.missingOnly = true;
+        } else if (resultPattern(arm.pattern) ||
+                   arm.pattern.kind == Kind::Present || arm.pattern.kind == Kind::Literal ||
+                   covered.missing) {
+          narrowed = present(narrowed);
+        } else if (covered.present) {
+          narrowed.optional = narrowed.missingOnly = true;
+        }
+        if (!covered.add(arm.pattern))
+          throw std::runtime_error("match 模式重复或分支不可达\n位置：" + program_.sourcePath +
+              ':' + std::to_string(arm.body->line) + ':' + std::to_string(arm.body->column));
+        auto local = scope;
+        if (auto* variable = dynamic_cast<const VariableExpr*>(match->subject.get()))
+          local[variable->name] = narrowed;
+        if (bindsName(arm.pattern)) {
+          if (arm.pattern.kind == Kind::Ok) local[arm.pattern.name] = child(subject);
+          else if (arm.pattern.kind == Kind::Err) local[arm.pattern.name] = *subject.error;
+          else local[arm.pattern.name] = narrowed;
+        }
+        auto value = eval(*arm.body, local, escapes);
+        if (possible) combined = combined ? joined(*combined, value) : value;
+      }
+      if ((!subject.missingOnly && !covered.present) || (subject.optional && !covered.missing))
+        throw std::runtime_error("match 未穷尽：请覆盖所有存在值与可能的 missing，或添加 _ 分支\n位置：" +
+            program_.sourcePath + ':' + std::to_string(expr.line) + ':' + std::to_string(expr.column));
+      result = *combined;
     } else if (auto* conditional = dynamic_cast<const IfExpr*>(&expr)) {
       auto condition = eval(*conditional->condition, scope, escapes);
       require(condition, *conditional->condition, "if 条件");
@@ -377,6 +429,8 @@ class Checker {
     } else if (auto* bind = dynamic_cast<const IOBindExpr*>(&expr)) {
       auto action = boundary(*bind->action, scope);
       require(action, *bind->action, "执行的 IO action");
+      if (bind->name.empty() && child(action).kind == Type::Result)
+        throw std::runtime_error("IO 步骤不能隐式丢弃 Result；请绑定结果并处理，或用 _ <- 明确忽略");
       auto local = scope;
       if (!bind->name.empty()) local[bind->name] = child(action);
       result = eval(*bind->body, local, escapes);
@@ -393,7 +447,22 @@ class Checker {
   Value builtin(const CallExpr& call, const std::vector<Value>& args, Value result) {
     const auto& name = call.callee;
     if (name == "is_missing" || name == "same") return result;
-    if (name == "require") return present(args[0]);
+    if (name == "ok" || name == "err") {
+      result.resultStates = name == "ok" ? 1 : 2;
+      if (name == "ok") {
+        result = withChild(result, args[0]);
+        result.error = std::make_shared<const Value>(plainParameter(*result.error));
+      } else {
+        result.error = std::make_shared<const Value>(args[0]);
+        result = withChild(result, plainParameter(child(result)));
+      }
+      return result;
+    }
+    if (name == "require") {
+      if (args[0].kind != Type::Result) return present(args[0]);
+      require(args[0], *call.args[0], "require 的 Result 参数（先处理外层 Option）");
+      return child(args[0]);
+    }
     for (std::size_t i = 0; i < args.size(); ++i)
       require(args[i], *call.args[i], name + " 的参数");
 

@@ -68,6 +68,18 @@ IO Monad 规范记录在 [`IO_DESIGN.md`](IO_DESIGN.md)，时间与随机 effect
 - [x] ~~标量 `and`、`or`、`not` 要求 Boolean；集合逐元素运算及 any/all 保留三值逻辑。~~
 - [x] ~~`is_missing` / `not is_missing` 分支细化局部绑定；细化不越过作用域或同名遮蔽。~~
 - [x] ~~普通绑定与 IO 绑定的右侧都是独立的 `?` 传播边界。~~
+- [x] ~~增加表达式形式的 `match`，支持缩进和花括号/分号两种布局。~~
+- [x] ~~模式支持 missing、`value(name)`、普通绑定、`_` 以及 Number/Text/Boolean/Unit 字面量。~~
+- [x] ~~match 输入只求值一次，分支按源码顺序测试且仅执行首个命中分支。~~
+- [x] ~~编译期拒绝重复、不可达和未穷尽模式，并统一分支底层类型。~~
+- [x] ~~`value(name)` 与 missing 后的剩余绑定把 Option<T> 细化为 T；绑定仅在当前分支有效。~~
+- [x] ~~match 分支遵循普通 `?` 边界、ARC 所有权和运行时诊断规则。~~
+- [x] ~~增加 `Result<T, E>` 与 ok/err 构造器，分别统一成功和失败载荷，不隐式包装/解包。~~
+- [x] ~~match 支持 ok(name)/err(name)，编译期检查穷尽性与作用域，保留载荷的 Option 层次。~~
+- [x] ~~require 解开一层 Result；err 产生携带载荷的运行时诊断，? 与 ?? 仍只处理 Option。~~
+- [x] ~~Result 接入函数、List/Record/Table、IO 返回/捕获、same、显示及 ARC；载荷不允许 IO。~~
+- [x] ~~禁止非末尾裸 IO 步骤隐式丢弃 Result，允许 `_ <- action` 明确忽略。~~
+- [ ] 设计 Result 的显式传播语法及 Option/Result 混用边界，不改变现有表达式级 ? 语义。
 - [x] ~~LLVM 优化可以消除恒定存在标志和无效 Option 包装。~~
 - [ ] 为所有运行时类型错误和 missing 错误补齐精确源码位置。
 - [ ] 为 missing 的产生位置和传播路径提供可选调试信息。
@@ -149,8 +161,10 @@ IO Monad 规范记录在 [`IO_DESIGN.md`](IO_DESIGN.md)，时间与随机 effect
 - [ ] 明确定义 totality 强度：只保证终止，还是保证所有输入都正常返回。
 - [ ] 统一定义资源耗尽和其他运行时数据错误的语言语义。
 - [x] ~~项目可以构建，`--build` 保存中间产物，`--run` 构建后执行。~~
-- [x] ~~现有 213 项自动化测试全部通过。~~
+- [x] ~~现有 221 项自动化测试全部通过。~~
 - [x] ~~Option 回归覆盖 38 个编译期拒绝用例、四种解包方式、容器/IO 可选层次、绑定边界和旧用例迁移。~~
+- [x] ~~match 回归覆盖两种布局、穷尽性、不可达分支、Option 细化、作用域、IO 捕获、ARC 和集合诊断。~~
+- [x] ~~Result 回归覆盖类型拒绝、嵌套解包、Option 层次、字段推断、IO 顺序、容器与 ARC 共享释放。~~
 - [x] ~~测试覆盖递归拒绝、遮蔽、默认参数、missing、短路、List 类型和 Record 更新。~~
 - [x] ~~测试覆盖 Table 验证、聚合、转换、列式 lowering 和跨函数字段按需读取。~~
 - [x] ~~测试覆盖缩进/花括号等价、紧凑 ABI、SIMD、除零顺序和结构化诊断。~~

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "lan/AST.h"
+#include "lan/Match.h"
 #include <functional>
 #include <set>
 
@@ -63,6 +64,13 @@ inline std::set<std::string> freeVariables(const Expr& expression) {
       child(*value->condition);
       child(*value->thenValue);
       child(*value->elseValue);
+    } else if (auto* value = dynamic_cast<const MatchExpr*>(&expr)) {
+      child(*value->subject);
+      for (const auto& arm : value->arms) {
+        auto local = bound;
+        if (bindsName(arm.pattern)) local.insert(arm.pattern.name);
+        visit(*arm.body, std::move(local));
+      }
     } else if (auto* value = dynamic_cast<const CallExpr*>(&expr)) {
       for (const auto& argument : value->args) child(*argument);
     }

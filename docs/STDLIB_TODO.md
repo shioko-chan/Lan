@@ -20,6 +20,7 @@
 
 - [x] ~~`is_missing(value)` 返回确定存在的 Boolean。~~
 - [x] ~~`require(value)` 在 missing 时运行时拒绝，否则返回原值。~~
+- [x] ~~`ok(value)` / `err(error)` 构造 Result；`require(result)` 成功解一层、失败携带载荷运行时拒绝。~~
 - [x] ~~`same(left, right)` 递归比较 List、Record 和 Table 的完整结构。~~
 
 ## List
@@ -124,6 +125,8 @@
 ## IO 与数据格式
 
 语言核心已支持 `IO<T>`、`io`/`<-`、纯值 action、标准输入输出及命令行参数；文件 IO 仍待实现。
+
+- [ ] 为可恢复的标准 IO 失败设计 `IO<Result<T, E>>` 接口与统一错误载荷；当前宿主错误仍运行时拒绝。
 
 - [ ] `read_text(path) -> IO<Text>` 受权限范围和整文件大小上限约束。
 - [ ] `write_text(path, text) -> IO<Unit>` 使用同目录临时文件和原子替换。

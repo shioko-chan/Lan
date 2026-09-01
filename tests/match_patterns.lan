@@ -1,0 +1,67 @@
+normalize(input) = match input { missing => 0; value(number) => number + 1 }
+remaining(input) = match input { missing => 0; number => number + 1 }
+number_name(input) = match input { -1 => "negative"; 0 => "zero"; _ => "other" }
+text_name(input) = match input { "你好" => 1; "" => 2; missing => 3; _ => 4 }
+boolean_name(input) = match input { true => 1; false => 2; missing => 3 }
+unit_name(input) = match input { () => "unit"; missing => "missing" }
+capture(input) = match input { missing => io { 0 }; value(number) => io { number + 1 } }
+capture_text(input) = match input { missing => io { "fallback" }; value(text) => io { text + "!" } }
+original(input) = match input { missing => 0; value(_) => input + 1 }
+shadow(input) = match input { missing => 0; value(input) => input + 1 }
+propagated(input) = match input { missing => missing?; value(number) => number + 1 }
+unused(input) = match input { value(number) => number + 1 }
+
+io {
+  absent = parse_number("invalid");
+  captured <- capture(10);
+  empty <- capture(absent);
+  text_action = capture_text("owned");
+  first_text <- text_action;
+  second_text <- text_action;
+  prefix = "saved";
+  action = io { match "text" { value(text) => prefix + text } };
+  prefix = "changed";
+  saved <- action;
+  kept = match missing { missing => 7 };
+  skipped = match 1 { 1 => 10; _ => 1 / 0 };
+  result = propagated(absent);
+  opaque = regex("a");
+  people = table({score: [0, missing, 2], name: ["A", "B", "C"]});
+  mapped = people |> map(match .score { missing => 0; value(score) => score + 1 });
+  [
+    normalize(absent) == 0,
+    normalize(10) == 11,
+    remaining(absent) == 0,
+    remaining(3) == 4,
+    number_name(-1) == "negative",
+    number_name(-0.0) == "zero",
+    number_name(10) == "other",
+    text_name("你好") == 1,
+    text_name("") == 2,
+    text_name(missing) == 3,
+    text_name("other") == 4,
+    boolean_name(true) == 1,
+    boolean_name(false) == 2,
+    boolean_name(missing) == 3,
+    unit_name(()) == "unit",
+    unit_name(missing) == "missing",
+    captured == 11,
+    empty == 0,
+    first_text == "owned!" and second_text == "owned!",
+    saved == "savedtext",
+    kept == 7,
+    skipped == 10,
+    original(4) == 5,
+    shadow(5) == 6,
+    is_missing(result),
+    (propagated(absent) ?? 8) == 8,
+    same(mapped, [1, 0, 3]),
+    same([1, missing, 3] |> map(match . { missing => 0; value(x) => x * 2 }), [2, 0, 6]),
+    (match opaque { value(pattern) => regex_contains("a", pattern) }),
+    (match [1, 2] { value(list) => length(list) }) == 2,
+    (match {a: 1} { value(record) => record.a }) == 1,
+    (match absent { x => is_missing(x) }),
+    (match "outside" { value(x) => { x = x + "!"; x } }) == "outside!",
+    (match false { true => 1 / 0; false => 42 }) == 42
+  ] |> all(.)
+}

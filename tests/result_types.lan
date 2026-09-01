@@ -1,0 +1,69 @@
+divide(a, b) = if b == 0 { err("zero") } else { ok(a / b) }
+increment(input) = match input {
+  ok(number) => ok(number + 1);
+  err(error) => err(error)
+}
+unwrap(input) = require(input)
+read_result(input) = io { input }
+capture(input) = match input {
+  ok(text) => io { text };
+  err(error) => io { error }
+}
+optional_result(found) = if found { ok(3) } else { missing }
+optional_payload(found) = if found { ok(3) } else { ok(missing) }
+describe(input) =
+  match input
+    ok(number) => to_text(number)
+    err(error) => error
+
+io {
+  success = divide(12, 3);
+  failure = divide(12, 0);
+  action = capture(ok(uppercase("saved")));
+  first <- action;
+  second <- action;
+  read <- read_result(failure);
+  _ <- read_result(success);
+  after_error = 42;
+  nested = ok(err({code: "bad", details: ["a", "b"]}));
+  results = [success, failure, ok(7)];
+  texts = results |> map(describe(.));
+  record = {result: success};
+  from_record = match record.result { ok(n) => n; err(_) => 0 };
+  extracted = match nested { ok(inner) => inner; err(e) => err(e) };
+  missing_result = optional_result(false);
+  missing_payload = require(optional_payload(false));
+  explicit_skip = ok(missing?);
+  preserved = err("still an error")?;
+  [
+    require(success) == 4,
+    unwrap(success) == 4,
+    same(increment(success), ok(5)),
+    same(increment(failure), err("zero")),
+    same(read, failure),
+    after_error == 42,
+    first == "SAVED" and second == "SAVED",
+    same(texts, ["4", "zero", "7"]),
+    same(reverse(results), [ok(7), failure, success]),
+    length(concat(results, results)) == 6,
+    length(distinct(concat(results, results))) == 3,
+    same(take(results, 1), [success]),
+    same(drop(results, 2), [ok(7)]),
+    from_record == 4,
+    match extracted { ok(_) => false; err(e) => e.code == "bad" },
+    match missing_result {missing => true; ok(_) => false; err(_) => false},
+    same(missing_result ?? ok(8), ok(8)),
+    is_missing(missing_payload),
+    (require(optional_payload(true)) ?? 0) == 3,
+    is_missing(explicit_skip),
+    same(preserved, err("still an error")),
+    same(ok(()), ok(())),
+    not same(ok(1), err(1)),
+    same(ok(missing), ok(missing)),
+    not same(ok(missing), missing),
+    to_text(ok([1, 2])) == "ok([1, 2])",
+    to_text(err("bad")) == "err(\"bad\")",
+    match success {ok(_) => true; err(_) => 1 / 0 == 0},
+    match failure {ok(_) => 1 / 0 == 0; err(_) => true}
+  ] |> all(.)
+}

@@ -56,7 +56,7 @@ add_custom_command(
   COMMAND ${CLANGXX_EXECUTABLE} -std=c++17 -fno-exceptions -fno-rtti -O2 -emit-llvm -c
           -I${CMAKE_CURRENT_SOURCE_DIR}/third_party/utf8proc
           ${CMAKE_CURRENT_SOURCE_DIR}/runtime/record.cpp -o ${LAN_RECORD_BITCODE}
-  DEPENDS runtime/record.cpp runtime/value.h runtime/ownership.hpp runtime/regex/ownership.h runtime/regex/regex.h
+  DEPENDS runtime/record.cpp runtime/value.h runtime/result.inc runtime/ownership.hpp runtime/regex/ownership.h runtime/regex/regex.h
           runtime/io/stdio.inc runtime/io/time.inc runtime/io/random.inc
           third_party/utf8proc/utf8proc.h
   VERBATIM)
@@ -98,6 +98,31 @@ llvm_map_components_to_libnames(LLVM_LIBS Core Support Passes BitReader Linker)
 target_link_libraries(lanc PRIVATE ${LLVM_LIBS})
 
 enable_testing()
+add_executable(lan_result_runtime_test tests/result_runtime.cpp runtime/record.cpp
+  third_party/utf8proc/utf8proc.c)
+target_include_directories(lan_result_runtime_test PRIVATE third_party/utf8proc)
+target_link_libraries(lan_result_runtime_test PRIVATE lan_regex_runtime)
+add_test(NAME result_runtime COMMAND lan_result_runtime_test)
+add_test(NAME result_types COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/result_types.lan)
+set_tests_properties(result_types PROPERTIES PASS_REGULAR_EXPRESSION "true")
+add_test(NAME result_compile_contracts COMMAND ${CMAKE_COMMAND}
+  -DLANC=$<TARGET_FILE:lanc> -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/result-contracts
+  -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_result.cmake)
+add_test(NAME result_runtime_error COMMAND ${CMAKE_COMMAND}
+  -DLANC=$<TARGET_FILE:lanc> -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/result_error.lan
+  "-DEXPECTED=recoverable failure" -DEXPECTED_INDEX=1
+  -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_runtime_error.cmake)
+foreach(case match_patterns match_layout)
+  add_test(NAME ${case} COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/${case}.lan)
+  set_tests_properties(${case} PROPERTIES PASS_REGULAR_EXPRESSION "true")
+endforeach()
+add_test(NAME match_compile_contracts COMMAND ${CMAKE_COMMAND}
+  -DLANC=$<TARGET_FILE:lanc> -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/match-contracts
+  -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_match.cmake)
+add_test(NAME match_runtime_diagnostic COMMAND ${CMAKE_COMMAND}
+  -DLANC=$<TARGET_FILE:lanc> -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/match_diagnostic.lan
+  -DEXPECTED=除数不能为零 -DEXPECTED_INDEX=1
+  -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_runtime_error.cmake)
 add_test(NAME option_types COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/option_types.lan)
 set_tests_properties(option_types PROPERTIES PASS_REGULAR_EXPRESSION "true")
 add_test(NAME option_compile_contracts COMMAND ${CMAKE_COMMAND}

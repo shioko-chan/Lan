@@ -2,6 +2,7 @@
 #include "lan/RuntimeAssets.h"
 #include "lan/FreeVariables.h"
 #include "lan/OptionCheck.h"
+#include "lan/Match.h"
 
 #include <llvm/Bitcode/BitcodeReader.h>
 #include <llvm/IR/BasicBlock.h>
@@ -43,6 +44,7 @@ const char* typeName(Type type) {
     case Type::Instant: return "Instant";
     case Type::Unit: return "Unit";
     case Type::IO: return "IO";
+    case Type::Result: return "Result";
     case Type::Dynamic: return "动态值";
     case Type::Unknown: return "尚未确定的类型";
   }
@@ -54,6 +56,8 @@ struct TypeNode {
   Type type = Type::Unknown;
   int listElement = -1;
   int ioResult = -1;
+  int success = -1;
+  int error = -1;
 };
 
 struct FunctionType {
@@ -103,7 +107,8 @@ class Inference {
           function->name == "sort_by" ||
           function->name == "same" || function->name == "first" ||
           function->name == "last" || function->name == "is_missing" ||
-          function->name == "require" || function->name == "trim" ||
+          function->name == "require" || function->name == "ok" ||
+          function->name == "err" || function->name == "trim" ||
           function->name == "lowercase" || function->name == "uppercase" ||
           function->name == "starts_with" || function->name == "ends_with" ||
           function->name == "text_contains" ||
@@ -163,7 +168,7 @@ class Inference {
     scopes_.emplace_back();
     infer(*program.result);
 
-    resolveIOResults(true);
+    resolveOutputs();
 
     for (const auto& constraint : lengthConstraints_) {
       Type input = resolved(constraint.input);
@@ -233,6 +238,8 @@ class Inference {
     }
 
     resolveShapes();
+    resolveOutputs(true);
+    resolveShapes();
 
     for (int variable : dataOnlyVariables_)
       if (resolved(variable) == Type::IO)
@@ -243,6 +250,10 @@ class Inference {
         fail("IO 不能作为 List 或 Table 列元素");
       if (resolved(i) == Type::IO && resolved(ioResult(i)) == Type::IO)
         fail("IO 结果不能再是 IO；请在 io 块最后一步执行该 action");
+      if (resolved(i) == Type::Result &&
+          (resolved(resultPayload(i, false)) == Type::IO ||
+           resolved(resultPayload(i, true)) == Type::IO))
+        fail("Result 载荷不能是 IO；请使用 IO<Result<T, E>>");
     }
 
     for (int variable : plusVariables_) {
@@ -255,8 +266,9 @@ class Inference {
     for (int variable : equalityVariables_) {
       if (resolved(variable) == Type::IO) fail("IO 不允许比较");
       if (resolved(variable) == Type::List || resolved(variable) == Type::Record ||
-          resolved(variable) == Type::Table || resolved(variable) == Type::Regex)
-        fail("列表、Record、Table 和 Regex 不能使用 == 或 != 整体比较，请使用 same");
+          resolved(variable) == Type::Table || resolved(variable) == Type::Regex ||
+          resolved(variable) == Type::Result)
+        fail("列表、Record、Table、Regex 和 Result 不能使用 == 或 != 整体比较，请使用 same");
     }
     for (int variable : orderedVariables_) {
       Type type = resolved(variable);
@@ -311,6 +323,10 @@ class Inference {
     return resolved(ioResult(expressions_.at(&expr)));
   }
 
+  Type resultPayloadType(const Expr& expr, bool error) {
+    return resolved(resultPayload(expressions_.at(&expr), error));
+  }
+
   Type listElementType(const ListExpr& expr) {
     return resolved(listElement(expressions_.at(&expr), "列表"));
   }
@@ -361,6 +377,7 @@ class Inference {
 
  private:
   std::vector<TypeNode> nodes_;
+  std::size_t typeRevision_ = 0;
   std::unordered_map<const Expr*, int> expressions_;
   std::unordered_map<std::string, FunctionType> functions_;
   std::unordered_map<std::string, const Function*> definitions_;
@@ -414,8 +431,9 @@ class Inference {
   std::unordered_set<std::string> presenceAnalyzedFunctions_;
   bool presenceMayEscape_ = false;
   std::vector<int> dataOnlyVariables_;
-  std::vector<UnaryConstraint> ioResults_;
-  std::unordered_set<std::size_t> resolvedIOResults_;
+  struct OutputConstraint { int input; int result; Type wrapper; };
+  std::vector<OutputConstraint> outputConstraints_;
+  std::unordered_set<std::size_t> resolvedOutputs_;
   std::vector<const Function*> inferenceOrder_;
 
   OptionType optionShape(int variable) {
@@ -427,28 +445,56 @@ class Inference {
       element.optional = true;
       shape.element = std::make_shared<const OptionType>(std::move(element));
     }
+    if (shape.kind == Type::Result) {
+      auto success = optionShape(resultPayload(variable, false));
+      auto error = optionShape(resultPayload(variable, true));
+      success.optional = error.optional = true;
+      shape.element = std::make_shared<const OptionType>(std::move(success));
+      shape.error = std::make_shared<const OptionType>(std::move(error));
+    }
     return shape;
   }
 
-  void resolveIOResults(bool final = false) {
-    std::vector<unsigned char> visited(ioResults_.size());
+  void resolveOutputs(bool final = false) {
+    // Field lookup and wrapper elimination constrain one another, e.g.
+    // require(record.result).field. Resolve known constraints before choosing
+    // the ordinary-T interpretation of an otherwise unknown require input.
+    std::size_t revision;
+    do {
+      revision = typeRevision_;
+      resolveFixedFields();
+      for (std::size_t i = 0; i < outputConstraints_.size(); ++i) {
+        if (resolvedOutputs_.count(i)) continue;
+        const auto& constraint = outputConstraints_[i];
+        if (resolved(constraint.input) == Type::Unknown) continue;
+        int payload = constraint.input;
+        if (resolved(payload) == constraint.wrapper)
+          payload = constraint.wrapper == Type::IO ? ioResult(payload) : resultPayload(payload, false);
+        unify(constraint.result, payload, "解包的结果");
+        resolvedOutputs_.insert(i);
+      }
+    } while (revision != typeRevision_);
+    if (!final) return;
+    std::vector<unsigned char> visited(outputConstraints_.size());
     std::function<void(std::size_t)> visit = [&](std::size_t index) {
-      if (visited[index] == 2 || resolvedIOResults_.count(index)) return;
-      if (visited[index] == 1) fail("IO 结果存在循环类型约束");
+      if (visited[index] == 2 || resolvedOutputs_.count(index)) return;
+      if (visited[index] == 1) fail("结果存在循环类型约束");
       visited[index] = 1;
-      int input = ioResults_[index].input;
-      for (std::size_t other = 0; other < ioResults_.size(); ++other)
-        if (other != index && find(ioResults_[other].result) == find(input))
+      int input = outputConstraints_[index].input;
+      for (std::size_t other = 0; other < outputConstraints_.size(); ++other)
+        if (other != index && find(outputConstraints_[other].result) == find(input))
           visit(other);
       if (final || resolved(input) != Type::Unknown) {
-        unify(ioResults_[index].result,
-              resolved(input) == Type::IO ? ioResult(input) : input,
-              "io 的最终结果");
-        resolvedIOResults_.insert(index);
+        Type wrapper = outputConstraints_[index].wrapper;
+        int payload = input;
+        if (resolved(input) == wrapper)
+          payload = wrapper == Type::IO ? ioResult(input) : resultPayload(input, false);
+        unify(outputConstraints_[index].result, payload, "解包的结果");
+        resolvedOutputs_.insert(index);
       }
       visited[index] = 2;
     };
-    for (std::size_t i = 0; i < ioResults_.size(); ++i) visit(i);
+    for (std::size_t i = 0; i < outputConstraints_.size(); ++i) visit(i);
   }
 
   void collectCalls(const Expr& expr, std::unordered_set<std::string>& calls) const {
@@ -500,6 +546,9 @@ class Inference {
       collectCalls(*conditional->condition, calls);
       collectCalls(*conditional->thenValue, calls);
       collectCalls(*conditional->elseValue, calls);
+    } else if (auto* match = dynamic_cast<const MatchExpr*>(&expr)) {
+      collectCalls(*match->subject, calls);
+      for (const auto& arm : match->arms) collectCalls(*arm.body, calls);
     }
   }
 
@@ -596,6 +645,7 @@ class Inference {
     Type old = nodes_[root].type;
     if (old != Type::Unknown && old != type)
       fail(contextName + "需要" + typeName(type) + "，但这里得到的是" + typeName(old));
+    if (old != type) ++typeRevision_;
     nodes_[root].type = type;
   }
 
@@ -613,6 +663,18 @@ class Inference {
     if (nodes_[root].ioResult < 0)
       nodes_[root].ioResult = newVariable();
     return nodes_[root].ioResult;
+  }
+
+  int resultPayload(int variable, bool error) {
+    bind(variable, Type::Result, "Result 构造/模式");
+    int root = find(variable);
+    int payload = error ? nodes_[root].error : nodes_[root].success;
+    if (payload < 0) {
+      payload = newVariable();
+      if (error) nodes_[root].error = payload;
+      else nodes_[root].success = payload;
+    }
+    return payload;
   }
 
   unsigned listRank(int variable) {
@@ -680,6 +742,8 @@ class Inference {
         if (!seen.insert(current).second) continue;
         if (nodes_[current].listElement >= 0) pending.push_back(nodes_[current].listElement);
         if (nodes_[current].ioResult >= 0) pending.push_back(nodes_[current].ioResult);
+        if (nodes_[current].success >= 0) pending.push_back(nodes_[current].success);
+        if (nodes_[current].error >= 0) pending.push_back(nodes_[current].error);
       }
       return false;
     };
@@ -691,16 +755,23 @@ class Inference {
     int rightElement = nodes_[rightRoot].listElement;
     int leftIO = nodes_[leftRoot].ioResult;
     int rightIO = nodes_[rightRoot].ioResult;
+    int leftSuccess = nodes_[leftRoot].success, rightSuccess = nodes_[rightRoot].success;
+    int leftError = nodes_[leftRoot].error, rightError = nodes_[rightRoot].error;
     if (leftType != Type::Unknown && rightType != Type::Unknown && leftType != rightType)
       fail(contextName + "两边的种类不同：一边是" + typeName(leftType) +
            "，另一边是" + typeName(rightType));
     nodes_[rightRoot].parent = leftRoot;
+    ++typeRevision_;
     if (leftType == Type::Unknown) nodes_[leftRoot].type = rightType;
     if (leftElement < 0) nodes_[leftRoot].listElement = rightElement;
     else if (rightElement >= 0)
       unify(leftElement, rightElement, contextName + "的列表元素");
     if (leftIO < 0) nodes_[leftRoot].ioResult = rightIO;
     else if (rightIO >= 0) unify(leftIO, rightIO, contextName + "的 IO 结果");
+    if (leftSuccess < 0) nodes_[leftRoot].success = rightSuccess;
+    else if (rightSuccess >= 0) unify(leftSuccess, rightSuccess, contextName + "的 ok 载荷");
+    if (leftError < 0) nodes_[leftRoot].error = rightError;
+    else if (rightError >= 0) unify(leftError, rightError, contextName + "的 err 载荷");
     auto rightShape = shapes_.find(rightRoot);
     if (rightShape != shapes_.end()) {
       Shape moved = std::move(rightShape->second);
@@ -766,6 +837,10 @@ class Inference {
       }
     }
 
+    resolveFixedFields();
+  }
+
+  void resolveFixedFields() {
     for (const auto& access : fixedAccesses_) {
       auto foundShape = shapes_.find(find(access.object));
       if (foundShape == shapes_.end()) continue;
@@ -802,7 +877,7 @@ class Inference {
     }
     if (auto* final = dynamic_cast<const IOResultExpr*>(&expr)) {
       int input = infer(*final->value);
-      if (resolved(input) == Type::Unknown) ioResults_.push_back({input, result});
+      if (resolved(input) == Type::Unknown) outputConstraints_.push_back({input, result, Type::IO});
       else unify(result, resolved(input) == Type::IO ? ioResult(input) : input,
                  "io 的最终结果");
       return result;
@@ -872,6 +947,21 @@ class Inference {
       int body = infer(*let->body);
       scopes_.pop_back();
       unify(result, body, "局部公式“" + let->name + "”");
+      return result;
+    }
+    if (auto* match = dynamic_cast<const MatchExpr*>(&expr)) {
+      int subject = infer(*match->subject);
+      for (const auto& arm : match->arms) {
+        int bound = subject;
+        if (resultPattern(arm.pattern))
+          bound = resultPayload(subject, arm.pattern.kind == MatchPattern::Kind::Err);
+        if (arm.pattern.literal)
+          unify(subject, infer(*arm.pattern.literal), "match 字面量模式");
+        scopes_.emplace_back();
+        if (bindsName(arm.pattern)) scopes_.back().emplace(arm.pattern.name, bound);
+        unify(result, infer(*arm.body), "match 分支结果");
+        scopes_.pop_back();
+      }
       return result;
     }
     if (auto* conditional = dynamic_cast<const IfExpr*>(&expr)) {
@@ -1177,7 +1267,17 @@ class Inference {
       }
       if (call->callee == "require") {
         if (call->args.size() != 1) fail("require 需要 1 个值");
-        unify(result, infer(*call->args[0]), "require 的结果");
+        int input = infer(*call->args[0]);
+        outputConstraints_.push_back({input, result, Type::Result});
+        resolveOutputs();
+        return result;
+      }
+      if (call->callee == "ok" || call->callee == "err") {
+        if (call->args.size() != 1) fail(call->callee + " 需要 1 个值");
+        int payload = infer(*call->args[0]);
+        unify(resultPayload(result, call->callee == "err"), payload,
+              call->callee + " 的载荷");
+        resultPayload(result, call->callee != "err");
         return result;
       }
       if (call->callee == "row_count") {
@@ -1440,7 +1540,7 @@ class Inference {
                 "传给函数“" + call->callee + "”的参数“" +
                     definition.params[slot].name + "”");
       unify(result, found->second.result, "函数“" + call->callee + "”的结果");
-      resolveIOResults();
+      resolveOutputs();
       return result;
     }
     fail("编译器暂时不能理解这个表达式");
@@ -1511,6 +1611,31 @@ class Inference {
       presenceScopes_.back().emplace(let->name, value);
       result = presenceOf(*let->body);
       presenceScopes_.pop_back();
+    } else if (auto* match = dynamic_cast<const MatchExpr*>(&expr)) {
+      Presence input = presenceOf(*match->subject);
+      MatchCoverage covered;
+      using Kind = MatchPattern::Kind;
+      for (const auto& arm : match->arms) {
+        Presence narrowed = input;
+        if (arm.pattern.kind == Kind::Missing) narrowed = kMissing;
+        else if (resultPattern(arm.pattern) || arm.pattern.kind == Kind::Present ||
+                 arm.pattern.kind == Kind::Literal)
+          narrowed = kPresent;
+        else {
+          if (covered.missing) narrowed &= ~kMissing;
+          if (covered.present) narrowed &= ~kPresent;
+          if (!narrowed) narrowed = kMaybeMissing;
+        }
+        if (arm.pattern.literal) presenceOf(*arm.pattern.literal);
+        presenceScopes_.emplace_back();
+        if (auto* variable = dynamic_cast<const VariableExpr*>(match->subject.get()))
+          presenceScopes_.back()[variable->name] = narrowed;
+        if (bindsName(arm.pattern)) presenceScopes_.back()[arm.pattern.name] =
+            resultPattern(arm.pattern) ? kMaybeMissing : narrowed;
+        result |= presenceOf(*arm.body);
+        presenceScopes_.pop_back();
+        covered.add(arm.pattern);
+      }
     } else if (auto* conditional = dynamic_cast<const IfExpr*>(&expr)) {
       Presence condition = presenceOf(*conditional->condition);
       const VariableExpr* refined = nullptr;
@@ -1597,9 +1722,12 @@ class Inference {
       } else if (call->callee == "is_missing") {
         presenceOf(*call->args[0]);
         result = kPresent;
-      } else if (call->callee == "require") {
+      } else if (call->callee == "ok" || call->callee == "err") {
         presenceOf(*call->args[0]);
         result = kPresent;
+      } else if (call->callee == "require") {
+        presenceOf(*call->args[0]);
+        result = expressionType(*call->args[0]) == Type::Result ? kMaybeMissing : kPresent;
       } else if (call->callee == "first" || call->callee == "last") {
         presenceOf(*call->args[0]);
         result = kMaybeMissing;
@@ -1827,6 +1955,7 @@ struct CodeGenerator::Impl {
       case Type::Regex: return llvm::PointerType::get(context, 0);
       case Type::Instant: return llvm::PointerType::get(context, 0);
       case Type::IO: return llvm::PointerType::get(context, 0);
+      case Type::Result: return llvm::PointerType::get(context, 0);
       case Type::Dynamic: return taggedValueType();
       case Type::Unknown: break;
     }
@@ -2070,6 +2199,7 @@ struct CodeGenerator::Impl {
       case Type::Unit: return 7;
       case Type::IO: return 8;
       case Type::Instant: return 9;
+      case Type::Result: return 10;
       case Type::Dynamic: break;
       case Type::Unknown: break;
     }
@@ -2089,7 +2219,7 @@ struct CodeGenerator::Impl {
     if (value.type != Type::Text && value.type != Type::List &&
         value.type != Type::Record && value.type != Type::Table &&
         value.type != Type::Dynamic && value.type != Type::Regex &&
-        value.type != Type::Instant && value.type != Type::IO)
+        value.type != Type::Instant && value.type != Type::IO && value.type != Type::Result)
       return value;
     auto parts = dynamicParts(value);
     auto adopt = external("lan_arc_adopt", builder.getVoidTy(),
@@ -3880,6 +4010,119 @@ struct CodeGenerator::Impl {
     return {phi, resultType, resultPresence};
   }
 
+  llvm::Value* resultIsOk(const TypedValue& value) {
+    auto test = external("lan_result_is_ok", builder.getInt32Ty(), {llvmType(Type::Result)});
+    return builder.CreateICmpNE(builder.CreateCall(test, {rawPayload(value)}), builder.getInt32(0));
+  }
+
+  TypedValue resultPayload(const TypedValue& value, Type type) {
+    auto* slot = builder.CreateAlloca(taggedValueType(), nullptr, "result.payload");
+    auto get = external("lan_result_payload", builder.getVoidTy(),
+                         {llvmType(Type::Result), llvmType(Type::Text)});
+    builder.CreateCall(get, {rawPayload(value), slot});
+    return decodeLookupValue(builder.getTrue(), builder.CreateLoad(taggedValueType(), slot), type);
+  }
+
+  TypedValue emitResult(const CallExpr& call) {
+    auto payload = emitExpr(*call.args[0]);
+    auto parts = dynamicParts(payload);
+    auto construct = external("lan_result_new", llvmType(Type::Result),
+        {builder.getInt32Ty(), builder.getInt32Ty(), builder.getDoubleTy(), llvmType(Type::Text)});
+    auto* value = builder.CreateCall(construct,
+        {builder.getInt32(call.callee == "ok"), parts[0], parts[1], parts[2]}, "result");
+    return {adoptHeap(value, Type::Result), Type::Result, kPresent};
+  }
+
+  TypedValue emitRequire(const CallExpr& call) {
+    auto input = requirePresent(emitExpr(*call.args[0]), "require 的输入");
+    if (input.type != Type::Result) return input;
+    auto* function = builder.GetInsertBlock()->getParent();
+    auto* success = llvm::BasicBlock::Create(context, "require.ok", function);
+    auto* failure = llvm::BasicBlock::Create(context, "require.err", function);
+    builder.CreateCondBr(resultIsOk(input), success, failure);
+    builder.SetInsertPoint(failure);
+    auto format = external("lan_result_error_text", llvmType(Type::Text), {llvmType(Type::Result)});
+    auto* detail = adoptHeap(builder.CreateCall(format, {rawPayload(input)}), Type::Text);
+    emitRuntimeError("require 收到 err", detail);
+    builder.SetInsertPoint(success);
+    return resultPayload(input, inference->expressionType(call));
+  }
+
+  TypedValue emitMatch(const MatchExpr& match) {
+    auto subject = emitExpr(*match.subject);  // Evaluated and owned exactly once.
+    auto type = inference->expressionType(match);
+    auto presence = inference->expressionPresence(match);
+    auto* function = builder.GetInsertBlock()->getParent();
+    auto* merge = llvm::BasicBlock::Create(context, "match.result", function);
+    std::vector<std::pair<llvm::Value*, llvm::BasicBlock*>> incoming;
+    MatchCoverage covered;
+    using Kind = MatchPattern::Kind;
+    for (const auto& arm : match.arms) {
+      auto* branch = llvm::BasicBlock::Create(context, "match.arm", function);
+      auto* next = llvm::BasicBlock::Create(context, "match.next", function);
+      auto kind = arm.pattern.kind;
+      llvm::Value* matches = builder.getTrue();
+      if (kind == Kind::Missing) matches = builder.CreateNot(presentFlag(subject));
+      else if (kind == Kind::Present) matches = presentFlag(subject);
+      else if (resultPattern(arm.pattern)) {
+        auto* success = resultIsOk(subject);
+        matches = builder.CreateAnd(presentFlag(subject),
+            kind == Kind::Ok ? success : builder.CreateNot(success));
+      }
+      else if (kind == Kind::Literal) {
+        // Never inspect the payload of a missing value. In particular it may
+        // be a null Text pointer; boolean 'and' alone would not guard strcmp.
+        auto* compare = llvm::BasicBlock::Create(context, "match.literal", function);
+        builder.CreateCondBr(presentFlag(subject), compare, next);
+        builder.SetInsertPoint(compare);
+        auto literal = emitExpr(*arm.pattern.literal);
+        if (subject.type == Type::Text) {
+          auto strcmpFn = external("strcmp", builder.getInt32Ty(),
+                                   {llvmType(Type::Text), llvmType(Type::Text)});
+          matches = builder.CreateICmpEQ(builder.CreateCall(strcmpFn,
+              {rawPayload(subject), rawPayload(literal)}), builder.getInt32(0));
+        } else if (subject.type == Type::Number) {
+          matches = builder.CreateFCmpOEQ(rawPayload(subject), rawPayload(literal));
+        } else {
+          matches = builder.CreateICmpEQ(rawPayload(subject), rawPayload(literal));
+        }
+      }
+      builder.CreateCondBr(matches, branch, next);
+      builder.SetInsertPoint(branch);
+      Presence narrowed = subject.presence;
+      if (kind == Kind::Missing) narrowed = kMissing;
+      else if (resultPattern(arm.pattern) || kind == Kind::Present ||
+               kind == Kind::Literal || covered.missing)
+        narrowed = kPresent;
+      else if (covered.present) narrowed = kMissing;
+      TypedValue bound = narrowed == kMissing
+          ? TypedValue{missingValue(subject.type), subject.type, kMissing}
+          : narrowed == kPresent
+              ? TypedValue{rawPayload(subject), subject.type, kPresent} : subject;
+      scopes.emplace_back();
+      if (auto* variable = dynamic_cast<const VariableExpr*>(match.subject.get()))
+        scopes.back()[variable->name] = bound;
+      if (bindsName(arm.pattern)) {
+        if (resultPattern(arm.pattern))
+          bound = resultPayload(subject, inference->resultPayloadType(
+              *match.subject, kind == Kind::Err));
+        scopes.back()[arm.pattern.name] = bound;
+      }
+      auto value = convertPresence(emitExpr(*arm.body), presence);
+      scopes.pop_back();
+      incoming.push_back({value.value, builder.GetInsertBlock()});
+      builder.CreateBr(merge);
+      builder.SetInsertPoint(next);
+      covered.add(arm.pattern);
+    }
+    // Static coverage checking guarantees that this edge cannot be taken.
+    builder.CreateUnreachable();
+    builder.SetInsertPoint(merge);
+    auto* result = builder.CreatePHI(encodedType(type, presence), incoming.size(), "matched");
+    for (const auto& [value, block] : incoming) result->addIncoming(value, block);
+    return {result, type, presence};
+  }
+
   TypedValue emitLogical(const BinaryExpr& binary) {
     auto lhs = requirePresent(emitExpr(*binary.lhs), "逻辑运算左侧");
     auto* function = builder.GetInsertBlock()->getParent();
@@ -4268,6 +4511,7 @@ struct CodeGenerator::Impl {
       return convertPresence(result, presence);
     }
     if (auto* conditional = dynamic_cast<const IfExpr*>(&expr)) return emitIf(*conditional);
+    if (auto* match = dynamic_cast<const MatchExpr*>(&expr)) return emitMatch(*match);
     if (auto* propagate = dynamic_cast<const PropagateExpr*>(&expr))
       return emitPropagate(*propagate);
     if (auto* field = dynamic_cast<const FieldExpr*>(&expr)) {
@@ -4372,6 +4616,7 @@ struct CodeGenerator::Impl {
     if (auto* collection = dynamic_cast<const CollectionExpr*>(&expr))
       return emitCollection(*collection);
     if (auto* call = dynamic_cast<const CallExpr*>(&expr)) {
+      if (call->callee == "ok" || call->callee == "err") return emitResult(*call);
       if (isIOBuiltin(call->callee)) return emitStandardIOBuiltin(*call);
       if (isRegexBuiltin(call->callee)) return emitRegexBuiltin(*call);
       if (call->callee == "is_missing") {
@@ -4379,8 +4624,7 @@ struct CodeGenerator::Impl {
         return {builder.CreateNot(presentFlag(value), "is.missing"),
                 Type::Boolean, kPresent};
       }
-      if (call->callee == "require")
-        return requirePresent(emitExpr(*call->args[0]), "require 的输入");
+      if (call->callee == "require") return emitRequire(*call);
       if (call->callee == "same") return emitSame(*call);
       if (call->callee == "table") return emitTableValidation(*call);
       if (call->callee == "row_count") return emitTableRowCount(*call);
@@ -4578,10 +4822,8 @@ struct CodeGenerator::Impl {
       auto dynamicPrint = external("lan_value_print", builder.getVoidTy(),
                                    {builder.getInt32Ty(), builder.getDoubleTy(),
                                     llvmType(Type::Text)});
-      builder.CreateCall(dynamicPrint,
-                         {builder.CreateExtractValue(result.value, 0),
-                          builder.CreateExtractValue(result.value, 1),
-                          builder.CreateExtractValue(result.value, 2)});
+      auto parts = dynamicParts(result);
+      builder.CreateCall(dynamicPrint, {parts[0], parts[1], parts[2]});
       builder.CreateCall(printfFn, {builder.CreateGlobalString("\n")});
     }
   }
