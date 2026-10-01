@@ -1,32 +1,34 @@
 # Lan
 
-Lan 是一门简单、简洁、优雅的通用脚本语言，采用纯函数式计算与显式 IO，使用 LLVM 编译为本地可执行文件。
+[English](README.md) | [简体中文](README.zh-CN.md)
 
-Lan 面向日常脚本、自动化和数据处理，不局限于特定业务领域，也不以自然语言或无代码工具为目标。
-语言以不可变数据、表达式和集合管道为核心，通过标准库逐步扩展应用范围。
+Lan is a simple, concise, elegant general-purpose scripting language with purely functional computation and explicit IO. It uses LLVM to compile to native executables.
 
-通用脚本语言是应用定位，不表示所有能力均已实现：当前仍禁止递归和通用 `for`、`while` 循环，
-集合计算使用有限管道；已支持标准输入输出、命令行参数、时间和随机数，文件读写等能力仍在规划中。
+Lan is intended for everyday scripting, automation, and data processing. It is not limited to a particular business domain, nor is it intended to be a natural-language or no-code tool.
+The language centers on immutable data, expressions, and collection pipelines, with its range of applications expanding through the standard library.
 
-写 Lan 程序很像组织数学公式或数据处理管道：给事物起名字、描述计算关系，然后在文件最后写出想得到的结果。
+General-purpose scripting describes its intended use, not a claim that every capability is implemented: recursion and general `for` and `while` loops are still prohibited,
+and collection computations use finite pipelines. Standard input and output, command-line arguments, time, and random numbers are supported; capabilities such as file reading and writing are still planned.
 
-为了集中说明单项规则，部分代码块只展示函数或代码块内部的片段；其中出现的相关名称假定已经在外围定义。
+Writing a Lan program is much like arranging mathematical formulas or data-processing pipelines: name things, describe their computational relationships, then write the desired result at the end of the file.
 
-## 五分钟入门
+To focus on individual rules, some code blocks show only fragments from inside a function or block. Any relevant names in those fragments are assumed to have been defined in the surrounding scope.
 
-最简单的程序就是一个值：
+## Five-Minute Introduction
+
+The simplest program is just a value:
 
 ```lan
 1 + 2 * 3
 ```
 
-运行后显示：
+Running it displays:
 
 ```text
 7
 ```
 
-函数是一条带输入的公式：
+A function is a formula with inputs:
 
 ```lan
 square(x) = x * x
@@ -34,7 +36,7 @@ square(x) = x * x
 square(5)
 ```
 
-条件使用缩进表示层次：
+Conditionals use indentation to show nesting:
 
 ```lan
 price(original, member) =
@@ -46,7 +48,7 @@ price(original, member) =
 price(100, true)
 ```
 
-函数内部可以给中间结果起名字：
+Inside a function, you can name intermediate results:
 
 ```lan
 circle_area(radius) =
@@ -57,12 +59,12 @@ circle_area(radius) =
 circle_area(10)
 ```
 
-这些名称是不可变的公式，不是可以反复修改的存储格。
+These names are immutable formulas, not storage cells that can be modified repeatedly.
 
-### 缩进与花括号
+### Indentation and Braces
 
-多行块可以使用缩进，也可以显式使用花括号和分号。下面两段程序生成完全相同的
-语法树和 LLVM IR：
+Multiline blocks can use indentation or explicit braces and semicolons. The following two programs produce exactly the same
+syntax tree and LLVM IR:
 
 ```lan
 calculate(value) =
@@ -79,12 +81,12 @@ calculate(value) = {
 }
 ```
 
-花括号块中的每个中间绑定后必须写 `;`，最后一个结果表达式后的分号可写可不写。
-缩进形式使用 layout rule：同级行之间插入虚拟分号，退出缩进时插入虚拟右花括号；
-没有开启新块的更深缩进行作为上一表达式的续行。虚拟标记与显式 `{`、`;`、`}`
-共用同一套块文法。换行在显式花括号内部只用于排版，不分隔表达式。
-`if` 和 `else` 后面都不写冒号；
-条件也有两种等价写法：
+Inside a braced block, every intermediate binding must end with `;`; the semicolon after the final result expression is optional.
+The indented form uses a layout rule: virtual semicolons are inserted between lines at the same level, and a virtual closing brace is inserted when leaving an indentation level.
+A more deeply indented line that does not open a new block continues the preceding expression. Virtual tokens and explicit `{`, `;`, and `}`
+share the same block grammar. Within explicit braces, newlines are only for formatting and do not separate expressions.
+Neither `if` nor `else` is followed by a colon.
+Conditionals also have two equivalent forms:
 
 ```lan
 choose(value) =
@@ -104,16 +106,16 @@ choose(value) = {
 }
 ```
 
-`{name: value}` 仍然是 Record，冒号区分 Record 字段，等号和分号区分代码块绑定：
+`{name: value}` is still a Record: colons distinguish Record fields, while equals signs and semicolons distinguish bindings in a code block:
 
 ```lan
 make_person() = {name: "小明", age: 20}
 calculation() = {age = 20; age + 1}
 ```
 
-### 默认参数
+### Default Parameters
 
-默认参数必须放在所有必填参数后面，调用时可以省略末尾的默认参数：
+Default parameters must follow all required parameters. Trailing default parameters can be omitted when calling a function:
 
 ```lan
 greeting(name, punctuation = "!") = "你好，" + name + punctuation
@@ -122,7 +124,7 @@ greeting("小明")
 greeting("小红", "？")
 ```
 
-默认表达式可以引用它前面的参数：
+A default expression can reference parameters that precede it:
 
 ```lan
 end_from(start, end = start + 10) = end
@@ -130,13 +132,13 @@ end_from(start, end = start + 10) = end
 end_from(5)  # 15
 ```
 
-以下定义会被拒绝，因为必填参数出现在默认参数后面：
+The following definition is rejected because a required parameter follows a default parameter:
 
 ```lan
 invalid(first = 1, second) = first + second
 ```
 
-省略参数和传入 `missing` 是两件不同的事。默认值只在参数被省略时计算：
+Omitting an argument and passing `missing` are different. A default value is evaluated only when the argument is omitted:
 
 ```lan
 keep(value = 10) = value
@@ -145,7 +147,7 @@ keep()        # 10
 keep(missing) # missing
 ```
 
-调用也可以在位置参数之后使用命名参数，从而跳过前面带默认值的参数：
+Calls can also use named arguments after positional arguments to skip earlier parameters that have defaults:
 
 ```lan
 greeting(name, punctuation = "!", excited = false) =
@@ -158,13 +160,13 @@ greeting(name, punctuation = "!", excited = false) =
 greeting("小明", excited = true)
 ```
 
-位置参数必须放在命名参数之前。同一个参数不能重复传入；未知参数名和缺少必填参数
-都会在编译期报错。
+Positional arguments must precede named arguments. The same parameter cannot be supplied twice; unknown parameter names and missing required arguments
+are compile-time errors.
 
-### 同名名称与遮蔽
+### Reusing Names and Shadowing
 
-同一缩进层级可以再次使用已有名称。右边的公式先读取旧值，然后新的不可变绑定
-遮蔽旧绑定：
+An existing name can be reused at the same indentation level. The formula on the right reads the old value first, and the new immutable binding
+then shadows the old one:
 
 ```lan
 next() =
@@ -175,9 +177,9 @@ next() =
 next()
 ```
 
-结果是 `2`。这不是把原来的 `value` 改成 `2`，而是创建了一个新的 `value`。
+The result is `2`. This creates a new `value` rather than changing the original `value` to `2`.
 
-内层作用域也可以遮蔽外层名称；离开内层后，外层绑定仍然存在：
+An inner scope can also shadow an outer name; the outer binding remains after leaving the inner scope:
 
 ```lan
 example(flag) =
@@ -189,12 +191,12 @@ example(flag) =
     value
 ```
 
-函数名和同一个函数的参数名仍然不能重复。名称查找始终选择当前位置向外遇到的
-最近绑定。
+Function names must still be unique, as must parameter names within a single function. Name lookup always selects the nearest binding
+found when searching outward from the current position.
 
-## 数字、是非与文字
+## Numbers, Booleans, and Text
 
-Lan 自动判断值的种类，用户不需要写 `i64`、`f64` 或返回类型。
+Lan infers the kinds of values automatically. Users do not need to write `i64`, `f64`, or return types.
 
 ```lan
 adult(age) = age >= 18
@@ -211,50 +213,50 @@ message(name, age) =
 message("小明", 20)
 ```
 
-当前支持：
+Currently supported:
 
-- 数字：`10`、`3.14`，底层使用 LLVM `double`
-- 是/否值：`true`、`false`
-- Unit：`()`，确定存在但没有额外内容的单一值
-- 文字：`"Hello"`、`"你好"`
-- 单类型列表：`[1, 2, 3]`、`["红", "绿", "蓝"]`
-- Record：`{name: "小明", age: 20}`
-- Result：`ok(value)` / `err(error)`，类型为 `Result<T, E>`
-- 数字计算：`+`、`-`、`*`、`/`、`%`
-- 文字连接：`"Hello, " + name`
-- 比较：`==`、`!=`、`<`、`>`、`<=`、`>=`
-- 逻辑：`and`、`or`、`not`，也兼容 `&&`、`||`、`!`
-- 中文或英文名称
+- Numbers: `10`, `3.14`, represented as LLVM `double`
+- Boolean values: `true`, `false`
+- Unit: `()`, a single value that is present but has no additional content
+- Text: `"Hello"`, `"你好"`
+- Homogeneous lists: `[1, 2, 3]`, `["红", "绿", "蓝"]`
+- Record: `{name: "小明", age: 20}`
+- Result: `ok(value)` / `err(error)`, with type `Result<T, E>`
+- Arithmetic: `+`, `-`, `*`, `/`, `%`
+- Text concatenation: `"Hello, " + name`
+- Comparisons: `==`, `!=`, `<`, `>`, `<=`, `>=`
+- Logic: `and`, `or`, `not`, also accepting `&&`, `||`, `!`
+- Chinese or English names
 
-### Unit 与 missing
+### Unit and missing
 
-`Unit` 只有一个值 `()`，用于表示完成但没有有意义的返回内容。它不是 `missing`，
-也不是 `false`、空 Record 或空 List：
+`Unit` has just one value, `()`, representing completion without meaningful return content. It is not `missing`,
+`false`, an empty Record, or an empty List:
 
 ```lan
 finish(found) = if found { () } else { missing }
 
 finish(true)           # ()
-finish(false)?         # missing；最终结果显式允许缺失
+finish(false)?         # missing; the final result explicitly permits absence
 finish(false) ?? ()    # ()
 is_missing(())         # false
 same((), missing)     # false
 ```
 
-Unit 可以用于函数参数、默认值、返回值、Record 字段和 `List<Unit>`（包括 Table 列）。
-它遵循既有的 `?`、`??` 和 `require` 规则；相等比较也支持 List 逐元素运算和广播。
-Unit 不能参与算术或用作 `if` 条件，也不能与 Boolean 混成单类型 List。
-`()` 是单元字面量，输出与 `to_text(())` 都使用文字 `()`。`unit` 不再是保留字，
-可以用作变量名、函数名或字段名。类型仍称为 `Unit`，不引入其他元组类型。
+Unit can be used in function parameters, default values, return values, Record fields, and `List<Unit>` (including Table columns).
+It follows the existing `?`, `??`, and `require` rules; equality comparisons also support elementwise List operations and broadcasting.
+Unit cannot participate in arithmetic or serve as an `if` condition, and it cannot be mixed with Boolean in a homogeneous List.
+`()` is the unit literal; both output and `to_text(())` use the text `()`. `unit` is no longer a reserved word
+and can be used as a variable, function, or field name. The type is still called `Unit`; no other tuple types are introduced.
 
-底层 Unit 不分配堆对象：确定存在时为 LLVM 常量，可能缺失时用 `i1` 表示存在状态；
-紧凑 `List<Unit>` 每个元素占一个存在标记字节，动态值使用独立的 Unit 标签。
-它也用于表示 `IO<Unit>` 执行完成但没有额外结果。
+Unit does not allocate a heap object internally: it is an LLVM constant when definitely present, and uses `i1` to represent presence when it may be missing.
+A compact `List<Unit>` uses one presence-flag byte per element, while dynamic values use a separate Unit tag.
+Unit also represents the completion of `IO<Unit>` with no additional result.
 
-### IO action 与顺序执行
+### IO Actions and Sequential Execution
 
-`io` 块构造一个延迟执行的 `IO<T>` 值。构造时只捕获用到的不可变绑定，不运行块内
-代码；`<-` 执行 action 并绑定结果，文件最终结果为 IO 时由程序入口执行一次：
+An `io` block constructs a deferred `IO<T>` value. Construction captures only the immutable bindings it uses, without running the code
+inside the block. `<-` executes an action and binds its result; when the file's final result is IO, the program entry point executes it once:
 
 ```lan
 number(value) = io { value }
@@ -267,29 +269,29 @@ program() = io
 program()  # 12
 ```
 
-同一块也可以写成 `io { first <- number(10); next = first + 2; number(next) }`。
-规则如下：
+The same block can also be written as `io { first <- number(10); next = first + 2; number(next) }`.
+The rules are:
 
-- `name = expression` 是纯绑定，右侧即使是 IO 也不会自动执行。
-- `name <- action` 执行 IO；块内非末尾的裸表达式也必须是 IO，执行后丢弃结果。
-- 若非末尾 IO 步骤返回 Result，不能隐式丢弃：必须绑定后处理，或写 `_ <- action` 明确忽略。
-- 最后一个表达式若为纯值则作为结果，若为 IO 则执行它并使用结果，不产生嵌套 IO。
-- 未使用的 action 不执行；同一 action 多次用于 `<-` 时，每次都会重新执行，不缓存结果。
-- 每个步骤按顺序执行，错误立即停止后续步骤。`?` 只结束所在步骤的表达式，不跳过整个块。
-- IO 可以作为函数参数、默认值、返回值及局部绑定；不能放进 List/Record/Table，不能比较、
-  调用 `same` 或转换为 Text。`<-` 只能出现在 `io` 块的步骤位置。
+- `name = expression` is a pure binding. Even if the right-hand side is IO, it is not executed automatically.
+- `name <- action` executes IO. Bare expressions before the end of a block must also be IO; they are executed and their results discarded.
+- A nonfinal IO step that returns Result cannot be discarded implicitly: bind and handle it, or write `_ <- action` to ignore it explicitly.
+- If the last expression is a pure value, it becomes the result. If it is IO, it is executed and its result is used, without producing nested IO.
+- Unused actions do not run. Using the same action with `<-` multiple times executes it again each time, without caching the result.
+- Steps execute in order, and an error immediately stops subsequent steps. `?` ends only the expression in its own step, not the entire block.
+- IO can be a function parameter, default value, return value, or local binding. It cannot be placed in a List/Record/Table, compared,
+  passed to `same`, or converted to Text. `<-` can appear only in a step position inside an `io` block.
 
-action 自身可能为 missing 时编译拒绝执行，可以先用 `??` 选择备用 action。执行成功后产生的
-missing 是普通数据，后续步骤可用 `??`、`is_missing` 或 `require` 处理；程序入口显示
-IO 的最终数据结果时允许输出 `missing`。纯程序仍沿用最终 missing 必须显式 `?` 的规则。
-`err(error)` 也是普通返回数据，不等于运行时拒绝，不会自动停止 IO 后续步骤；`<-` 只执行
-IO，不解包 Result。现有标准 IO 的宿主错误仍运行时拒绝，尚未改成可恢复 Result 接口。
+Execution is rejected at compile time if the action itself may be missing; use `??` first to select a fallback action. A missing value produced
+by successful execution is ordinary data that later steps can handle with `??`, `is_missing`, or `require`. The program entry point may display
+`missing` as the final data result of IO. Pure programs retain the rule that a final missing value requires an explicit `?`.
+`err(error)` is also ordinary return data: it is not a runtime rejection and does not automatically stop later IO steps. `<-` executes
+IO without unwrapping Result. Host errors in the existing standard IO functions still cause runtime rejection; they have not yet been converted to recoverable Result interfaces.
 
-已实现以下标准 IO 函数，调用只构造 action，执行时才访问外部环境：
+The following standard IO functions are implemented. Calling them only constructs an action; the external environment is accessed when it executes:
 
-- `read_stdin() -> IO<Text>`：读取到 EOF，保留换行；空输入返回空 Text。
-- `write_stdout(text) -> IO<Unit>`：写入原文，不自动加换行，返回前刷新输出。
-- `arguments() -> IO<List<Text>>`：返回不含可执行文件名的命令行参数快照。
+- `read_stdin() -> IO<Text>`: reads to EOF, preserving newlines; empty input returns empty Text.
+- `write_stdout(text) -> IO<Unit>`: writes the text unchanged, without adding a newline, and flushes output before returning.
+- `arguments() -> IO<List<Text>>`: returns a snapshot of command-line arguments excluding the executable name.
 
 ```lan
 io {
@@ -300,19 +302,19 @@ io {
 }
 ```
 
-标准输入最多 8 MiB，必须是有效 UTF-8 且不能包含 NUL；读取可能等待外部输入或 EOF，
-大小限制不代表超时保证。同一读取 action 再次执行时继续消费输入，已经到 EOF 则返回空 Text。
-命令行参数必须是有效 UTF-8，最多 65536 项、合计 8 MiB；空参数会保留。
-IO 错误写入 stderr，包含 action、源码位置和调用链；系统错误还包含 errno，失败后停止后续步骤。
-入口仍自动显示最终结果，包括 `IO<Unit>` 的 `()`；这与 `write_stdout` 的显式输出是两回事。
-文件读写和文件访问权限控制尚未实现。完整规范见
-[`docs/IO_DESIGN.md`](docs/IO_DESIGN.md)。
+Standard input is limited to 8 MiB, must be valid UTF-8, and cannot contain NUL. Reading may wait for external input or EOF;
+the size limit does not guarantee a timeout. Executing the same read action again continues consuming input, or returns empty Text if EOF has already been reached.
+Command-line arguments must be valid UTF-8, with at most 65536 arguments totaling 8 MiB; empty arguments are preserved.
+IO errors are written to stderr with the action, source location, and call chain. System errors also include errno, and failure stops subsequent steps.
+The entry point still automatically displays the final result, including `()` for `IO<Unit>`; this is separate from the explicit output of `write_stdout`.
+File reading and writing and file-access permission controls are not yet implemented. See
+[`docs/IO_DESIGN.md`](docs/IO_DESIGN.md) for the full specification.
 
-### 时间
+### Time
 
-`Instant` 是 UTC 时间线上的瞬间，内部保存整数秒和纳秒，遵循普通 missing 规则。
-它可以保存在 List、Record 和 Table 中，支持比较、`same`、`sort` 和 `sort_by`。
-Instant 与 Number 不隐式转换，也不直接使用 `+`、`-` 做时间算术。
+`Instant` represents an instant on the UTC timeline, internally storing integer seconds and nanoseconds and following the usual missing-value rules.
+It can be stored in Lists, Records, and Tables, and supports comparisons, `same`, `sort`, and `sort_by`.
+Instant and Number do not convert implicitly, and `+` and `-` cannot be used directly for time arithmetic.
 
 ```lan
 {
@@ -326,22 +328,22 @@ Instant 与 Number 不隐式转换，也不直接使用 `+`、`-` 做时间算�
 }
 ```
 
-纯时间函数：
+Pure time functions:
 
-- `parse_time(text) -> Option<Instant>`：解析带 `Z` 或数字 UTC offset 的 RFC 3339
-  时间戳；格式或日期无效返回 missing。
-- `format_time(instant) -> Text`：输出规范 UTC 文本，最多九位小数秒并移除尾零。
-- `time_from_unix(seconds)` / `unix_seconds(instant)`：与 Unix 秒数显式转换。
-- `add_seconds(instant, seconds)`：添加有限秒数，返回新 Instant。
-- `seconds_between(start, end)`：返回 `end - start`，可以为负。
+- `parse_time(text) -> Option<Instant>`: parses an RFC 3339 timestamp with `Z` or a numeric UTC offset;
+  an invalid format or date returns missing.
+- `format_time(instant) -> Text`: produces canonical UTC text with up to nine fractional second digits, removing trailing zeros.
+- `time_from_unix(seconds)` / `unix_seconds(instant)`: explicitly convert to and from Unix seconds.
+- `add_seconds(instant, seconds)`: adds a finite number of seconds and returns a new Instant.
+- `seconds_between(start, end)`: returns `end - start`, which may be negative.
 
-第一阶段采用 Unix 时间模型：UTC 年份范围为 `0000` 至 `9999`，小数秒最多九位；
-不支持闰秒 `:60`、本地时区名称或日历月份运算。输入可用小写 `t`/`z`；`-00:00`
-按 UTC 解析，不保留原 offset。Number 输入的秒数舍入到最近纳秒，中点远离零；
-转换回 Number 受浮点精度限制。时间算术拒绝 missing、非有限数和范围溢出。
-这些函数不隐式广播；批量转换写为 `values |> map(parse_time(.))`。
+The first phase uses the Unix time model: UTC years range from `0000` to `9999`, with up to nine fractional second digits.
+Leap seconds (`:60`), local time-zone names, and calendar-month arithmetic are not supported. Input may use lowercase `t`/`z`; `-00:00`
+is parsed as UTC, and the original offset is not preserved. Seconds supplied as Number are rounded to the nearest nanosecond, with ties away from zero;
+conversion back to Number is subject to floating-point precision limits. Time arithmetic rejects missing, nonfinite numbers, and range overflow.
+These functions do not broadcast implicitly; use `values |> map(parse_time(.))` for batch conversion.
 
-当前时间只能通过延迟 IO action 获取：
+The current time can be obtained only through a deferred IO action:
 
 ```lan
 io {
@@ -352,48 +354,48 @@ io {
 }
 ```
 
-每次执行 `now()` 都重新读取系统实时时钟，不缓存结果。它不是单调计时器，结果可能
-相同或因系统校时倒退。测试时可固定所有 `now()` 的结果：
+Each execution of `now()` reads the system real-time clock again, without caching the result. It is not a monotonic timer: results may
+be equal or move backward if the system clock is adjusted. Tests can fix the result of every `now()` call:
 
 ```sh
 ./build/lanc --run report.lan --fixed-time 2025-06-07T08:09:10Z
 ```
 
-固定时间不进入 `arguments()`。完整规则见
-[`docs/TIME_RANDOM_DESIGN.md`](docs/TIME_RANDOM_DESIGN.md)。
+The fixed time is not included in `arguments()`. See
+[`docs/TIME_RANDOM_DESIGN.md`](docs/TIME_RANDOM_DESIGN.md) for the full rules.
 
-### 随机数
+### Random Numbers
 
-随机操作是延迟执行的 IO action；构造 action 不读取系统熵，也不推进随机序列：
+Random operations are deferred IO actions. Constructing an action neither reads system entropy nor advances the random sequence:
 
 ```lan
 io {
   probability <- random();                 # [0, 1)
   temperature <- random_between(-10, 35);  # [-10, 35)
-  die <- random_integer(1, 6);              # 两端都包含
+  die <- random_integer(1, 6);              # both endpoints included
   item <- choose(["red", missing, "blue"]);
   order <- shuffle([1, 2, 3, 4]);
   {probability: probability, die: die, item: item, order: order}
 }
 ```
 
-`choose` 只在非 missing 元素中等概率选择；空 List 或全 missing List 返回 missing。
-`shuffle` 使用 Fisher–Yates，保留全部元素及 missing 状态。无效边界会在 action 执行时
-拒绝，并且不会消耗随机样本。同一个 action 每执行一次都会取得下一个样本。
+`choose` selects uniformly among non-missing elements; an empty List or an all-missing List returns missing.
+`shuffle` uses Fisher–Yates and preserves all elements and their missing states. Invalid bounds are rejected when the action executes,
+without consuming a random sample. Each execution of the same action obtains the next sample.
 
-默认种子来自操作系统熵源。测试和复现可以指定 `lan-pcg64-v1` 的安全整数种子：
+The default seed comes from the operating system's entropy source. For testing and reproducibility, you can specify a safe-integer seed for `lan-pcg64-v1`:
 
 ```sh
 ./build/lanc --run simulation.lan --random-seed 42
 ```
 
-相同 Lan 版本、种子、输入和 action 顺序产生相同序列。该随机库不用于密码学密钥、
-令牌或安全随机字节。完整规则见 [`docs/TIME_RANDOM_DESIGN.md`](docs/TIME_RANDOM_DESIGN.md)。
+The same Lan version, seed, inputs, and action order produce the same sequence. This random library is not intended for cryptographic keys,
+tokens, or secure random bytes. See [`docs/TIME_RANDOM_DESIGN.md`](docs/TIME_RANDOM_DESIGN.md) for the full rules.
 
-### Text、Number 与转换函数
+### Text, Number, and Conversion Functions
 
-`length` 同时接受 Text 和 List。Text 长度按用户看到的 Unicode grapheme cluster 计算，
-不是 UTF-8 字节数；组合字符和由零宽连接符组成的 emoji 各算一个字符：
+`length` accepts both Text and List. Text length counts user-perceived Unicode grapheme clusters,
+not UTF-8 bytes; combining character sequences and emoji joined by zero-width joiners each count as one character:
 
 ```lan
 length("你好")             # 2
@@ -406,41 +408,41 @@ ends_with("report.csv", ".csv")      # true
 text_contains("report.csv", "port") # true
 ```
 
-`trim` 使用 Unicode White_Space；`lowercase` 和 `uppercase` 使用 Unicode 简单大小写
-映射。`split` 保留首尾和相邻分隔符产生的空 Text，空分隔符会被拒绝：
+`trim` uses Unicode White_Space; `lowercase` and `uppercase` use Unicode simple case
+mappings. `split` preserves empty Text produced by leading, trailing, and adjacent delimiters, and rejects an empty delimiter:
 
 ```lan
 parts = split("a,,c,", ",")  # ["a", "", "c", ""]
 join(parts, "|")             # "a||c|"
 ```
 
-基础 Number 函数只接受标量，不对 List 隐式广播：
+Basic Number functions accept only scalars and do not implicitly broadcast over Lists:
 
 ```lan
 abs(-3.5)              # 3.5
 floor(-1.2)            # -2
 ceil(-1.2)             # -1
-round(2.5)             # 2，使用 ties-to-even
+round(2.5)             # 2, using ties-to-even
 round(12.25, 1)        # 12.2
 clamp(15, 0, 10)       # 10
-numbers |> map(abs(.)) # 明确逐元素调用
+numbers |> map(abs(.)) # explicit elementwise call
 ```
 
-`round` 的小数位数必须是 `-308` 到 `308` 之间的整数值 Number。`clamp` 要求最小值
-不大于最大值。这些函数拒绝 missing 和非有限 Number。
+The number of decimal places for `round` must be an integer-valued Number between `-308` and `308`. `clamp` requires the minimum
+to be no greater than the maximum. These functions reject missing and nonfinite Numbers.
 
-完整数学库还提供正确舍入为 Number 的 `pi`、`e` 和 `tau` 常量，以及以下标量函数：
+The full math library also provides the constants `pi`, `e`, and `tau`, correctly rounded to Number, and the following scalar functions:
 
 ```lan
-sign(-8)             # -1；正负零都返回 0
+sign(-8)             # -1; both positive and negative zero return 0
 sqrt(9)              # 3
 pow(2, 3)            # 8
 exp(0)               # 1
-log(e)               # 1，默认以 e 为底
+log(e)               # 1, using base e by default
 log(8, 2)            # 3
 hypot(3, 4)          # 5
 
-sin(pi / 2)          # 三角函数使用弧度
+sin(pi / 2)          # trigonometric functions use radians
 cos(0)
 tan(0)
 asin(0)
@@ -451,98 +453,98 @@ radians(180)         # pi
 degrees(pi)          # 180
 ```
 
-`sqrt`、`pow`、`log`、`asin` 和 `acos` 会检查定义域；所有数学函数都会拒绝非有限
-输入和非有限结果。数学函数不隐式广播集合，应写成
-`numbers |> map(sqrt(.))`。常量不是关键字，局部绑定可以遮蔽它们。
+`sqrt`, `pow`, `log`, `asin`, and `acos` check their domains; all math functions reject nonfinite
+inputs and nonfinite results. Math functions do not implicitly broadcast over collections; write
+`numbers |> map(sqrt(.))`. Constants are not keywords and can be shadowed by local bindings.
 
-`parse_number` 严格解析完整 Text，只接受十进制及科学计数法，不忽略首尾空白；失败
-返回 missing。`to_text` 接受现有数据值并产生确定的 Text 表示：
+`parse_number` strictly parses the entire Text, accepting only decimal and scientific notation without ignoring leading or trailing whitespace;
+failure returns missing. `to_text` accepts existing data values and produces a deterministic Text representation:
 
 ```lan
 parse_number("-12.5e2")       # -1250
 parse_number("12x") ?? 0      # 0
-require(parse_number(input))   # 需要严格拒绝失败时
+require(parse_number(input))   # when failure must be rejected strictly
 to_text([1, missing, 3])       # "[1, missing, 3]"
 ```
 
-### 正则表达式
+### Regular Expressions
 
-`regex(pattern)` 将 Text 编译为可复用的不透明 Regex，使用 RE2 语法：
+`regex(pattern)` compiles Text into a reusable opaque Regex using RE2 syntax:
 
 ```lan
 digits = regex("[0-9]+")
 
 {
   contains: "item-123" |> regex_contains(digits),  # true
-  matches: "123" |> regex_matches(digits),        # true，要求全文匹配
+  matches: "123" |> regex_matches(digits),        # true; requires a full-text match
   first: "item-123" |> regex_find(digits),         # "123"
   all: "a1 b22" |> regex_find_all(digits),         # ["1", "22"]
   parts: "a, b; c" |> regex_split(regex("[,;] *")) # ["a", "b", "c"]
 }
 ```
 
-模式参数必须是 Regex，不接受隐式的 Text 模式转换；无效模式在运行时拒绝。
-`regex_find` 未匹配时返回 `missing`，`regex_find_all` 返回空 List。
-`regex_split` 保留首尾空片段；空匹配按一个 Unicode code point 前进，例如
-`regex_split("你好", regex(""))` 得到 `["", "你", "好", ""]`。
-切断 UTF-8 字符边界的提取（例如 `regex_find("你", regex("\\C"))`）会被拒绝。
+Pattern arguments must be Regex; Text patterns are not converted implicitly. Invalid patterns are rejected at runtime.
+When no match is found, `regex_find` returns `missing` and `regex_find_all` returns an empty List.
+`regex_split` preserves leading and trailing empty fragments; empty matches advance by one Unicode code point. For example,
+`regex_split("你好", regex(""))` produces `["", "你", "好", ""]`.
+Extractions that cut through a UTF-8 character boundary (such as `regex_find("你", regex("\\C"))`) are rejected.
 
-Regex 支持参数、返回值、List/Record 存储和 ARC。显示为 `<Regex>`，不暴露内部地址；
-`to_text` 拒绝 Regex 及包含 Regex 的集合。`same` 比较原始模式文本，不判断两个不同
-模式是否匹配同一个语言；Regex 不支持 `==`/`!=`。
-普通 missing 参数仍被拒绝，显式 `?` 可以短路。没有隐式广播：
+Regex supports parameters, return values, List/Record storage, and ARC. It is displayed as `<Regex>`, without exposing internal addresses.
+`to_text` rejects Regex and collections containing Regex. `same` compares the original pattern text; it does not determine whether two different
+patterns match the same language. Regex does not support `==`/`!=`.
+Ordinary missing arguments are still rejected; an explicit `?` can short-circuit. There is no implicit broadcasting:
 
 ```lan
 texts |> map(regex_find(., digits))
 ```
 
-模式上限为 64 KiB，RE2 引擎内存预算为 8 MiB。不支持反向引用和环视；
-大小写等选项使用模式内标记，例如 `regex("(?i)hello")`。详细规则见
-[`docs/REGEX_DESIGN.md`](docs/REGEX_DESIGN.md)。
+Patterns are limited to 64 KiB, and the RE2 engine has an 8 MiB memory budget. Backreferences and lookaround are not supported.
+Options such as case sensitivity use inline pattern flags, for example `regex("(?i)hello")`. See
+[`docs/REGEX_DESIGN.md`](docs/REGEX_DESIGN.md) for detailed rules.
 
-## 单类型列表
+## Homogeneous Lists
 
-一个列表中的所有元素必须属于同一种类型。编译器自动推断元素类型，不需要用户写
-`List<Number>` 这样的标注：
+All elements in a list must have the same type. The compiler infers the element type automatically, without requiring users to write
+annotations such as `List<Number>`:
 
 ```lan
 numbers() = [1, 2, 3]
 names() = ["小明", "小兰"]
 ```
 
-Number、Text 和 Instant List 可以稳定排序；missing 固定放在末尾：
+Number, Text, and Instant Lists support stable sorting, with missing always placed last:
 
 ```lan
 sort([3, missing, 1, 2])       # [1, 2, 3, missing]
-names |> sort()                # 管道形式
+names |> sort()                # pipeline form
 ```
 
-`distinct` 使用与 `same` 一致的结构化相等规则去重，保留每个值第一次出现的位置；多个
-missing 只保留一个。它支持所有 List 元素类型，返回的新 List 会共享而不是复制 Text、
-List、Record、Regex 和 Instant 元素：
+`distinct` removes duplicates using structural equality consistent with `same`, preserving the first occurrence of each value; multiple
+missing values are reduced to one. It supports all List element types. The returned List shares, rather than copies, Text,
+List, Record, Regex, and Instant elements:
 
 ```lan
 distinct([2, 1, 2, missing, 1, missing])  # [2, 1, missing]
 records |> distinct()
 ```
 
-实现使用结构化哈希，平均时间与输入的总结构大小呈线性关系，额外空间与外层元素数量
-呈线性关系；哈希冲突时仍调用结构化相等，因此不会因冲突错误去重。
+The implementation uses structural hashing, with average time linear in the total structural size of the input and additional space
+linear in the number of outer elements. Hash collisions still invoke structural equality, so they do not cause incorrect deduplication.
 
-混合列表会在编译期被拒绝：
+Mixed-type lists are rejected at compile time:
 
 ```lan
-[1, "two"]  # 编译错误
+[1, "two"]  # compile-time error
 ```
 
-列表可以嵌套，但内层列表的元素类型也必须一致：
+Lists can be nested, but the inner lists must also have the same element type:
 
 ```lan
 [[1, 2], [3]]       # List<List<Number>>
-[[1], ["two"]]     # 编译错误
+[[1], ["two"]]     # compile-time error
 ```
 
-在函数中可以直接返回和传递列表，条件两边也必须产生相同的列表类型：
+Functions can return and pass lists directly, and both branches of a conditional must produce the same list type:
 
 ```lan
 choose(flag) =
@@ -554,36 +556,36 @@ choose(flag) =
 choose(true)
 ```
 
-结果显示为：
+The result is displayed as:
 
 ```text
 [1, 2, 3]
 ```
 
-`missing` 是 `Option<T>` 的缺失状态，不算另一种元素类型，因此下面是合法的
-`List<Number>`：
+`missing` is the absent state of `Option<T>`, not a separate element type, so the following is a valid
+`List<Number>`:
 
 ```lan
 [1, missing, 3]
 ```
 
-如果元素来自动态 Record 字段，无法在编译期确定实际标签，构造列表时会检查所有
-非 missing 元素类型相同，不一致则运行时拒绝。
+If elements come from dynamic Record fields and their actual tags cannot be determined at compile time, list construction checks that all
+non-missing elements have the same type, rejecting a mismatch at runtime.
 
-`length(numbers())` 返回列表元素数量。List 使用和 Record 一致的点号读取语法：
+`length(numbers())` returns the number of elements in the list. Lists use the same dot-access syntax as Records:
 
 ```lan
-numbers.0             # 固定下标
-numbers.(index)       # 运行时下标
+numbers.0             # fixed index
+numbers.(index)       # runtime index
 ```
 
-下标从 `0` 开始。越界、负数、非整数下标以及存储值本身为 missing 都得到 `missing`，
-可以用 `??` 提供默认值。下标必须是 Number；文字键仍表示 Record 动态字段读取。
-固定形式只接受非负整数字面量；需要检查负数或小数时使用 `list.(-1)`、
-`list.(1.5)`。连续读取可以直接写成 `matrix.1.0`。
-列表不可变。Record 可以作为列表元素，但同一个列表的所有元素都必须是 Record。
+Indices start at `0`. Out-of-bounds, negative, and noninteger indices, as well as stored values that are themselves missing, all yield `missing`;
+use `??` to provide a default. Indices must be Number; text keys still denote dynamic Record field access.
+The fixed form accepts only nonnegative integer literals. To check a negative or fractional index, use `list.(-1)` or
+`list.(1.5)`. Chained access can be written directly as `matrix.1.0`.
+Lists are immutable. Records can be list elements, but all elements of that list must be Records.
 
-List 支持与 Table 列一致的聚合函数：
+Lists support the same aggregate functions as Table columns:
 
 ```lan
 sum([10, missing, 20])       # 30
@@ -593,15 +595,15 @@ max([10, missing, 20])       # 20
 count([10, missing, 20])     # 2
 ```
 
-聚合忽略列表内部的 `missing`。空列表或全 missing 列表的 `sum` 和 `count` 返回
-`0`；`average`、`min` 和 `max` 返回 `missing`。前四个函数要求 `List<Number>`，
-`count` 接受任意单类型 List。列表本身若是 `Option<List<T>>`，需要先显式解包；否则编译报错。
+Aggregates ignore `missing` elements within the list. For an empty or all-missing list, `sum` and `count` return
+`0`, while `average`, `min`, and `max` return `missing`. The first four functions require `List<Number>`;
+`count` accepts any homogeneous List. If the list itself is `Option<List<T>>`, it must first be explicitly unwrapped; otherwise compilation fails.
 
-`first(list)` 和 `last(list)` 分别读取第一个和最后一个元素，空列表返回 `missing`。
+`first(list)` and `last(list)` read the first and last elements respectively, returning `missing` for an empty list.
 
-`concat` 连接两个元素类型相同的 List；`flatten` 只展开一层；`reverse`、`take` 和
-`drop` 返回新 List，原 List 保持不变。截取数量必须是非负整数，超过长度时截到容器
-边界：
+`concat` joins two Lists with the same element type; `flatten` expands only one level; `reverse`, `take`, and
+`drop` return new Lists, leaving the original unchanged. Slice counts must be nonnegative integers and are clamped to the container
+boundary when they exceed its length:
 
 ```lan
 items = concat([1, 2], [3, 4])
@@ -613,12 +615,12 @@ drop(items, 2)       # [3, 4]
 items |> reverse() |> take(2)  # [4, 3]
 ```
 
-`flatten` 的类型是 `List<List<T>> -> List<T>`。外层的 missing 子列表会被拒绝；子列表
-内部的 missing 元素会保留。
+`flatten` has type `List<List<T>> -> List<T>`. Missing sublists in the outer List are rejected; missing elements
+inside sublists are preserved.
 
-### 集合管道与元素表达式
+### Collection Pipelines and Element Expressions
 
-所有管道阶段都必须使用 `|>`，并写出函数名和括号：
+Every pipeline stage must use `|>` and include the function name and parentheses:
 
 ```lan
 numbers |> sum()                    # sum(numbers)
@@ -626,13 +628,13 @@ people |> take(10)                  # take(people, 10)
 people |> sort_by("score")          # sort_by(people, "score")
 ```
 
-不支持 `numbers sum`、`people take 10` 等省略 `|>` 或括号的旧写法。
+Older forms that omit `|>` or parentheses, such as `numbers sum` and `people take 10`, are not supported.
 
-`map`、`filter`、`select`、`add`、`replace`、`find`、`any` 和 `all` 只在 `|>` 后作为
-集合操作名称；它们不是全局保留字，可以在普通调用位置定义成用户函数。
+`map`, `filter`, `select`, `add`, `replace`, `find`, `any`, and `all` act as collection-operation names only after
+`|>`. They are not globally reserved words and can be defined as user functions in ordinary call positions.
 
-`map`、`filter`、`find`、`any` 和 `all` 建立元素上下文。在其中，`.` 是当前逻辑元素，
-`.name` 和 `.(key)` 分别读取当前元素的固定或动态字段：
+`map`, `filter`, `find`, `any`, and `all` establish an element context. Within it, `.` is the current logical element,
+and `.name` and `.(key)` read its fixed and dynamic fields respectively:
 
 ```lan
 numbers |> map(. * 2)
@@ -643,35 +645,35 @@ users |> any(.active)
 users |> all(.age? >= 0)
 ```
 
-`.` 在 List 上表示当前 List 元素，在 Table 上表示当前逻辑行 Record。它不是管道左侧
-整体值；元素上下文之外使用 `.` 或 `.field` 会编译报错。需要名称时使用受限元素绑定：
+For a List, `.` denotes the current List element; for a Table, it denotes the current logical row Record. It is not the entire value
+on the left of the pipeline. Using `.` or `.field` outside an element context is a compile-time error. When a name is needed, use a restricted element binding:
 
 ```lan
 users |> filter(user => user.active and user.age >= 18)
 ```
 
-`name => expression` 只允许作为上述集合操作的唯一元素表达式；它不是 lambda，不会
-产生函数对象。表达式可以读取外层不可变绑定，也可以调用普通具名函数。
+`name => expression` is allowed only as the sole element expression of the collection operations above. It is not a lambda and does not
+create a function object. The expression can read outer immutable bindings and call ordinary named functions.
 
-普通函数不会因为收到 List 而自动广播：
+Ordinary functions do not automatically broadcast when passed a List:
 
 ```lan
 adult(age) = age >= 18
 
-adult(ages)                  # ages 是 List 时编译错误
-ages |> map(adult(.))        # 明确逐元素调用
+adult(ages)                  # compile-time error if ages is a List
+ages |> map(adult(.))        # explicit elementwise call
 ```
 
-`map` 总是返回 List；`filter` 保留 List 或 Table 的容器种类；`find` 返回第一个匹配元素
-或 `missing`。`filter` 和 `find` 把最终 predicate 的 `missing` 当作不匹配。`any` 与
-`all` 使用三值逻辑并从左到右短路。多行管道可以继续使用更深缩进排版。
+`map` always returns a List; `filter` preserves the List or Table container kind; `find` returns the first matching element
+or `missing`. `filter` and `find` treat a final predicate value of `missing` as no match. `any` and
+`all` use three-valued logic and short-circuit from left to right. Multiline pipelines can continue to use deeper indentation for formatting.
 
-## Table 与整列计算
+## Tables and Whole-Column Computation
 
-Table 没有独立的字面量语法，也不是新的运行时数据类型。内置 `table(value)` 接受两种
-输入形式。列式形式是 `Record<List<T>>`：每个字段都必须是 List，并且所有 List 长度
-相同。对于直接传入的 Record/List 字面量，列类型和静态已知长度会在编译期检查；
-动态构造的值仍在 `table` 执行时验证。
+Table has no separate literal syntax and is not a new runtime data type. The built-in `table(value)` accepts two
+input forms. The column-oriented form is `Record<List<T>>`: every field must be a List, and all Lists must have
+the same length. For Record/List literals passed directly, column types and statically known lengths are checked at compile time;
+dynamically constructed values are still validated when `table` executes.
 
 ```lan
 people() = table({
@@ -683,8 +685,8 @@ people() = table({
 people()
 ```
 
-这种形式验证成功后返回原来的 Record 指针，不复制 Record 或任何 List。行式形式是
-`List<Record>`，`table` 会将各行转换成等长的列：
+After successful validation, this form returns the original Record pointer without copying the Record or any List. The row-oriented form is
+`List<Record>`; `table` converts its rows into columns of equal length:
 
 ```lan
 table([
@@ -693,8 +695,8 @@ table([
 ])
 ```
 
-编译器把结果静态细化为 Table；LLVM 和运行时都使用 `Record<List<T>>` 指针。普通
-Record 或 `List<Record>` 不能直接传给表格操作，必须先经过 `table(...)`。
+The compiler statically refines the result to Table; both LLVM and the runtime use a `Record<List<T>>` pointer. Ordinary
+Records and `List<Record>` cannot be passed directly to table operations; they must first go through `table(...)`.
 
 ```lan
 row_count(people)          # 3
@@ -705,8 +707,8 @@ max(people, "age")         # 20
 count(people, "score")     # 2
 ```
 
-列可以直接与一个值或另一列进行逐元素算术和比较。标量会自动广播，
-单元格中的 `missing` 只传播到对应的结果单元格：
+Columns can perform elementwise arithmetic and comparisons directly with a value or another column. Scalars broadcast automatically,
+and a cell's `missing` propagates only to the corresponding result cell:
 
 ```lan
 people.score + 5           # [85, 95, missing]
@@ -714,16 +716,16 @@ people.age >= 18           # [true, false, missing]
 fill_missing(people.score, 0)
 ```
 
-两个 List 长度不同时，只计算双方都有元素的位置，结果长度以较短的 List 为准：
+When two Lists have different lengths, computation covers only positions where both have elements, and the result takes the length of the shorter List:
 
 ```lan
 [1, 2, 3] + [10, 20]      # [11, 22]
 [1, 2] < [0, 3, 4]        # [false, true]
 ```
 
-这只适用于普通的逐元素运算；Table 仍然要求所有列长度相同，以保持矩形结构。
+This applies only to ordinary elementwise operations. A Table still requires all columns to have equal lengths to preserve its rectangular structure.
 
-逻辑、一元运算、默认值和文字连接也支持逐元素处理及标量广播：
+Logic, unary operations, default values, and text concatenation also support elementwise processing and scalar broadcasting:
 
 ```lan
 [true, false, missing] and false   # [false, false, false]
@@ -734,13 +736,13 @@ not [true, missing]                # [false, missing]
 ["A", missing] + "!"             # ["A!", missing]
 ```
 
-逐元素 `and` 和 `or` 使用短路逻辑对应的三值结果：`false and missing` 是
-`false`，`true or missing` 是 `true`；其余无法确定的组合得到 `missing`。
-文字 `+` 只允许 Text 列与 Text 列或 Text 标量连接。`??` 的左侧为 List 时按元素
-提供默认值；`missing ?? list` 仍表示整个 List 的默认值。
+Elementwise `and` and `or` use the three-valued results corresponding to short-circuit logic: `false and missing` is
+`false`, and `true or missing` is `true`; other indeterminate combinations produce `missing`.
+Text `+` permits concatenation only between a Text column and another Text column or a Text scalar. When the left operand of `??` is a List, defaults are
+provided elementwise; `missing ?? list` still specifies a default for the entire List.
 
-嵌套 List 使用从末尾维度对齐的递归广播。先比较静态嵌套层数，将较低维的操作数
-广播到缺少的前置维度，然后逐层运算；双方到达同一维度后，每一层都截到较短长度：
+Nested Lists use recursive broadcasting aligned from the trailing dimensions. Static nesting depths are compared first, and the lower-dimensional operand
+is broadcast across missing leading dimensions before computation proceeds level by level. Once both operands reach the same dimension, each level is truncated to the shorter length:
 
 ```lan
 [[1, 2], [3, 4]] == [1, 2]
@@ -750,10 +752,10 @@ not [true, missing]                # [false, missing]
 # [[11, 22], [34]]
 ```
 
-该规则只适用于 List。Table 必须先通过 `table.column` 取出一列，Table 值本身不参与
-广播。
+This rule applies only to Lists. For a Table, first extract a column using `table.column`; Table values themselves do not participate
+in broadcasting.
 
-需要比较完整结构而不是广播时，使用 `same(left, right)`：
+To compare complete structures without broadcasting, use `same(left, right)`:
 
 ```lan
 same([[1, 2], [3, 4]], [1, 2])                 # false
@@ -761,12 +763,12 @@ same([1, missing], [1, missing])               # true
 same({a: 1, b: 2}, {b: 2, a: 1})              # true
 ```
 
-`same` 总是返回单个 Boolean，不广播，也不要求两边类型相同。不同类型、不同 List
-长度、不同嵌套结构或不同 Record 键集合返回 false。List 按位置递归比较；Record
-忽略 HAMT 顺序，按键递归比较。两个 missing 相同，一个 missing 与存在值不同。
-Table 按底层 `Record<List<T>>` 结构比较。
+`same` always returns a single Boolean, does not broadcast, and does not require both operands to have the same type. Different types, List
+lengths, nesting structures, or Record key sets return false. Lists are compared recursively by position; Records
+ignore HAMT order and are compared recursively by key. Two missing values are equal; a missing value and a present value are different.
+Tables are compared through their underlying `Record<List<T>>` structure.
 
-以下操作返回新的 Table，输入 Table 保持不变：
+The following operations return new Tables, leaving the input Table unchanged:
 
 ```lan
 people |> filter(.age? >= 18)
@@ -776,39 +778,39 @@ people |> replace({score: .score ?? 0})
 people |> select_columns(["name", "score"])
 people |> take(10)
 people |> drop(10)
-people |> sort_by("score")                         # 稳定升序，missing 放末尾
+people |> sort_by("score")                         # stable ascending order, missing last
 ```
 
-`select` 的元素表达式必须产生 Record，并总是返回 Table。`add` 遇到同名字段会运行时
-拒绝，`replace` 遇到不存在的字段也会运行时拒绝。`take` 和 `drop` 的行数必须是非负整数，
-超过总行数时会截到表格边界。`select_columns` 遇到不存在的列会运行时拒绝。
-列名列表不能为空，因为当前的 `Record<List<T>>` 表示无法为零列表格单独保存行数。
+The element expression of `select` must produce a Record, and `select` always returns a Table. `add` rejects an existing field name at runtime,
+and `replace` rejects a nonexistent field at runtime. Row counts for `take` and `drop` must be nonnegative integers
+and are clamped to the table boundary when they exceed the total number of rows. `select_columns` rejects nonexistent columns at runtime.
+The column-name list cannot be empty because the current `Record<List<T>>` representation cannot separately store the row count of a zero-column table.
 
-`sum`、`average`、`min` 和 `max` 只接受数字列；`count` 可以用于任何列，返回其中
-非 missing 单元格的数量。聚合会忽略 missing。空列或全 missing 列的 `sum` 为 0、
-`count` 为 0，而 `average`、`min`、`max` 返回 missing，因此可以用 `??` 处理：
+`sum`, `average`, `min`, and `max` accept only numeric columns; `count` works with any column and returns the number of
+non-missing cells. Aggregates ignore missing. For an empty or all-missing column, `sum` and `count` return 0,
+while `average`, `min`, and `max` return missing, which can be handled with `??`:
 
 ```lan
-average(people, "unknown")       # 列不存在，运行错误
+average(people, "unknown")       # nonexistent column, runtime error
 average(table({age: []}), "age") ?? 0
 ```
 
-Table 底层仍是 `Record<List<T>>`：HAMT 负责列名查找，单类型 List 保存实际列数据。
-表格验证只遍历列描述和读取列表长度，不遍历或复制单元格。筛选、截取、排序、
-整列计算会为结果分配新的 List 和 HAMT 路径，但不会修改输入 Table。
+A Table is still a `Record<List<T>>` internally: the HAMT looks up column names, and homogeneous Lists store the actual column data.
+Table validation traverses only column descriptions and reads list lengths; it does not traverse or copy cells. Filtering, slicing, sorting,
+and whole-column computation allocate new Lists and HAMT paths for the result without modifying the input Table.
 
-编译器会为静态已知的列传播 TableShape。Table 元素表达式中的 `.field`
-直接按列和行号读取，不会先构造完整行 Record；`table |> map(.field)`
-可直接复用已验证的底层 List。`find` 在检查 predicate 时也不物化行，
-只在命中后构造需要返回的 Record。
-`map({...}) |> table()` 会在不改变求值和错误顺序时融合：纯字段投影直接
-复用源列，安全的算术、比较和逻辑表达式在单个按行循环中写入结果列。
-含 `?`、函数调用或动态类型时会保守回退到通用实现。
+The compiler propagates TableShape for statically known columns. In a Table element expression, `.field`
+reads directly by column and row index without first constructing a complete row Record; `table |> map(.field)`
+can directly reuse the validated underlying List. `find` also avoids materializing rows while checking the predicate,
+constructing the Record to return only after a match is found.
+`map({...}) |> table()` is fused when evaluation and error order can be preserved: pure field projections directly
+reuse source columns, while safe arithmetic, comparison, and logical expressions write result columns in a single row loop.
+Expressions containing `?`, function calls, or dynamic types conservatively fall back to the general implementation.
 
 ## Record
 
-Record 是字段名称到值的不可变映射，不是具有方法的对象。字段本身可以保存任意
-Lan 值，不属于 Record 的静态类型；因此不同 Record 不需要预先声明相同的字段集合。
+A Record is an immutable mapping from field names to values, not an object with methods. Fields themselves can hold any
+Lan value and are not part of the Record's static type, so different Records do not need to declare the same field set in advance.
 
 ```lan
 make_person() = {name: "小明", age: 20}
@@ -816,7 +818,7 @@ make_person() = {name: "小明", age: 20}
 make_person()
 ```
 
-固定字段和运行时确定的字段统一使用点号读取，不提供 `record[key]`：
+Both fixed fields and fields determined at runtime use dot access; `record[key]` is not provided:
 
 ```lan
 read(person) =
@@ -826,7 +828,7 @@ read(person) =
 read({name: "小明", age: 20})
 ```
 
-Record 字面量也允许由 Text 表达式提供动态字段名：
+Record literals also allow dynamic field names supplied by Text expressions:
 
 ```lan
 make_person() =
@@ -836,19 +838,19 @@ make_person() =
 make_person()
 ```
 
-`{field: 21}` 的字段名固定为 `"field"`，而 `{(field): 21}` 使用变量 `field` 的值。
-动态键表达式必须产生 Text。
+`{field: 21}` has the fixed field name `"field"`, whereas `{(field): 21}` uses the value of the variable `field`.
+Dynamic key expressions must produce Text.
 
-不存在的字段得到 `missing`。无法证明存在的字段读取为 `Option<T>`，可以用 `??`
-提供默认值；未解包就用于普通运算会编译报错。编译器能跟踪不可变 Record 的已知固定
-字段和已验证 Table 的已知列；动态键或未知字段仍需显式处理。
+A nonexistent field yields `missing`. A field that cannot be proven to exist is read as `Option<T>`; use `??`
+to provide a default. Using it in ordinary operations without unwrapping causes a compile-time error. The compiler can track known fixed
+fields of immutable Records and known columns of validated Tables; dynamic keys and unknown fields still require explicit handling.
 
 ```lan
 person.city ?? "未知"
-person.height + 1       # height 可能不存在时编译错误
+person.height + 1       # compile-time error if height may not exist
 ```
 
-函数块中可以用简洁的更新写法添加或替换字段：
+Inside a function block, a concise update syntax can add or replace fields:
 
 ```lan
 birthday(person) =
@@ -858,11 +860,11 @@ birthday(person) =
   [old, person]
 ```
 
-`person.age = value` 不是可变赋值，而是下面两步的语法糖：创建一个更新后的新 Record，
-再让同级的新 `person` 绑定遮蔽旧绑定。`old` 仍指向更新前的值。动态键也可以写成
-`person.(field) = value`。
+`person.age = value` is not mutable assignment. It is syntactic sugar for two steps: create a new, updated Record,
+then let a new `person` binding at the same level shadow the old binding. `old` still refers to the pre-update value. Dynamic keys can also be written as
+`person.(field) = value`.
 
-需要显式保留原绑定时，可以使用 `with` 一次添加或替换多个字段：
+To explicitly retain the original binding, use `with` to add or replace multiple fields at once:
 
 ```lan
 move(person) =
@@ -874,16 +876,16 @@ move(person) =
 move({name: "Alice", age: 20})
 ```
 
-更新块同样支持 `(field): value` 动态键。嵌套更新写成
-`person.address.city = "Sydney"`，它会从内向外构造新的 Record 路径。更新目标必须以
-局部绑定名称为根；`get_person().age = 21` 会在编译期被拒绝。缺失或不是 Record 的
-中间字段会在运行时拒绝。直接的 `person.self = person` 也会被拒绝。
+Update blocks also support dynamic keys in the form `(field): value`. A nested update is written as
+`person.address.city = "Sydney"`, constructing a new Record path from the inside out. The update target must be rooted in
+a local binding name; `get_person().age = 21` is rejected at compile time. Intermediate fields that are missing or are not Records
+are rejected at runtime. The direct form `person.self = person` is also rejected.
 
-Record 在语义上无序。为了让结果可复现，显示 Record 时按字段名称的 UTF-8 字节顺序
-排序；顺序不是插入顺序。
+Records are semantically unordered. To make results reproducible, displayed Records sort field names by their UTF-8 byte order,
+not insertion order.
 
-`fields(record)` 按同一确定顺序返回字段名称，`has_field(record, key)` 判断键是否存在。
-字段存在和值为 missing 是两件不同的事：
+`fields(record)` returns field names in that same deterministic order, and `has_field(record, key)` checks whether a key exists.
+A field's existence and its value being missing are separate questions:
 
 ```lan
 person = {name: "Alice", age: missing}
@@ -893,27 +895,27 @@ has_field(person, "age")      # true
 has_field(person, "score")    # false
 ```
 
-`merge` 合并两个 Record，右侧同名字段覆盖左侧；`remove_field` 返回删除字段后的新
-Record，字段不存在时返回结构相同的 Record。输入 Record 都不会改变：
+`merge` combines two Records, with right-hand fields overriding left-hand fields of the same name. `remove_field` returns a new
+Record with a field removed, or a structurally identical Record if the field does not exist. Neither input Record is changed:
 
 ```lan
 merge({name: "Alice", age: 20}, {age: 21})       # {age: 21, name: "Alice"}
 remove_field({name: "Alice", age: 20}, "age")  # {name: "Alice"}
 ```
 
-底层使用持久化 HAMT。更新只复制从根到目标字段的路径，其余分支由新旧 Record 共享，
-HAMT 节点用引用计数管理。Text、List、Record、Table、Regex、Instant 和 IO 都纳入 ARC；复合值持有其子
-对象，函数参数借用调用者的值，新建值由当前函数的所有权区域持有，返回值在区域清理前
-转移给调用者。运行时内部以 C++ RAII 表示临时拥有的引用，并通过 `owned`/`shared`
-容器写入区分所有权转交与共享；LLVM 边界仍使用稳定的 C ABI `LanValue`，不会暴露 C++
-对象布局。底层 retain/release 只集中在引用计数实现中。程序正常结束时会验证没有遗留堆对象。当前尚未启用“引用计数为 1 时原地
-更新”的优化，仍始终采用安全的路径复制。
+The underlying structure is a persistent HAMT. An update copies only the path from the root to the target field; the old and new Records share the other branches,
+and HAMT nodes are reference-counted. Text, List, Record, Table, Regex, Instant, and IO all participate in ARC. Composite values hold their child
+objects, function parameters borrow the caller's values, newly created values are held by the current function's ownership region, and return values
+are transferred to the caller before region cleanup. Internally, the runtime uses C++ RAII for temporarily owned references and distinguishes
+ownership transfer from sharing through `owned`/`shared` container writes. The LLVM boundary still uses the stable C ABI `LanValue`, without exposing C++
+object layouts. Low-level retain/release operations are confined to the reference-counting implementation. Normal program termination checks that no heap objects remain. The optimization for in-place
+updates when the reference count is 1 is not yet enabled; updates still always use safe path copying.
 
-## Option 类型、缺失值与显式解包
+## Option Types, Missing Values, and Explicit Unwrapping
 
-普通值默认是 `T`，只有可能缺失的值才是 `Option<T>`。类型由编译器推断，不需要手写
-类型注解或包装构造器。`T` 可以自动提升为 `Option<T>`，反向转换必须显式处理缺失。
-`missing` 是可选类型的缺失状态，其底层值类型由上下文推断。
+Ordinary values default to `T`; only values that may be missing have type `Option<T>`. The compiler infers types, so handwritten
+type annotations or wrapper constructors are not required. `T` can be promoted automatically to `Option<T>`, but the reverse conversion requires explicit handling of absence.
+`missing` is the absent state of an optional type, with its underlying value type inferred from context.
 
 ```lan
 lookup(found) =
@@ -925,12 +927,12 @@ lookup(found) =
 lookup(false) ?? "没有找到"
 ```
 
-`??` 只在左侧缺失时计算并使用右侧默认值。普通运算和要求 `T` 的函数拒绝未经处理的
-`Option<T>`，即使某次运行碰巧能取得值，也必须先解包：
+`??` evaluates and uses the right-hand default only when the left operand is missing. Ordinary operations and functions requiring `T` reject an unhandled
+`Option<T>`. Even if a particular run happens to produce a value, it must be unwrapped first:
 
 ```lan
-missing + 1       # 编译错误
-length(missing)  # 编译错误
+missing + 1       # compile-time error
+length(missing)  # compile-time error
 
 choose_missing() =
   if missing
@@ -938,29 +940,29 @@ choose_missing() =
   else
     0
 
-choose_missing()  # 编译错误：if 条件必须是 Boolean
+choose_missing()  # compile-time error: an if condition must be Boolean
 ```
 
-后缀 `?` 明确允许当前表达式传播缺失。运算仍然从左到右求值；被 `?` 检查的值一旦
-缺失，当前表达式直接得到 `missing`，后续部分不再求值：
+The postfix `?` explicitly allows the current expression to propagate absence. Operations still evaluate from left to right; once a value checked by `?`
+is missing, the current expression immediately yields `missing` and its remaining parts are not evaluated:
 
 ```lan
-missing? + expensive_calculation()  # missing，不调用 expensive_calculation
+missing? + expensive_calculation()  # missing; expensive_calculation is not called
 ```
 
-`?` 的传播边界是表达式，不是函数提前返回。每个绑定的右侧都是独立边界，包括普通块和
-IO 块；绑定得到 missing 后，后续绑定继续执行。外层 `??` 也可以在同一个函数中接住传播
-出来的缺失：
+The propagation boundary of `?` is an expression, not an early return from a function. Each binding's right-hand side is a separate boundary, in both ordinary
+and IO blocks. After a binding receives missing, subsequent bindings continue to execute. An outer `??` can also catch the propagated
+absence within the same function:
 
 ```lan
 (lookup(false)? + "!") ?? "没有找到"  # "没有找到"
 ```
 
-这与 Rust 式 `?` 不同：上例会继续计算 `??` 的右侧，而不是提前退出 `lookup` 的
-调用者。`?` 的优先级高于算术、比较和 `??`。
+This differs from Rust-style `?`: the example continues to evaluate the right-hand side of `??`, rather than returning early from the caller
+of `lookup`. `?` has higher precedence than arithmetic, comparisons, and `??`.
 
-函数可以接收、保存或返回 Option，只要函数体不隐式消费它。参数是否允许缺失根据函数体
-和调用处推断；命名参数、默认参数和跨函数调用使用相同检查规则：
+Functions can accept, store, or return Option as long as the body does not consume it implicitly. Whether a parameter permits missing is inferred from the function body
+and call sites; named arguments, default arguments, and calls across functions follow the same checking rules:
 
 ```lan
 normalize(value) = value ?? 0
@@ -968,7 +970,7 @@ normalize(value) = value ?? 0
 normalize(missing)  # 0
 ```
 
-四种解包方式：
+Four ways to unwrap:
 
 ```lan
 double(value) = value * 2
@@ -978,46 +980,46 @@ demo(text) = {
   defaulted = value ?? 0;                 # Number
   propagated = double(value?);            # Option<Number>
   refined = if is_missing(value) { 0 } else { value + 1 }; # Number
-  asserted = require(value);              # Number，缺失时运行时拒绝
+  asserted = require(value);              # Number; rejected at runtime if missing
   {defaulted: defaulted, propagated: propagated, refined: refined, asserted: asserted}
 }
 
 demo("10")
 ```
 
-`?` 让当前计算继续使用 `T`，但整个表达式仍可能产生 `Option<U>`。
-`if is_missing(value)` 的 else 分支及 `if not is_missing(value)` 的 then 分支会把该
-局部绑定细化为 `T`。细化不泄漏到分支外，同名遮蔽后也不沿用旧绑定的证明。
+`?` lets the current computation continue using `T`, while the overall expression may still produce `Option<U>`.
+The else branch of `if is_missing(value)` and the then branch of `if not is_missing(value)` refine that
+local binding to `T`. The refinement does not escape the branch, and shadowing a name does not retain the proof for the old binding.
 
-标量 `and`、`or`、`not` 只接受 Boolean，不隐式消费 `Option<Boolean>`。
-`false and missing` 会编译报错；`false and require(missing)` 合法且短路为 false。
-`missing? and false` 则立即短路为 missing，不再检查右侧。集合逐元素逻辑以及
-`any`、`all` 保留明确的三值逻辑规则。
+Scalar `and`, `or`, and `not` accept only Boolean and do not implicitly consume `Option<Boolean>`.
+`false and missing` is a compile-time error; `false and require(missing)` is valid and short-circuits to false.
+`missing? and false` immediately short-circuits to missing without checking the right operand. Elementwise collection logic and
+`any` and `all` retain their explicit three-valued logic rules.
 
-容器与元素的可选性分别推断：
+The optionality of containers and their elements is inferred separately:
 
 ```text
-List<Number>          # 列表与元素均存在
-List<Option<Number>>  # 列表存在，元素可能缺失
-Option<List<Number>>  # 整个列表可能缺失
-IO<Option<Number>>    # action 存在，执行结果可能缺失
-Option<IO<Number>>    # action 本身可能缺失
+List<Number>          # both list and elements are present
+List<Option<Number>>  # list is present; elements may be missing
+Option<List<Number>>  # the entire list may be missing
+IO<Option<Number>>    # action is present; its execution result may be missing
+Option<IO<Number>>    # the action itself may be missing
 ```
 
-`List<T>` 的下标读取、`first` 和 `last` 仍返回 Option，因为可能越界或列表为空。
-`map` 的元素上下文保留元素的可选性：`[1, 2] |> map(. + 1)` 合法，
-`[1, missing] |> map(. + 1)` 编译报错，后者可写成 `map(.? + 1)`。
-`join` 要求 `List<Text>`，`flatten` 要求每个子 List 存在；可以先用 `fill_missing`
-或 `map(require(.))` 处理缺失元素。
+Indexing a `List<T>`, `first`, and `last` still return Option, because an index may be out of bounds or the list may be empty.
+The element context of `map` preserves element optionality: `[1, 2] |> map(. + 1)` is valid,
+while `[1, missing] |> map(. + 1)` is a compile-time error; the latter can be written as `map(.? + 1)`.
+`join` requires `List<Text>`, and `flatten` requires every sublist to be present; use `fill_missing`
+or `map(require(.))` first to handle missing elements.
 
-左侧是 `Option<List<T>>` 时，`??` 为整个列表选择同类型默认值，例如 `maybe_list ?? []`；
-左侧列表确定存在时，`list ?? value` 仍是广播式的逐元素填补。
-同一函数内的同一个 `??` 若在不同调用中产生这两种不同解释，编译器会拒绝；要明确逐元素
-填补，请使用 `fill_missing`，不要让操作含义依赖调用处。
+When the left operand is `Option<List<T>>`, `??` selects a default of the same type for the entire list, as in `maybe_list ?? []`.
+When the left-hand list is definitely present, `list ?? value` still performs elementwise filling through broadcasting.
+If the same `??` within a function would acquire these two different meanings at different call sites, the compiler rejects it. To explicitly fill elements,
+use `fill_missing` instead of letting the operation's meaning depend on the call site.
 
-### 模式匹配
+### Pattern Matching
 
-`match` 是表达式，可以直接把 `Option<T>` 分成 missing 和存在两种情况：
+`match` is an expression that can directly split `Option<T>` into missing and present cases:
 
 ```lan
 normalize(input) =
@@ -1026,9 +1028,9 @@ normalize(input) =
     value(number) => number + 1
 ```
 
-`value(name)` 只匹配存在值，并把解包后的 `T` 绑定给 `name`；`value(_)` 忽略该值。
-`missing` 只匹配缺失。普通名称和 `_` 是剩余情况模式：名称会绑定剩余值，`_` 不绑定。
-如果前面的模式已经覆盖 missing，剩余名称会被细化为 `T`：
+`value(name)` matches only present values and binds the unwrapped `T` to `name`; `value(_)` ignores the value.
+`missing` matches only absence. Ordinary names and `_` are remainder patterns: a name binds the remaining value, while `_` does not bind it.
+If a preceding pattern has already covered missing, the remainder name is refined to `T`:
 
 ```lan
 describe(input) = match input {
@@ -1037,7 +1039,7 @@ describe(input) = match input {
 }
 ```
 
-模式还可以使用 Number、Text、Boolean 和 Unit 字面量：
+Patterns can also use Number, Text, Boolean, and Unit literals:
 
 ```lan
 category(number) = match number {
@@ -1053,27 +1055,27 @@ enabled(flag) = match flag {
 }
 ```
 
-分支按源码顺序测试，输入只求值一次，只有命中的分支求值。重复模式、被前面模式完全
-覆盖的分支和未穷尽的 match 都会编译报错。对于既可能存在又可能缺失的 `Option<T>`，
-两种情况都必须覆盖；对于确定存在的 `T`，不要求 missing 分支；对于确定缺失的输入，
-只覆盖 missing 即可。Boolean 的 `true`/`false` 可以覆盖
-全部存在值，Unit 的 `()` 也能覆盖全部存在值；Number 和 Text 字面量仍需 `_`、普通
-名称或 `value(name)` 覆盖其他值。
+Branches are tested in source order, the input is evaluated once, and only the matching branch is evaluated. Duplicate patterns, branches fully
+covered by preceding patterns, and nonexhaustive matches are compile-time errors. An `Option<T>` that may be either present or missing
+must cover both cases. A definitely present `T` does not require a missing branch; for a definitely missing input,
+covering missing alone is sufficient. Boolean's `true`/`false` cover
+all present values, as does Unit's `()`. Number and Text literals still need `_`, an ordinary
+name, or `value(name)` to cover other values.
 
-分支绑定只在自己的分支内有效，并允许遮蔽外层同名绑定。匹配原局部名称时，编译器也
-会在相应分支细化原名称。分支返回值必须具有同一种底层类型，`T` 与 `Option<T>` 可以按
-通常规则合并。
+Branch bindings are valid only within their own branch and can shadow outer bindings with the same name. When matching an original local name, the compiler also
+refines that name within the relevant branches. Branch return values must share the same underlying type; `T` and `Option<T>` can be
+combined under the usual rules.
 
-`?` 仍使用表达式边界：写在 match 输入上时，missing 会在进入任何分支前传播；写在
-分支中时，会让整个 match 表达式得到 missing。List 和 Record 暂不支持结构解构；可以
-先匹配 `value(list)` / `value(record)`，再使用现有下标和字段读取。模式匹配不是运行时
-类型分派，字面量模式必须与输入具有相同静态类型。
+`?` still uses expression boundaries: on the match input, missing propagates before any branch is entered; within
+a branch, it makes the entire match expression yield missing. Structural destructuring of Lists and Records is not yet supported; first
+match `value(list)` / `value(record)`, then use existing indexing and field access. Pattern matching is not runtime
+type dispatch; literal patterns must have the same static type as the input.
 
-## Result 与可恢复失败
+## Result and Recoverable Failures
 
-`Result<T, E>` 表示成功并携带 `T`，或失败并携带 `E`。类型仍由编译器推断，不需要
-手写类型注解。`ok`、`err` 是内置构造器而非语法关键字，各接受一个位置参数，不能被
-用户函数重定义。普通值不隐式包装为 Result，Result 也不隐式解包：
+`Result<T, E>` represents success carrying `T` or failure carrying `E`. Types are still inferred by the compiler, without
+handwritten type annotations. `ok` and `err` are built-in constructors, not syntax keywords. Each accepts one positional argument and cannot be
+redefined by a user function. Ordinary values are not implicitly wrapped in Result, and Results are not implicitly unwrapped:
 
 ```lan
 divide(a, b) =
@@ -1087,37 +1089,37 @@ message = match divide(10, 0) {
 message
 ```
 
-函数返回 `Result<Number, Text>`。`ok(())` 表示成功但没有额外数据；错误载荷也可以是
-Record、List 或其他数据值。同一 Result 的成功载荷统一为 T，失败载荷统一为 E，二者
-不要求相同。构造器尚未确定的另一侧类型由使用上下文约束；不自动将其定义为 Unit。
+The function returns `Result<Number, Text>`. `ok(())` represents success without additional data; an error payload can also be a
+Record, List, or other data value. Within the same Result, success payloads unify as T and failure payloads as E; the two
+need not be the same. The other type left undetermined by a constructor is constrained by its usage context, not automatically defined as Unit.
 
-`ok(name)`、`err(name)` 模式分别绑定解包后的载荷，支持 `_` 忽略载荷；没有兜底分支时
-必须覆盖两个状态，即使输入写作 `ok(1)`。对于 `Option<Result<T, E>>`，还必须处理
-外层 missing。普通名称模式绑定的是完整的剩余 Result，不会自动取出载荷；
-`value(name)` 也只处理外层 Option，不解包 Result。模式可用缩进书写，但第一版构造器
-内只支持名称或 `_`；嵌套载荷使用另一个 match，不支持 `ok(err(e))` 这样的嵌套模式。
+The `ok(name)` and `err(name)` patterns bind the respective unwrapped payloads, with `_` available to ignore a payload. Without a fallback branch,
+both states must be covered even if the input is written as `ok(1)`. For `Option<Result<T, E>>`, the
+outer missing case must also be handled. An ordinary name pattern binds the entire remaining Result without automatically extracting its payload;
+`value(name)` also handles only the outer Option, without unwrapping Result. Patterns may use indentation, but the first version supports only
+a name or `_` inside a constructor. Use another match for nested payloads; nested patterns such as `ok(err(e))` are not supported.
 
 ```lan
-ok(missing)      # 成功，载荷是缺失值；不等于 missing 或 err(...)
-ok(err("bad"))  # 成功，载荷本身是另一个失败的 Result
+ok(missing)      # success with a missing payload; not the same as missing or err(...)
+ok(err("bad"))  # success whose payload is another Result representing failure
 ```
 
-`require(result)` 是显式断言：成功返回载荷，失败输出错误载荷与源码诊断并终止程序。
-它只解开一层 Result，不同时去掉成功载荷的 Option：
+`require(result)` is an explicit assertion: success returns the payload; failure prints the error payload and source diagnostics, then terminates the program.
+It unwraps only one Result layer, without also removing Option from the success payload:
 
 ```lan
 require(ok(42))              # 42
-require(ok(missing)) ?? 0     # 0，成功载荷仍可能缺失
-require(err("bad"))          # 运行时拒绝
+require(ok(missing)) ?? 0     # 0; the success payload may still be missing
+require(err("bad"))          # runtime rejection
 ```
 
-对于外层可选的 Result，先用 match、`?` 或 `??` 处理外层缺失，再使用 require。
-`?`、`??`、`is_missing` 仍只观察 Option，不传播、填补或检测 err；例如 `err("bad")?`
-仍是同一个 Result，而不是函数提前返回或 IO 块短路。已有除零等运行时拒绝不会被自动
-捕获为 err，现有 `parse_number` 等 Option 接口也不改变。
+For a Result with an outer optional layer, first handle outer absence with match, `?`, or `??`, then use require.
+`?`, `??`, and `is_missing` still observe only Option; they do not propagate, fill, or detect err. For example, `err("bad")?`
+remains the same Result, rather than causing an early function return or short-circuiting an IO block. Existing runtime rejections, such as division by zero, are not automatically
+caught as err, and existing Option interfaces such as `parse_number` do not change.
 
-Result 可以作为函数参数、默认值、返回值、List 元素和 Record 字段，也可以作为 IO
-的结果并被 action 捕获。载荷不能包含 IO action，应使用 `IO<Result<T, E>>`：
+Result can be used as a function parameter, default value, return value, List element, or Record field, as well as an IO
+result captured by an action. Payloads cannot contain IO actions; use `IO<Result<T, E>>`:
 
 ```lan
 read_config() = io { err("尚未提供配置") }
@@ -1131,21 +1133,21 @@ io {
 }
 ```
 
-`<-` 不解包 Result，err 不自动停止后续步骤。执行 IO 的错误恢复 API 尚未接入标准库；
-这里的 `read_config` 只演示返回普通 Result 数据。
+`<-` does not unwrap Result, and err does not automatically stop subsequent steps. Error-recovery APIs for executing IO have not yet been integrated into the standard library;
+`read_config` here only demonstrates returning ordinary Result data.
 
-整体比较使用 `same`，同时比较状态和载荷，不支持 Result 的 `==`、算术或排序。
-`to_text` 和结果显示保留 `ok(...)` / `err(...)` 包装；含 Regex 的值仍不能转换为 Text。
-第一版 Result 是持有一个带标签载荷的 ARC 堆对象，构造时保留载荷引用，解构时借用，
-离开作用域按现有 ARC 规则释放；外层 missing 使用空指针，不会复制内部 List/Record。
+Use `same` for whole-value comparison, comparing both state and payload. Result does not support `==`, arithmetic, or sorting.
+`to_text` and result display preserve the `ok(...)` / `err(...)` wrapper; values containing Regex still cannot be converted to Text.
+In the first version, Result is an ARC heap object holding one tagged payload. Construction retains the payload reference, destructuring borrows it,
+and leaving scope releases it under the existing ARC rules. Outer missing uses a null pointer, without copying internal Lists/Records.
 
-## 运算错误与运行时表示
+## Arithmetic Errors and Runtime Representation
 
-普通除法遇到 `+0.0` 或 `-0.0` 会运行时拒绝，不产生 Infinity、NaN 或 missing。
-List 除法只检查实际参与运算且两侧都存在的元素；被较短长度截去的位置以及结果已经
-由 missing 决定的位置不会执行除法。
+Ordinary division by `+0.0` or `-0.0` is rejected at runtime, rather than producing Infinity, NaN, or missing.
+List division checks only elements that actually participate in computation and are present on both sides. Positions truncated by a shorter length and positions whose results
+are already determined by missing do not perform division.
 
-`%` 与乘除法具有相同优先级，接受任意 Number，并采用 Python 风格的 floor modulo：
+`%` has the same precedence as multiplication and division, accepts any Number, and uses Python-style floor modulo:
 
 ```lan
 5 % 2       # 1
@@ -1154,12 +1156,12 @@ List 除法只检查实际参与运算且两侧都存在的元素；被较短长
 5 % -2      # -1
 ```
 
-它同样拒绝 `+0.0` 和 `-0.0` 除数，并支持普通 List 广播。missing、截短位置和错误
-顺序与 `/` 完全相同；`if` 仍要求显式 Boolean 条件，例如
-`numbers |> map(if . % 2 != 0 {100} else {200})`。
+It likewise rejects `+0.0` and `-0.0` divisors and supports ordinary List broadcasting. Missing values, truncated positions, and error
+order behave exactly as with `/`. `if` still requires an explicit Boolean condition, for example
+`numbers |> map(if . % 2 != 0 {100} else {200})`.
 
-运行时拒绝会指出源码行列和函数调用链；错误发生在集合计算中时还会报告 List 元素
-索引或 Table 行号，并尽可能给出字段路径。例如：
+Runtime rejections report the source line and column and the function call chain. Errors during collection computation also report the List element
+index or Table row number, with a field path where possible. For example:
 
 ```text
 Lan 运行错误：除数不能为零
@@ -1169,90 +1171,90 @@ Table 行号：1
 调用链：程序 -> report -> ratio
 ```
 
-这些信息来自函数入口和当前集合循环的轻量诊断上下文，不会长期附着在每个值上。
+This information comes from lightweight diagnostic contexts at function entry and in the current collection loop; it is not permanently attached to every value.
 
-还可以显式检查或要求值存在：
-
-```lan
-is_missing(value)  # 总是返回 Boolean
-require(value)     # 对 Option：missing 时运行时拒绝，否则返回原值；Result 规则见上节
-```
-
-简单的 `if not is_missing(value)` 会把 then 分支中的 `value` 细化为确定存在。
-纯程序最终结果如果可能缺失，编译期要求使用 `?` 明确允许显示 `missing`；IO 的最终
-数据结果允许缺失。
-
-Option 类型检查与底层 presence 优化分开：类型检查规定如何消费值，presence 分析仍
-推断 `Present`、`Missing` 和 `MaybeMissing`，为不同类型选择紧凑表示，不强制装箱：
-
-| 情况                          | LLVM 表示                      |
-| ----------------------------- | ------------------------------ |
-| 确定存在的数字                | 裸 `double` SSA 值             |
-| 可能缺失的数字                | `{ i1 present, double value }` |
-| 确定存在的真假值              | `i1`                           |
-| 可能缺失的真假值              | `i2`：0 缺失、1 false、2 true  |
-| Unit                         | `i1`：0 缺失、1 ()         |
-| IO action                    | `ptr`：空指针表示 action 缺失；捕获环境使用 ARC |
-| 可能缺失的文字、列表、Record 或 Regex | `ptr`：空指针表示缺失          |
-| 已知类型的数字列表元素        | `double[]` 加逐元素存在标记    |
-| 已知类型的真假值列表元素      | 三态字节：missing/false/true   |
-| 文字、列表、Record 或 Regex 列表元素 | `ptr[]`：空指针表示缺失        |
-| Unit 列表元素                | `i8[]`：0 缺失、1 ()       |
-| 无法静态确定的动态字段/列表   | 带专用 `MISSING` 标签的回退值  |
-
-生成 IR 前会运行 LLVM `-O2` 流水线，因此常量存在标志、无效分支和临时 Option
-包装可以继续被消除。
-
-编译期已知元素类型的 List 运算也保持这种表示：Number/Boolean/Text 的标量广播、
-一元运算和嵌套广播不会重新退化为逐元素动态标签。嵌套 List 的外层是指针数组，叶层
-仍使用对应的紧凑数组。一维 Number 列之间的算术和比较使用专用循环，LLVM 可以在
-不改变 missing 语义时将其向量化。Boolean 三态列的列间和标量逻辑、相等比较及
-`??` 也直接在紧凑字节编码上执行专用循环；动态类型和需要分配 Text 的运算保持
-语义等价的标量路径。
-
-Table 元素表达式把整行传给普通具名函数时，编译器会在调用点分析并内联该函数体。
-函数实际读取的固定字段直接按列和行号取得，不会为了函数参数预先构造完整行 Record；
-默认参数和命名参数仍遵循普通函数调用规则。
-
-由于函数调用图保证无环，存在性分析不再反复扫描到固定点。编译器沿调用 DAG 深度
-优先遍历，在返回调用者前得到被调用函数的结果，并缓存每组参数的存在状态；从顶层
-不可达的函数则作为独立的 DAG 根分析一次。
-
-## 不允许递归
-
-函数调用关系中不允许形成环。直接递归和通过其他函数返回自身的间接递归都会在
-编译时被拒绝：
+You can also explicitly check or require a value to be present:
 
 ```lan
-repeat(value) = repeat(value)  # 编译错误
+is_missing(value)  # always returns Boolean
+require(value)     # for Option: rejects missing at runtime, otherwise returns the value; see above for Result rules
 ```
 
-这个限制也适用于默认参数中的函数调用。语言没有通用 `for` 或 `while`；集合管道使用
-输入容器的有限长度执行 `map`、`filter`、`find`、`any` 和 `all`。
+A simple `if not is_missing(value)` refines `value` to definitely present in the then branch.
+If a pure program's final result may be missing, the compiler requires `?` to explicitly permit displaying `missing`. The final
+data result of IO may be missing.
 
-`if` 只计算被选择的一边，`and`、`or`、`??` 和显式 `?` 传播也采用各自的短路规则。
+Option type checking is separate from the underlying presence optimizations: type checking determines how values may be consumed, while presence analysis still
+infers `Present`, `Missing`, and `MaybeMissing` and selects compact representations for different types without forcing boxing:
 
-## 纯函数规则
+| Case | LLVM representation |
+| --- | --- |
+| Definitely present number | Bare `double` SSA value |
+| Possibly missing number | `{ i1 present, double value }` |
+| Definitely present Boolean | `i1` |
+| Possibly missing Boolean | `i2`: 0 missing, 1 false, 2 true |
+| Unit | `i1`: 0 missing, 1 () |
+| IO action | `ptr`: null means the action is missing; captured environments use ARC |
+| Possibly missing Text, List, Record, or Regex | `ptr`: null means missing |
+| Statically typed numeric list element | `double[]` plus per-element presence flags |
+| Statically typed Boolean list element | Three-state byte: missing/false/true |
+| Text, List, Record, or Regex list element | `ptr[]`: null means missing |
+| Unit list element | `i8[]`: 0 missing, 1 () |
+| Dynamic field/list with no statically determined type | Fallback value with a dedicated `MISSING` tag |
 
-- 相同的输入始终产生相同的结果。
-- 没有可变赋值、全局可变状态或任意 I/O；字段更新语法创建新 Record 绑定。
-- 不允许直接或间接递归。
-- 函数和局部名称都不可变。
-- 文件最后一个公式是整个程序的结果。
-- 显示最终结果是运行器的宿主边界，不属于用户函数中的副作用。
+The LLVM `-O2` pipeline runs before emitting IR, allowing constant presence flags, dead branches, and temporary Option
+wrappers to be eliminated further.
 
-目前函数采用单态类型推断：一个函数在同一程序中应以一致的输入种类使用。无法从
-上下文确定的输入默认视为数字。编译器会用面向用户的文字解释类型冲突和拼写错误。
+List operations with compile-time-known element types retain this representation: scalar broadcasting, unary operations, and nested broadcasting for
+Number/Boolean/Text do not fall back to dynamic tags on each element. The outer levels of nested Lists are pointer arrays, while leaf levels
+still use their corresponding compact arrays. Arithmetic and comparisons between one-dimensional Number columns use dedicated loops that LLVM can
+vectorize without changing missing semantics. Inter-column and scalar logic, equality comparisons, and
+`??` for three-state Boolean columns also run dedicated loops directly on compact byte encodings; dynamic types and operations that allocate Text retain
+semantically equivalent scalar paths.
 
-## 构建和运行
+When a Table element expression passes an entire row to an ordinary named function, the compiler analyzes and inlines that function's body at the call site.
+Fixed fields actually read by the function are fetched directly by column and row index, without preconstructing a complete row Record for the function argument.
+Default and named arguments still follow ordinary function-call rules.
 
-需要 CMake 3.22+、Flex、Bison、Clang/Clang++、llvm-ar 和 LLVM 开发文件。
-构建时自动下载固定版本的 RE2 2025-11-05 和 Abseil 20250512.1；离线时可向 CMake
-传入 `-DFETCHCONTENT_SOURCE_DIR_ABSEIL=/path/to/abseil` 和
-`-DFETCHCONTENT_SOURCE_DIR_RE2=/path/to/re2`，指向已解压的源码目录。
+Because the function call graph is guaranteed to be acyclic, presence analysis no longer scans repeatedly to a fixed point. The compiler traverses the call DAG
+depth-first, obtaining each callee's result before returning to its caller and caching the presence states for each set of arguments. Functions
+unreachable from the top level are analyzed once as separate DAG roots.
 
-Unicode Text 操作使用随源码内置的 utf8proc 2.11.3；构建时不需要另行安装，许可证位于
-`third_party/utf8proc/LICENSE.md`。
+## Recursion Is Not Allowed
+
+Function calls cannot form cycles. Direct recursion and indirect recursion that returns to the same function through other functions are both
+rejected at compile time:
+
+```lan
+repeat(value) = repeat(value)  # compile-time error
+```
+
+This restriction also applies to function calls in default parameters. The language has no general `for` or `while`; collection pipelines use
+the finite length of the input container to execute `map`, `filter`, `find`, `any`, and `all`.
+
+`if` evaluates only the selected branch. `and`, `or`, `??`, and explicit `?` propagation each follow their own short-circuit rules.
+
+## Pure Function Rules
+
+- The same inputs always produce the same result.
+- There is no mutable assignment, global mutable state, or arbitrary I/O; field-update syntax creates a new Record binding.
+- Direct and indirect recursion are prohibited.
+- Functions and local names are immutable.
+- The final formula in a file is the result of the entire program.
+- Displaying the final result is the runner's host boundary, not a side effect inside a user function.
+
+Functions currently use monomorphic type inference: a function should be used with consistent input kinds within the same program. Inputs whose kinds
+cannot be determined from context default to numbers. The compiler explains type conflicts and spelling errors in user-facing language.
+
+## Building and Running
+
+Requires CMake 3.22+, Flex, Bison, Clang/Clang++, llvm-ar, and LLVM development files.
+The build automatically downloads pinned versions RE2 2025-11-05 and Abseil 20250512.1. For offline builds, pass
+`-DFETCHCONTENT_SOURCE_DIR_ABSEIL=/path/to/abseil` and
+`-DFETCHCONTENT_SOURCE_DIR_RE2=/path/to/re2` to CMake, pointing to unpacked source directories.
+
+Unicode Text operations use utf8proc 2.11.3 bundled with the source; no separate installation is needed for the build. Its license is at
+`third_party/utf8proc/LICENSE.md`.
 
 ```sh
 cmake -S . -B build -DLLVM_DIR="$(llvm-config --cmakedir)"
@@ -1260,7 +1262,7 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-直接计算并显示结果：
+Compute and display results directly:
 
 ```sh
 ./build/lanc --run examples/types.lan
@@ -1268,72 +1270,72 @@ ctest --test-dir build --output-on-failure
 ./build/lanc --run examples/record.lan
 ```
 
-`--build` 在当前目录创建 `.lan/<程序名>/`，保留 LLVM IR、目标文件和本地可执行文件：
+`--build` creates `.lan/<program-name>/` in the current directory, retaining the LLVM IR, object file, and native executable:
 
 ```sh
 ./build/lanc --build examples/types.lan
 
-# 产生：
+# Produces:
 # .lan/types/types.ll
 # .lan/types/types.o
 # .lan/types/types
 ```
 
-`--run` 进行完全相同的持久化构建，然后自动执行 `.lan/<程序名>/<程序名>`。
-它不再创建临时 IR 或通过 `lli` 解释执行。`.lan/` 已加入 `.gitignore`。
+`--run` performs exactly the same persistent build, then automatically executes `.lan/<program-name>/<program-name>`.
+It no longer creates temporary IR or interprets it through `lli`. `.lan/` is included in `.gitignore`.
 
-使用 `--` 将后续参数原样传给程序，供 `arguments()` 读取：
+Use `--` to pass subsequent arguments unchanged to the program for `arguments()` to read:
 
 ```sh
 ./build/lanc --run program.lan -- "a b" "" --verbose
 .lan/program/program "a b" "" --verbose
 ```
 
-`-- 参数...` 只支持 `--run` 模式；程序直接继承标准输入、输出和错误流。
-`--random-seed` 同样只支持 `--run`，接受 `0` 到 `9007199254740991` 的整数；它必须写在
-程序参数分隔符 `--` 之前，分隔符之后的同名文本只是普通程序参数。
-`--fixed-time` 也只支持 `--run`，接受 RFC 3339 时间戳，必须写在 `--` 之前。
-固定时间在执行 `now()` 时验证；无效配置产生带源码位置的运行时错误。
+`-- arguments...` is supported only in `--run` mode; the program directly inherits standard input, output, and error streams.
+`--random-seed` is also supported only with `--run` and accepts integers from `0` to `9007199254740991`. It must appear
+before the program-argument separator `--`; the same text after the separator is just an ordinary program argument.
+`--fixed-time` is likewise supported only with `--run`, accepts an RFC 3339 timestamp, and must appear before `--`.
+The fixed time is validated when `now()` executes; an invalid configuration produces a runtime error with a source location.
 
-Lan/Unicode bitcode 和 RE2 静态库已内嵌到 `lanc`，无需运行时读取源码构建目录。
-使用正则的程序还会在自己的 `.lan/<程序名>/` 中生成 `lan_regex_runtime.a` 和
-`REGEX_LICENSES.txt`，并静态链接 RE2/Abseil；分发此类程序时应附带许可证。
-不使用正则的程序不提取或链接该静态库。
-这并不意味着本机构建的编译器已是完全独立的发行包：它仍需 Clang 工具链，且所使用
-的 LLVM 发行版可能带有 z3/zstd 等动态依赖。
+Lan/Unicode bitcode and the RE2 static library are embedded in `lanc`, so there is no need to read the source build directory at runtime.
+Programs that use regular expressions also generate `lan_regex_runtime.a` and
+`REGEX_LICENSES.txt` in their own `.lan/<program-name>/` directory and statically link RE2/Abseil; include the licenses when distributing such programs.
+Programs that do not use regular expressions do not extract or link this static library.
+This does not make a locally built compiler a fully standalone distribution: it still requires the Clang toolchain, and the LLVM
+distribution in use may have dynamic dependencies such as z3/zstd.
 
-生成 LLVM IR：
+Generate LLVM IR:
 
 ```sh
 ./build/lanc examples/types.lan -o types.ll
 lli types.ll
 ```
 
-`-o` 只用于默认的 IR 输出模式，不能与 `--build` 或 `--run` 一起使用。
-含正则调用的 IR 带有外部 RE2 适配层符号，不能直接用上面的裸 `lli` 命令执行；
-请使用 `--build`/`--run` 完成静态链接。
+`-o` is available only in the default IR-output mode and cannot be combined with `--build` or `--run`.
+IR containing regular-expression calls has external RE2 adapter symbols and cannot be executed directly with the bare `lli` command above;
+use `--build`/`--run` to complete static linking.
 
-## 编译结构
+## Compilation Structure
 
 ```text
-Lan 公式
-  -> Flex：单词、数字、文字和缩进
-  -> Bison：表达式语法树
-  -> 约束统一：自动类型推断
-  -> 持久化 HAMT 运行时：Record 查询、路径复制与引用计数
-  -> LLVM：SSA 值、分支和 PHI 节点
-  -> verifier：IR 校验
-  -> Clang：生成 `.o` 和本地可执行文件
-  -> 可执行文件：计算并显示文件末尾的结果
+Lan formulas
+  -> Flex: words, numbers, text, and indentation
+  -> Bison: expression syntax tree
+  -> Constraint unification: automatic type inference
+  -> Persistent HAMT runtime: Record lookup, path copying, and reference counting
+  -> LLVM: SSA values, branches, and PHI nodes
+  -> verifier: IR validation
+  -> Clang: generates `.o` and a native executable
+  -> Executable: computes and displays the result at the end of the file
 ```
 
-用户函数内部直接使用 LLVM SSA 值，不产生可变局部变量。文字连接由隐藏的运行时
-边界完成，但从 Lan 程序的观察结果看仍保持引用透明。
+User functions use LLVM SSA values directly, without generating mutable local variables. Text concatenation is handled through a hidden runtime
+boundary but remains referentially transparent as observed by a Lan program.
 
-后续可在唯一引用路径上启用 Record 原地更新，其他语法与标准库计划见下列文档。
+Record in-place updates may later be enabled along uniquely referenced paths. Other syntax and standard-library plans are described in the documents below.
 
-语言核心的已完成事项和后续计划见
-[`docs/SYNTAX_TODO.md`](docs/SYNTAX_TODO.md)，标准库 API 清单见
-[`docs/STDLIB_TODO.md`](docs/STDLIB_TODO.md)。完整的专题设计文档也统一位于
-[`docs/`](docs/) 目录；已实现的第一阶段正则表达式 API 及后续边界见
-[`docs/REGEX_DESIGN.md`](docs/REGEX_DESIGN.md)。
+For completed work and future plans for the language core, see
+[`docs/SYNTAX_TODO.md`](docs/SYNTAX_TODO.md). For the standard-library API inventory, see
+[`docs/STDLIB_TODO.md`](docs/STDLIB_TODO.md). Full topical design documents are also collected in
+[`docs/`](docs/). For the implemented first-phase regular-expression API and its future boundaries, see
+[`docs/REGEX_DESIGN.md`](docs/REGEX_DESIGN.md).
