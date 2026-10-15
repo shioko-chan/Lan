@@ -440,6 +440,57 @@ class Checker {
         require(result, *final->value, "执行的 IO action");
         result = child(result);
       }
+    } else if (auto* block = dynamic_cast<const DoExpr*>(&expr)) {
+      struct State {
+        Value value;
+        std::optional<Value> error;
+        bool missing = false;
+        bool completes = true;
+      };
+      bool resultDo = queries_.resultDo(*block);
+      std::function<State(const Expr&, Scope)> visit = [&](const Expr& node, Scope local) -> State {
+        if (auto* let = dynamic_cast<const LetExpr*>(&node)) {
+          local[let->name] = boundary(*let->value, local);
+          return visit(*let->body, std::move(local));
+        }
+        if (auto* bind = dynamic_cast<const DoBindExpr*>(&node)) {
+          auto input = boundary(*bind->input, local);
+          if ((input.kind == Type::Result) != resultDo)
+            throw std::runtime_error("同一个 do 块不能混用 Option 与 Result 的 <- 解包");
+          if (resultDo) {
+            require(input, *bind->input, "Result do 的 <- 输入（先处理外层 Option）");
+            local[bind->name] = child(input);
+            auto tail = visit(*bind->body, std::move(local));
+            bool reachesTail = (input.resultStates & 1) != 0;
+            tail.completes = reachesTail && tail.completes;
+            if (input.resultStates & 2) {
+              tail.error = tail.error ? joined(*input.error, *tail.error) : *input.error;
+            }
+            return tail;
+          }
+          local[bind->name] = present(input);
+          auto tail = visit(*bind->body, std::move(local));
+          tail.missing |= input.optional;
+          tail.completes &= !input.missingOnly;
+          return tail;
+        }
+        if (auto* final = dynamic_cast<const DoResultExpr*>(&node)) {
+          State state;
+          state.value = boundary(*final->value, local);
+          return state;
+        }
+        throw std::runtime_error("内部错误：do 块包含未知步骤");
+      };
+      auto state = visit(*block->body, scope);
+      if (resultDo) {
+        result = withChild(result, state.value);
+        result.resultStates = (state.completes ? 1u : 0u) | (state.error ? 2u : 0u);
+        if (state.error) result.error = std::make_shared<const Value>(*state.error);
+      } else {
+        result = state.value;
+        result.optional |= state.missing;
+        result.missingOnly = !state.completes;
+      }
     }
     return result;
   }

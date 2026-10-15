@@ -1,0 +1,69 @@
+checked_divide(a, b) = if b == 0 { err("zero") } else { ok(a / b) }
+
+option_total(left, right) = do {
+  a <- parse_number(left);
+  b <- parse_number(right);
+  doubled = b * 2;
+  a + doubled
+}
+
+result_total(a, b) = do
+  quotient <- checked_divide(a, b)
+  adjusted <- ok(quotient + 1)
+  quotient + adjusted
+
+nested_option() = do {
+  inner <- ok(parse_number("8"));
+  inner
+}
+
+outer_result() = do {
+  inner <- ok(err("inner"));
+  inner
+}
+
+short_option() = do {
+  first <- parse_number("bad");
+  later = require(missing);
+  first + later
+}
+
+short_result() = do {
+  first <- err("stop");
+  later = 1 / 0;
+  first + later
+}
+
+capture_text(input) = do {
+  text <- input;
+  uppercase(text)
+}
+maybe_text(found) = if found { "saved" } else { missing }
+maybe_record(found) = if found { {name: uppercase("alice")} } else { missing }
+update_record(found) = do {
+  record <- maybe_record(found);
+  record with {active: true}
+}
+retain_result(found) = do {
+  text <- if found {ok(uppercase("kept"))} else {err(lowercase("FAILED"))};
+  {text: text, values: [text, text]}
+}
+
+io {
+  saved = capture_text(maybe_text(false));
+  [
+    (option_total("2", "3") ?? 0) == 8,
+    is_missing(option_total("bad", "3")),
+    result_total(12, 3) |> same(ok(9)),
+    result_total(12, 0) |> same(err("zero")),
+    nested_option() |> same(ok(8)),
+    outer_result() |> same(ok(err("inner"))),
+    is_missing(short_option()),
+    short_result() |> same(err("stop")),
+    is_missing(saved),
+    update_record(true) |> same({name: "ALICE", active: true}),
+    is_missing(update_record(false)),
+    retain_result(true) |> same(ok({text: "KEPT", values: ["KEPT", "KEPT"]})),
+    retain_result(false) |> same(err("failed"))
+  ] |> all(.)
+}

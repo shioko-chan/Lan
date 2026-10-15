@@ -112,6 +112,8 @@ ID [A-Za-z_\200-\377][A-Za-z0-9_\200-\377]*
 <INITIAL>"false"    return FALSE;
 <INITIAL>"missing"  return MISSING;
 <INITIAL>"io"       return IO_KEYWORD;
+<INITIAL>"do"       return DO_KEYWORD;
+<INITIAL>"do"/[ ]*":" { yylval.text = strdup(yytext); return IDENTIFIER; }
 <INITIAL>"<-"       return LEFT_ARROW;
 <INITIAL>"with"     return WITH;
 <INITIAL>"and"      return AND;
@@ -133,12 +135,14 @@ ID [A-Za-z_\200-\377][A-Za-z0-9_\200-\377]*
 <INITIAL>"false"/[ ]*"("    return FALSE;
 <INITIAL>"missing"/[ ]*"("  return MISSING;
 <INITIAL>"io"/[ ]*"("       return IO_KEYWORD;
+<INITIAL>"do"/[ ]*"("       return DO_KEYWORD;
 <INITIAL>"with"/[ ]*"("     return WITH;
 <INITIAL>"and"/[ ]*"("      return AND;
 <INITIAL>"or"/[ ]*"("       return OR;
 <INITIAL>"not"/[ ]*"("      return NOT;
 <INITIAL>{ID}/[ ]*"("[^\n]*")"[ ]*"="[^=>] {
   if (std::strcmp(yytext, "io") == 0) return IO_KEYWORD;
+  if (std::strcmp(yytext, "do") == 0) return DO_KEYWORD;
   if (std::strcmp(yytext, "match") == 0) return MATCH;
   yylval.text = strdup(yytext);
   return FUNCTION_NAME;
@@ -209,7 +213,8 @@ int yylex(void) {
     if (token == NEWLINE) {
       bool headerLayout = !pendingHeaders.empty() && pendingHeaders.back() == explicitDepth;
       bool opensLayout = lastSourceToken == '=' || lastSourceToken == ELSE ||
-                         lastSourceToken == IO_KEYWORD || lastSourceToken == LEFT_ARROW ||
+                         lastSourceToken == IO_KEYWORD || lastSourceToken == DO_KEYWORD ||
+                         lastSourceToken == LEFT_ARROW ||
                          lastSourceToken == FAT_ARROW ||
                          headerLayout;
       if (headerLayout) pendingHeaders.pop_back();
@@ -288,6 +293,10 @@ int yylex(void) {
   if (token == MATCH && lastSourceToken == '.') {
     token = IDENTIFIER;
     yylval.text = strdup("match");
+  }
+  if (token == DO_KEYWORD && lastSourceToken == '.') {
+    token = IDENTIFIER;
+    yylval.text = strdup("do");
   }
   if (token == IF || token == MATCH)
     pendingHeaders.push_back(explicitDepth);

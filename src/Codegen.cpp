@@ -238,6 +238,9 @@ class Inference {
     }
 
     resolveShapes();
+    resolveDoConstraints(false);
+    resolveOutputs(false);
+    resolveDoConstraints(true);
     resolveOutputs(true);
     resolveShapes();
 
@@ -313,7 +316,8 @@ class Inference {
             fail("Option 类型错误：同一 ?? 不能在不同调用中同时表示整值默认和逐元素填补；逐元素填补请显式使用 fill_missing");
           if (vector) vectorOperations_.insert(&expr);
           else vectorOperations_.erase(&expr);
-        }});
+        },
+        [&](const DoExpr& expr) { return doKinds_.at(&expr); }});
     analyzePresence(program);
   }
 
@@ -375,6 +379,10 @@ class Inference {
     return vectorOperations_.count(&expression) != 0;
   }
 
+  bool isResultDo(const DoExpr& expression) const {
+    return doKinds_.at(&expression);
+  }
+
  private:
   std::vector<TypeNode> nodes_;
   std::size_t typeRevision_ = 0;
@@ -426,6 +434,7 @@ class Inference {
   std::unordered_map<std::string, std::vector<Presence>> parameterPresences_;
   std::unordered_map<std::string, Presence> resultPresences_;
   std::vector<std::unordered_map<std::string, Presence>> presenceScopes_;
+  std::vector<bool> presenceDoKinds_;
   std::unordered_map<std::string, std::unordered_map<std::string, Presence>>
       presenceResultsByContext_;
   std::unordered_set<std::string> presenceAnalyzedFunctions_;
@@ -435,6 +444,15 @@ class Inference {
   std::vector<OutputConstraint> outputConstraints_;
   std::unordered_set<std::size_t> resolvedOutputs_;
   std::vector<const Function*> inferenceOrder_;
+  struct DoConstraint {
+    const DoExpr* expression;
+    int output;
+    int finalValue;
+    std::vector<int> inputs;
+  };
+  std::vector<DoConstraint> doConstraints_;
+  std::vector<std::vector<int>> doInputStack_;
+  std::unordered_map<const DoExpr*, bool> doKinds_;
 
   OptionType optionShape(int variable) {
     OptionType shape;
@@ -497,6 +515,39 @@ class Inference {
     for (std::size_t i = 0; i < outputConstraints_.size(); ++i) visit(i);
   }
 
+  void resolveDoConstraints(bool final) {
+    for (const auto& constraint : doConstraints_) {
+      if (constraint.inputs.empty())
+        fail("do 块至少需要一个 <- 解包步骤；普通顺序计算请直接使用块");
+      Type first = resolved(constraint.inputs.front());
+      if (first == Type::Unknown && !final) continue;
+      bool resultDo = first == Type::Result;
+      doKinds_[constraint.expression] = resultDo;
+      for (int input : constraint.inputs) {
+        if (resolved(input) == Type::IO)
+          fail("do 的 <- 只解包 Option 或 Result；执行 IO 请使用 io 块");
+        if (resultDo && resolved(input) == Type::Unknown)
+          bind(input, Type::Result, "Result do 的 <- 输入");
+        bool isResult = resolved(input) == Type::Result;
+        if ((resolved(input) != Type::Unknown && isResult != resultDo))
+          fail("同一个 do 块不能混用 Option 与 Result 的 <- 解包");
+      }
+      if (resultDo) {
+        bind(constraint.output, Type::Result, "Result do 的结果");
+        unify(resultPayload(constraint.output, false), constraint.finalValue,
+              "Result do 的成功值");
+        int error = resultPayload(constraint.inputs.front(), true);
+        for (std::size_t i = 1; i < constraint.inputs.size(); ++i)
+          unify(error, resultPayload(constraint.inputs[i], true),
+                "Result do 的错误类型");
+        unify(resultPayload(constraint.output, true), error,
+              "Result do 的错误类型");
+      } else {
+        unify(constraint.output, constraint.finalValue, "Option do 的最终值");
+      }
+    }
+  }
+
   void collectCalls(const Expr& expr, std::unordered_set<std::string>& calls) const {
     if (auto* io = dynamic_cast<const IOExpr*>(&expr)) {
       collectCalls(*io->body, calls);
@@ -504,6 +555,13 @@ class Inference {
       collectCalls(*bind->action, calls);
       collectCalls(*bind->body, calls);
     } else if (auto* result = dynamic_cast<const IOResultExpr*>(&expr)) {
+      collectCalls(*result->value, calls);
+    } else if (auto* block = dynamic_cast<const DoExpr*>(&expr)) {
+      collectCalls(*block->body, calls);
+    } else if (auto* bind = dynamic_cast<const DoBindExpr*>(&expr)) {
+      collectCalls(*bind->input, calls);
+      collectCalls(*bind->body, calls);
+    } else if (auto* result = dynamic_cast<const DoResultExpr*>(&expr)) {
       collectCalls(*result->value, calls);
     } else if (auto* list = dynamic_cast<const ListExpr*>(&expr)) {
       for (const auto& element : list->elements) collectCalls(*element, calls);
@@ -880,6 +938,30 @@ class Inference {
       if (resolved(input) == Type::Unknown) outputConstraints_.push_back({input, result, Type::IO});
       else unify(result, resolved(input) == Type::IO ? ioResult(input) : input,
                  "io 的最终结果");
+      return result;
+    }
+    if (auto* block = dynamic_cast<const DoExpr*>(&expr)) {
+      doInputStack_.emplace_back();
+      int finalValue = infer(*block->body);
+      auto inputs = std::move(doInputStack_.back());
+      doInputStack_.pop_back();
+      doConstraints_.push_back({block, result, finalValue, std::move(inputs)});
+      return result;
+    }
+    if (auto* bind = dynamic_cast<const DoBindExpr*>(&expr)) {
+      if (doInputStack_.empty()) fail("内部错误：do 绑定不在 do 块内");
+      int input = infer(*bind->input);
+      int payload = newVariable();
+      outputConstraints_.push_back({input, payload, Type::Result});
+      doInputStack_.back().push_back(input);
+      scopes_.emplace_back();
+      scopes_.back().emplace(bind->name, payload);
+      unify(result, infer(*bind->body), "do 后续步骤");
+      scopes_.pop_back();
+      return result;
+    }
+    if (auto* final = dynamic_cast<const DoResultExpr*>(&expr)) {
+      unify(result, infer(*final->value), "do 最终值");
       return result;
     }
     if (dynamic_cast<const NumberExpr*>(&expr)) {
@@ -1579,6 +1661,28 @@ class Inference {
     } else if (auto* final = dynamic_cast<const IOResultExpr*>(&expr)) {
       result = presenceOf(*final->value);
       if (expressionType(*final->value) == Type::IO) result = kMaybeMissing;
+      presenceMayEscape_ = false;
+    } else if (auto* block = dynamic_cast<const DoExpr*>(&expr)) {
+      bool resultDo = isResultDo(*block);
+      presenceDoKinds_.push_back(resultDo);
+      Presence body = presenceOf(*block->body);
+      presenceDoKinds_.pop_back();
+      result = resultDo ? kPresent : body;
+      presenceMayEscape_ = false;
+    } else if (auto* bind = dynamic_cast<const DoBindExpr*>(&expr)) {
+      Presence input = presenceOf(*bind->input);
+      presenceMayEscape_ = false;
+      presenceScopes_.emplace_back();
+      bool resultDo = presenceDoKinds_.back();
+      presenceScopes_.back().emplace(bind->name,
+          resultDo ? kMaybeMissing : kPresent);
+      Presence body = presenceOf(*bind->body);
+      presenceScopes_.pop_back();
+      result = resultDo ? body
+                        : static_cast<Presence>((input & kMissing) |
+                            ((input & kPresent) ? body : kNoPresence));
+    } else if (auto* final = dynamic_cast<const DoResultExpr*>(&expr)) {
+      result = presenceOf(*final->value);
       presenceMayEscape_ = false;
     } else if (dynamic_cast<const NumberExpr*>(&expr) ||
         dynamic_cast<const BooleanExpr*>(&expr) ||
@@ -4024,13 +4128,76 @@ struct CodeGenerator::Impl {
   }
 
   TypedValue emitResult(const CallExpr& call) {
-    auto payload = emitExpr(*call.args[0]);
+    return makeResult(emitExpr(*call.args[0]), call.callee == "ok");
+  }
+
+  TypedValue makeResult(const TypedValue& payload, bool success) {
     auto parts = dynamicParts(payload);
     auto construct = external("lan_result_new", llvmType(Type::Result),
         {builder.getInt32Ty(), builder.getInt32Ty(), builder.getDoubleTy(), llvmType(Type::Text)});
     auto* value = builder.CreateCall(construct,
-        {builder.getInt32(call.callee == "ok"), parts[0], parts[1], parts[2]}, "result");
+        {builder.getInt32(success), parts[0], parts[1], parts[2]}, "result");
     return {adoptHeap(value, Type::Result), Type::Result, kPresent};
+  }
+
+  TypedValue emitDo(const DoExpr& block) {
+    const bool resultDo = inference->isResultDo(block);
+    const Type outputType = inference->expressionType(block);
+    const Presence outputPresence = inference->expressionPresence(block);
+    auto* function = builder.GetInsertBlock()->getParent();
+    auto* merge = llvm::BasicBlock::Create(context, "do.result", function);
+    std::vector<std::pair<llvm::Value*, llvm::BasicBlock*>> incoming;
+
+    std::function<void(const Expr&)> emitStep = [&](const Expr& step) {
+      if (auto* let = dynamic_cast<const LetExpr*>(&step)) {
+        auto value = emitElementBoundary(*let->value);
+        scopes.emplace_back();
+        scopes.back().emplace(let->name, value);
+        emitStep(*let->body);
+        scopes.pop_back();
+        return;
+      }
+      if (auto* bind = dynamic_cast<const DoBindExpr*>(&step)) {
+        auto input = emitElementBoundary(*bind->input);
+        auto* next = llvm::BasicBlock::Create(context, "do.next", function);
+        auto* stop = llvm::BasicBlock::Create(context, "do.stop", function);
+        llvm::Value* continues = resultDo ? resultIsOk(input) : presentFlag(input);
+        builder.CreateCondBr(continues, next, stop);
+
+        builder.SetInsertPoint(stop);
+        TypedValue stopped = resultDo
+            ? input
+            : TypedValue{missingValue(outputType), outputType, kMissing};
+        stopped = convertPresence(stopped, outputPresence);
+        incoming.push_back({stopped.value, builder.GetInsertBlock()});
+        builder.CreateBr(merge);
+
+        builder.SetInsertPoint(next);
+        TypedValue payload = resultDo
+            ? resultPayload(input,
+                inference->resultPayloadType(*bind->input, false))
+            : TypedValue{rawPayload(input), input.type, kPresent};
+        scopes.emplace_back();
+        scopes.back().emplace(bind->name, payload);
+        emitStep(*bind->body);
+        scopes.pop_back();
+        return;
+      }
+      auto* final = dynamic_cast<const DoResultExpr*>(&step);
+      if (!final) throw std::runtime_error("内部错误：do 块包含未知步骤");
+      auto value = emitElementBoundary(*final->value);
+      if (resultDo) value = makeResult(value, true);
+      value = convertPresence(value, outputPresence);
+      incoming.push_back({value.value, builder.GetInsertBlock()});
+      builder.CreateBr(merge);
+    };
+
+    emitStep(*block.body);
+    builder.SetInsertPoint(merge);
+    auto* result = builder.CreatePHI(encodedType(outputType, outputPresence),
+                                     incoming.size(), "do.value");
+    for (const auto& [value, source] : incoming) result->addIncoming(value, source);
+    return {result, outputType, outputPresence};
   }
 
   TypedValue emitRequire(const CallExpr& call) {
@@ -4444,6 +4611,7 @@ struct CodeGenerator::Impl {
     Type type = inference->expressionType(expr);
     Presence presence = inference->expressionPresence(expr);
     if (auto* io = dynamic_cast<const IOExpr*>(&expr)) return emitIO(*io);
+    if (auto* block = dynamic_cast<const DoExpr*>(&expr)) return emitDo(*block);
     if (auto* execution = dynamic_cast<const IOBindExpr*>(&expr)) {
       auto action = emitElementBoundary(*execution->action);
       auto value = executeIO(action, inference->ioResultType(*execution->action));

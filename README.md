@@ -277,7 +277,7 @@ program()  # 12
 - 未使用的 action 不执行；同一 action 多次用于 `<-` 时，每次都会重新执行，不缓存结果。
 - 每个步骤按顺序执行，错误立即停止后续步骤。`?` 只结束所在步骤的表达式，不跳过整个块。
 - IO 可以作为函数参数、默认值、返回值及局部绑定；不能放进 List/Record/Table，不能比较、
-  调用 `same` 或转换为 Text。`<-` 只能出现在 `io` 块的步骤位置。
+  调用 `same` 或转换为 Text。`io` 中的 `<-` 只执行 IO；`do` 中的 `<-` 只解包数据状态。
 
 action 自身可能为 missing 时编译拒绝执行，可以先用 `??` 选择备用 action。执行成功后产生的
 missing 是普通数据，后续步骤可用 `??`、`is_missing` 或 `require` 处理；程序入口显示
@@ -1131,13 +1131,64 @@ io {
 }
 ```
 
-`<-` 不解包 Result，err 不自动停止后续步骤。执行 IO 的错误恢复 API 尚未接入标准库；
+这里处于 `io` 块，因此 `<-` 不解包 Result，err 不自动停止后续步骤。执行 IO 的错误恢复 API 尚未接入标准库；
 这里的 `read_config` 只演示返回普通 Result 数据。
 
 整体比较使用 `same`，同时比较状态和载荷，不支持 Result 的 `==`、算术或排序。
 `to_text` 和结果显示保留 `ok(...)` / `err(...)` 包装；含 Regex 的值仍不能转换为 Text。
 第一版 Result 是持有一个带标签载荷的 ARC 堆对象，构造时保留载荷引用，解构时借用，
 离开作用域按现有 ARC 规则释放；外层 missing 使用空指针，不会复制内部 List/Record。
+
+## do 短路块
+
+`do` 用一个块简化连续的 Option 或 Result 解包。`name <- expression` 成功时绑定内部值，
+失败时立即结束当前 do；`name = expression` 仍是普通绑定，不传播任何状态：
+
+```lan
+total = do {
+  price <- parse_number(price_text);
+  quantity <- parse_number(quantity_text);
+  subtotal = price * quantity;
+  subtotal
+}
+```
+
+这里 `<-` 输入是 Option：遇到第一个 missing 时，后续步骤不再求值，整个 do 得到 missing；
+全部存在时，最后的普通值成为结果。存在性分析仍能证明某次调用必定成功并生成裸 SSA 值。
+确定存在的 T 可以按已有提升规则作为 Option 输入，因此 `do {x <- 1; x}` 合法但没有实际作用。
+
+Result 使用完全相同的表面语法：
+
+```lan
+calculate(a, b) = do
+  quotient <- checked_divide(a, b)
+  adjusted <- validate(quotient)
+  quotient + adjusted
+```
+
+首个 `<-` 的静态底层类型决定块的载体。Result do 遇到 err 时直接返回原错误，全部成功时
+将最后的普通值包装成 ok。所有 Result 输入必须具有同一种错误类型；一个 do 不能混用
+Option 与 Result，也不能执行 IO。`IO<Result<T, E>>` 应先在 io 块执行，再在 do 中解包：
+
+```lan
+io {
+  loaded <- load_config();       # 只执行 IO，loaded 是 Result
+  checked = do {
+    config <- loaded;            # 解包 Result
+    validated <- validate(config);
+    validated
+  };
+  checked
+}
+```
+
+do 至少需要一个 `<-`；只有普通绑定时直接使用普通块。末尾值总是作为成功载荷，不自动
+压平嵌套：`do {x <- ok(1); ok(x)}` 得到 `ok(ok(1))`。`_ <- expression` 可以显式忽略
+成功载荷，但仍传播 missing/err。每个 `<-` 右侧、普通 `=` 右侧和末尾表达式都是原有
+`?` 的独立表达式边界；`?`、`??` 仍只处理 Option，不获得 Result 语义。
+
+do 是表达式，支持缩进和花括号/分号两种形式。`do` 是控制关键字，但 Record 字段仍可
+命名为 do，例如 `{do: 1}.do`。
 
 ## 运算错误与运行时表示
 

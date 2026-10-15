@@ -154,7 +154,7 @@ static lan::Expr* makeRecordWith(lan::Expr* record,
   std::vector<lan::MatchArm>* arms;
 }
 
-%token IF ELSE MATCH TRUE FALSE MISSING IO_KEYWORD LEFT_ARROW WITH PIPE_ARROW FAT_ARROW
+%token IF ELSE MATCH TRUE FALSE MISSING IO_KEYWORD DO_KEYWORD LEFT_ARROW WITH PIPE_ARROW FAT_ARROW
 %token NEWLINE INDENT DEDENT
 %token VIRTUAL_SEMICOLON VIRTUAL_CLOSE
 %token BAD_INDENT
@@ -166,7 +166,7 @@ static lan::Expr* makeRecordWith(lan::Expr* record,
 
 %type <expr> expression coalesce logical_or logical_and equality comparison additive
 %type <expr> multiplicative unary pipeline postfix primary block block_items
-%type <expr> io_block io_items
+%type <expr> io_block io_items do_block do_items
 %type <exprs> arguments argument_list
 %type <call_args> call_arguments call_argument_list
 %type <params> parameters parameter_list
@@ -312,6 +312,20 @@ io_separator
   | VIRTUAL_SEMICOLON
   ;
 
+do_block
+  : '{' do_items '}' { $$ = $2; }
+  | VIRTUAL_OPEN do_items VIRTUAL_CLOSE { $$ = $2; }
+  ;
+
+do_items
+  : expression { $$ = located(new lan::DoResultExpr($1), @1.first_line, @1.first_column); }
+  | expression ';' { $$ = located(new lan::DoResultExpr($1), @1.first_line, @1.first_column); }
+  | postfix '=' expression io_separator do_items
+    { $$ = makeBinding($1, $3, $5); if (!$$) YYERROR; }
+  | IDENTIFIER LEFT_ARROW expression io_separator do_items
+    { $$ = located(new lan::DoBindExpr($1, $3, $5), @2.first_line, @2.first_column); free($1); }
+  ;
+
 coalesce
   : logical_or COALESCE coalesce { $$ = located(new lan::BinaryExpr("??", $1, $3), @2.first_line, @2.first_column); }
   | logical_or { $$ = $1; }
@@ -386,6 +400,7 @@ primary
   | MISSING { $$ = located(new lan::MissingExpr(), @1.first_line, @1.first_column); }
   | '(' ')' { $$ = located(new lan::UnitExpr(), @1.first_line, @1.first_column); }
   | IO_KEYWORD io_block { $$ = located(new lan::IOExpr($2), @1.first_line, @1.first_column); }
+  | DO_KEYWORD do_block { $$ = located(new lan::DoExpr($2), @1.first_line, @1.first_column); }
   | '[' arguments ']' { $$ = located(new lan::ListExpr($2), @1.first_line, @1.first_column); }
   | '{' record_fields '}' { $$ = located(new lan::RecordExpr($2), @1.first_line, @1.first_column); }
   | TRUE { $$ = located(new lan::BooleanExpr(true), @1.first_line, @1.first_column); }

@@ -98,6 +98,11 @@ llvm_map_components_to_libnames(LLVM_LIBS Core Support Passes BitReader Linker)
 target_link_libraries(lanc PRIVATE ${LLVM_LIBS})
 
 enable_testing()
+add_test(NAME do_blocks COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/do_blocks.lan)
+set_tests_properties(do_blocks PROPERTIES PASS_REGULAR_EXPRESSION "true")
+add_test(NAME do_compile_contracts COMMAND ${CMAKE_COMMAND}
+  -DLANC=$<TARGET_FILE:lanc> -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/do-contracts
+  -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_do.cmake)
 add_executable(lan_result_runtime_test tests/result_runtime.cpp runtime/record.cpp
   third_party/utf8proc/utf8proc.c)
 target_include_directories(lan_result_runtime_test PRIVATE third_party/utf8proc)

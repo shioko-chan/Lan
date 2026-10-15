@@ -25,6 +25,7 @@ struct OptionTypeQueries {
   std::function<OptionType(const Expr&)> expression;
   std::function<OptionType(const Function&, std::size_t)> parameter;
   std::function<void(const BinaryExpr&, bool)> coalesceKind;
+  std::function<bool(const DoExpr&)> resultDo;
 };
 
 // Run after base-type unification and before lowering. No runtime operations

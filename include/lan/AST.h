@@ -253,6 +253,26 @@ struct IOResultExpr final : Expr {
   std::unique_ptr<Expr> value;
 };
 
+// A do block sequences either Option or Result computations. The first bind
+// determines the carrier; ordinary bindings remain LetExpr nodes.
+struct DoExpr final : Expr {
+  explicit DoExpr(Expr* body) : body(body) {}
+  std::unique_ptr<Expr> body;
+};
+
+struct DoBindExpr final : Expr {
+  DoBindExpr(std::string name, Expr* input, Expr* body)
+      : name(std::move(name)), input(input), body(body) {}
+  std::string name;
+  std::unique_ptr<Expr> input;
+  std::unique_ptr<Expr> body;
+};
+
+struct DoResultExpr final : Expr {
+  explicit DoResultExpr(Expr* value) : value(value) {}
+  std::unique_ptr<Expr> value;
+};
+
 struct Parameter {
   Parameter(std::string name, Expr* defaultValue = nullptr)
       : name(std::move(name)), defaultValue(defaultValue) {}

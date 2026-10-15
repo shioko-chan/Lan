@@ -254,6 +254,10 @@ action 时使用显式 `if`。
 拒绝，必须先选用备用 action 或使用显式 `require`。最后的纯表达式可返回 missing，
 最后的 action 则必须存在。
 
+语言另有 `do` 短路块：其中 `<-` 解包 Option 或 Result，并在 missing/err 时结束当前
+do；它不执行 IO，也不改变 io 块的 `<-` 语义。组合 `IO<Result<T, E>>` 时，应先用 io
+执行 action 得到普通 Result 值，再在 do 中解包。
+
 ## 文件写入语义
 
 - 每个文件写入使用同目录临时文件并原子替换目标路径。

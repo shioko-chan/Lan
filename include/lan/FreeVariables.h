@@ -27,6 +27,14 @@ inline std::set<std::string> freeVariables(const Expr& expression) {
       child(*value->body);
     } else if (auto* value = dynamic_cast<const IOResultExpr*>(&expr)) {
       child(*value->value);
+    } else if (auto* value = dynamic_cast<const DoExpr*>(&expr)) {
+      child(*value->body);
+    } else if (auto* value = dynamic_cast<const DoBindExpr*>(&expr)) {
+      child(*value->input);
+      bound.insert(value->name);
+      visit(*value->body, bound);
+    } else if (auto* value = dynamic_cast<const DoResultExpr*>(&expr)) {
+      child(*value->value);
     } else if (auto* value = dynamic_cast<const CollectionExpr*>(&expr)) {
       child(*value->collection);
       bound.insert("$lan_current_element");
