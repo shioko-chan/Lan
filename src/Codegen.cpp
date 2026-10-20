@@ -1,4 +1,5 @@
 #include "lan/Codegen.h"
+#include "lan/Diagnostic.h"
 #include "lan/RuntimeAssets.h"
 #include "lan/FreeVariables.h"
 #include "lan/OptionCheck.h"
@@ -27,6 +28,7 @@
 #include <optional>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 
 namespace lan {
 
@@ -49,6 +51,28 @@ const char* typeName(Type type) {
     case Type::Unknown: return "尚未确定的类型";
   }
   return "未知类型";
+}
+
+// This name is used only in compiler errors. typeName() is also embedded into
+// generated runtime diagnostics, which are intentionally outside this setting.
+const char* compilerTypeName(Type type) {
+  if (diagnosticLanguage() == DiagnosticLanguage::Chinese) return typeName(type);
+  switch (type) {
+    case Type::Number: return "Number";
+    case Type::Boolean: return "Boolean";
+    case Type::Text: return "Text";
+    case Type::List: return "List";
+    case Type::Record: return "Record";
+    case Type::Table: return "Table";
+    case Type::Regex: return "Regex";
+    case Type::Instant: return "Instant";
+    case Type::Unit: return "Unit";
+    case Type::IO: return "IO";
+    case Type::Result: return "Result";
+    case Type::Dynamic: return "dynamic value";
+    case Type::Unknown: return "unknown type";
+  }
+  return "unknown type";
 }
 
 struct TypeNode {
@@ -129,9 +153,9 @@ class Inference {
           function->name == "fields" ||
           function->name == "has_field" || function->name == "merge" ||
           function->name == "remove_field")
-        fail("“" + function->name + "”由语言保留，请换一个函数名");
+        fail(diagnostic(DiagnosticKey::ReservedFunction, {function->name}));
       if (functions_.count(function->name))
-        fail("函数“" + function->name + "”定义了不止一次");
+        fail(diagnostic(DiagnosticKey::DuplicateFunction, {function->name}));
       FunctionType signature;
       for (std::size_t i = 0; i < function->params.size(); ++i)
         signature.params.push_back(newVariable());
@@ -151,10 +175,11 @@ class Inference {
         const auto& parameter = function->params[i];
         if (parameter.defaultValue) sawDefault = true;
         else if (sawDefault)
-          fail("函数“" + function->name + "”中，没有默认值的参数“" +
-               parameter.name + "”必须放在默认参数前面");
+          fail(diagnostic(DiagnosticKey::DefaultParameterOrder,
+                          {function->name, parameter.name}));
         if (scopes_.back().count(parameter.name))
-          fail("函数“" + function->name + "”中参数“" + parameter.name + "”重复了");
+          fail(diagnostic(DiagnosticKey::DuplicateParameter,
+                          {function->name, parameter.name}));
         if (parameter.defaultValue)
           unify(infer(*parameter.defaultValue), signature.params[i],
                 "参数“" + parameter.name + "”的默认值");
@@ -176,8 +201,8 @@ class Inference {
         bind(constraint.input, Type::List, "length 的输入");
         listElement(constraint.input, "length 的输入");
       } else if (input != Type::List && input != Type::Text) {
-        fail("length 需要 List 或 Text，但这里得到的是" +
-             std::string(typeName(input)));
+        fail(diagnostic(DiagnosticKey::ExpectedListOrText,
+                        {compilerTypeName(input)}));
       }
     }
     for (const auto& constraint : sliceConstraints_) {
@@ -188,8 +213,8 @@ class Inference {
         input = Type::List;
       }
       if (input != Type::List && input != Type::Table)
-        fail("take/drop 需要 List 或 Table，但这里得到的是" +
-             std::string(typeName(input)));
+        fail(diagnostic(DiagnosticKey::ExpectedListOrTable,
+                        {compilerTypeName(input)}));
       unify(constraint.result, constraint.input, "take/drop 的结果");
       if (input == Type::Table)
         shapeCopies_.push_back({constraint.input, constraint.result});
@@ -221,8 +246,8 @@ class Inference {
       } else if (collectionType == Type::Table) {
         bind(constraint.element, Type::Record, "Table 的逻辑行");
       } else {
-        fail("集合操作需要 List 或 Table，但这里得到的是" +
-             std::string(typeName(collectionType)));
+        fail(diagnostic(DiagnosticKey::ExpectedCollection,
+                        {compilerTypeName(collectionType)}));
       }
     }
     for (const auto& constraint : tableInputConstraints_) {
@@ -233,7 +258,7 @@ class Inference {
         bind(listElement(constraint.input, "table 的行列表"), Type::Record,
              "table 的每一行");
       } else if (inputType != Type::Record) {
-        fail("table 需要 Record<List<T>> 或 List<Record>");
+        fail(diagnostic(DiagnosticKey::ExpectedTableRows));
       }
     }
 
@@ -246,54 +271,51 @@ class Inference {
 
     for (int variable : dataOnlyVariables_)
       if (resolved(variable) == Type::IO)
-        fail("IO 不能放入容器、比较或转换为文字");
+        fail(diagnostic(DiagnosticKey::IOInValue));
     for (std::size_t i = 0; i < nodes_.size(); ++i) {
       if (resolved(i) == Type::List &&
           resolved(listElement(i, "List 元素")) == Type::IO)
-        fail("IO 不能作为 List 或 Table 列元素");
+        fail(diagnostic(DiagnosticKey::IOInCollection));
       if (resolved(i) == Type::IO && resolved(ioResult(i)) == Type::IO)
-        fail("IO 结果不能再是 IO；请在 io 块最后一步执行该 action");
+        fail(diagnostic(DiagnosticKey::NestedIO));
       if (resolved(i) == Type::Result &&
           (resolved(resultPayload(i, false)) == Type::IO ||
            resolved(resultPayload(i, true)) == Type::IO))
-        fail("Result 载荷不能是 IO；请使用 IO<Result<T, E>>");
+        fail(diagnostic(DiagnosticKey::IOResultPayload));
     }
 
     for (int variable : plusVariables_) {
       Type type = resolved(variable);
       if (type == Type::Unknown) bind(variable, Type::Number, "加法");
       else if (type != Type::Number && type != Type::Text)
-        fail("“+”只能连接两个数字或两段文字，不能用于" +
-             std::string(typeName(type)));
+        fail(diagnostic(DiagnosticKey::InvalidAddition, {compilerTypeName(type)}));
     }
     for (int variable : equalityVariables_) {
-      if (resolved(variable) == Type::IO) fail("IO 不允许比较");
+      if (resolved(variable) == Type::IO) fail(diagnostic(DiagnosticKey::IOComparison));
       if (resolved(variable) == Type::List || resolved(variable) == Type::Record ||
           resolved(variable) == Type::Table || resolved(variable) == Type::Regex ||
           resolved(variable) == Type::Result)
-        fail("列表、Record、Table、Regex 和 Result 不能使用 == 或 != 整体比较，请使用 same");
+        fail(diagnostic(DiagnosticKey::WholeValueComparison));
     }
     for (int variable : orderedVariables_) {
       Type type = resolved(variable);
       if (type == Type::Unknown) bind(variable, Type::Number, "顺序比较");
       else if (type != Type::Number && type != Type::Instant)
-        fail("顺序比较只能用于 Number 或 Instant，不能用于" +
-             std::string(typeName(type)));
+        fail(diagnostic(DiagnosticKey::OrderedComparison, {compilerTypeName(type)}));
     }
     for (int variable : recordLikeVariables_) {
       Type type = resolved(variable);
       if (type == Type::Unknown) bind(variable, Type::Record, "字段访问左侧");
       else if (type != Type::Record && type != Type::Table)
-        fail("字段访问左侧需要 Record 或 Table，但这里得到的是" +
-             std::string(typeName(type)));
+        fail(diagnostic(DiagnosticKey::InvalidFieldObject, {compilerTypeName(type)}));
     }
     for (int element : sortableListElements_) {
       Type type = resolved(element);
       if (type == Type::Unknown) bind(element, Type::Number, "sort 的列表元素");
       else if (type != Type::Number && type != Type::Text &&
                type != Type::Instant)
-        fail("sort 只能用于 Number、Text 或 Instant List，不能用于" +
-             std::string(typeName(type)) + " List");
+        fail(diagnostic(DiagnosticKey::InvalidSortElement,
+                        {std::string(compilerTypeName(type)) + " List"}));
     }
     for (const auto& [expression, variable] : expressions_)
       if (dynamic_cast<const FieldExpr*>(expression) && resolved(variable) == Type::Unknown)
@@ -313,7 +335,7 @@ class Inference {
         [&](const BinaryExpr& expr, bool vector) {
           auto [found, inserted] = coalesceKinds_.emplace(&expr, vector);
           if (!inserted && found->second != vector)
-            fail("Option 类型错误：同一 ?? 不能在不同调用中同时表示整值默认和逐元素填补；逐元素填补请显式使用 fill_missing");
+            fail(diagnostic(DiagnosticKey::AmbiguousCoalesce));
           if (vector) vectorOperations_.insert(&expr);
           else vectorOperations_.erase(&expr);
         },
@@ -496,7 +518,7 @@ class Inference {
     std::vector<unsigned char> visited(outputConstraints_.size());
     std::function<void(std::size_t)> visit = [&](std::size_t index) {
       if (visited[index] == 2 || resolvedOutputs_.count(index)) return;
-      if (visited[index] == 1) fail("结果存在循环类型约束");
+      if (visited[index] == 1) fail(diagnostic(DiagnosticKey::CircularType));
       visited[index] = 1;
       int input = outputConstraints_[index].input;
       for (std::size_t other = 0; other < outputConstraints_.size(); ++other)
@@ -518,19 +540,19 @@ class Inference {
   void resolveDoConstraints(bool final) {
     for (const auto& constraint : doConstraints_) {
       if (constraint.inputs.empty())
-        fail("do 块至少需要一个 <- 解包步骤；普通顺序计算请直接使用块");
+        fail(diagnostic(DiagnosticKey::EmptyDo));
       Type first = resolved(constraint.inputs.front());
       if (first == Type::Unknown && !final) continue;
       bool resultDo = first == Type::Result;
       doKinds_[constraint.expression] = resultDo;
       for (int input : constraint.inputs) {
         if (resolved(input) == Type::IO)
-          fail("do 的 <- 只解包 Option 或 Result；执行 IO 请使用 io 块");
+          fail(diagnostic(DiagnosticKey::WrongDoInput));
         if (resultDo && resolved(input) == Type::Unknown)
           bind(input, Type::Result, "Result do 的 <- 输入");
         bool isResult = resolved(input) == Type::Result;
         if ((resolved(input) != Type::Unknown && isResult != resultDo))
-          fail("同一个 do 块不能混用 Option 与 Result 的 <- 解包");
+          fail(diagnostic(DiagnosticKey::MixedDo));
       }
       if (resultDo) {
         bind(constraint.output, Type::Result, "Result do 的结果");
@@ -633,7 +655,7 @@ class Inference {
         }
         if (!cycle.empty()) cycle += " → ";
         cycle += name;
-        fail("Lan 禁止递归调用：" + cycle);
+        fail(diagnostic(DiagnosticKey::RecursiveCall, {cycle}));
       }
       visits[name] = Visit::Visiting;
       path.push_back(name);
@@ -659,28 +681,28 @@ class Inference {
       std::size_t slot = 0;
       if (name.empty()) {
         if (sawNamed)
-          fail("函数“" + call.callee + "”的位置参数必须放在命名参数之前");
+          fail(diagnostic(DiagnosticKey::NamedArgumentOrder, {call.callee}));
         slot = nextPositional++;
         if (slot >= definition.params.size())
-          fail("函数“" + call.callee + "”收到的参数太多了");
+          fail(diagnostic(DiagnosticKey::TooManyArguments, {call.callee}));
       } else {
         sawNamed = true;
         auto found = std::find_if(
             definition.params.begin(), definition.params.end(),
             [&](const Parameter& parameter) { return parameter.name == name; });
         if (found == definition.params.end())
-          fail("函数“" + call.callee + "”没有名为“" + name + "”的参数");
+          fail(diagnostic(DiagnosticKey::UnknownArgument, {call.callee, name}));
         slot = static_cast<std::size_t>(found - definition.params.begin());
       }
       if (slots[slot] >= 0)
-        fail("函数“" + call.callee + "”的参数“" +
-             definition.params[slot].name + "”被传入了不止一次");
+        fail(diagnostic(DiagnosticKey::DuplicateArgument,
+                        {call.callee, definition.params[slot].name}));
       slots[slot] = static_cast<int>(source);
     }
     for (std::size_t slot = 0; slot < slots.size(); ++slot)
       if (slots[slot] < 0 && !definition.params[slot].defaultValue)
-        fail("调用函数“" + call.callee + "”时缺少必填参数“" +
-             definition.params[slot].name + "”");
+        fail(diagnostic(DiagnosticKey::MissingArgument,
+                        {call.callee, definition.params[slot].name}));
     return slots;
   }
 
@@ -702,7 +724,9 @@ class Inference {
     int root = find(variable);
     Type old = nodes_[root].type;
     if (old != Type::Unknown && old != type)
-      fail(contextName + "需要" + typeName(type) + "，但这里得到的是" + typeName(old));
+      fail(diagnostic(DiagnosticKey::TypeRequired,
+                      {compilerContext(contextName), compilerTypeName(type),
+                       compilerTypeName(old)}));
     if (old != type) ++typeRevision_;
     nodes_[root].type = type;
   }
@@ -806,7 +830,7 @@ class Inference {
       return false;
     };
     if (contains(leftRoot, rightRoot) || contains(rightRoot, leftRoot))
-      fail(contextName + "产生无限嵌套的类型");
+      fail(diagnostic(DiagnosticKey::InfiniteType, {compilerContext(contextName)}));
     Type leftType = nodes_[leftRoot].type;
     Type rightType = nodes_[rightRoot].type;
     int leftElement = nodes_[leftRoot].listElement;
@@ -816,8 +840,9 @@ class Inference {
     int leftSuccess = nodes_[leftRoot].success, rightSuccess = nodes_[rightRoot].success;
     int leftError = nodes_[leftRoot].error, rightError = nodes_[rightRoot].error;
     if (leftType != Type::Unknown && rightType != Type::Unknown && leftType != rightType)
-      fail(contextName + "两边的种类不同：一边是" + typeName(leftType) +
-           "，另一边是" + typeName(rightType));
+      fail(diagnostic(DiagnosticKey::TypeMismatch,
+                      {compilerContext(contextName), compilerTypeName(leftType),
+                       compilerTypeName(rightType)}));
     nodes_[rightRoot].parent = leftRoot;
     ++typeRevision_;
     if (leftType == Type::Unknown) nodes_[leftRoot].type = rightType;
@@ -949,7 +974,7 @@ class Inference {
       return result;
     }
     if (auto* bind = dynamic_cast<const DoBindExpr*>(&expr)) {
-      if (doInputStack_.empty()) fail("内部错误：do 绑定不在 do 块内");
+      if (doInputStack_.empty()) fail(diagnostic(DiagnosticKey::UnknownDoBinding));
       int input = infer(*bind->input);
       int payload = newVariable();
       outputConstraints_.push_back({input, payload, Type::Result});
@@ -992,7 +1017,7 @@ class Inference {
       Shape shape;
       for (const auto& field : record->fields) {
         if (!field.key && !names.insert(field.name).second)
-          fail("Record 字段“" + field.name + "”重复了");
+          fail(diagnostic(DiagnosticKey::DuplicateField, {field.name}));
         if (field.key) {
           bind(infer(*field.key), Type::Text, "动态字段名");
           shape.complete = false;
@@ -1014,13 +1039,13 @@ class Inference {
         }
       }
       if (variable->name == "$lan_current_element")
-        fail("当前元素“.”只能写在集合操作的元素表达式中");
+        fail(diagnostic(DiagnosticKey::CurrentElement));
       if (variable->name == "pi" || variable->name == "e" ||
           variable->name == "tau") {
         bind(result, Type::Number, "数学常量“" + variable->name + "”");
         return result;
       }
-      fail("找不到名称“" + variable->name + "”，请检查拼写或先给它一个值");
+      fail(diagnostic(DiagnosticKey::UnknownName, {variable->name}));
     }
     if (auto* let = dynamic_cast<const LetExpr*>(&expr)) {
       int value = infer(*let->value);
@@ -1215,26 +1240,26 @@ class Inference {
       return result;
     }
     if (dynamic_cast<const ElementBindingExpr*>(&expr))
-      fail("元素绑定“=>”只能写在集合操作中");
+      fail(diagnostic(DiagnosticKey::ElementBinding));
     if (auto* call = dynamic_cast<const CallExpr*>(&expr)) {
       bool hasNamed = std::any_of(call->argNames.begin(), call->argNames.end(),
                                   [](const std::string& name) { return !name.empty(); });
       if (hasNamed && !functions_.count(call->callee))
-        fail("内置函数“" + call->callee + "”暂不接受命名参数");
+        fail(diagnostic(DiagnosticKey::BuiltinNamedArgument, {call->callee}));
       if (isIOBuiltin(call->callee)) {
         if (call->callee == "now") {
-          if (!call->args.empty()) fail("now 不接受参数");
+          if (!call->args.empty()) fail(diagnostic(DiagnosticKey::NoArguments, {"now"}));
           bind(ioResult(result), Type::Instant, "now 的结果");
           return result;
         }
         if (call->callee == "random") {
-          if (!call->args.empty()) fail("random 不接受参数");
+          if (!call->args.empty()) fail(diagnostic(DiagnosticKey::NoArguments, {"random"}));
           bind(ioResult(result), Type::Number, "random 的结果");
           return result;
         }
         if (call->callee == "random_between" || call->callee == "random_integer") {
           if (call->args.size() != 2)
-            fail("函数“" + call->callee + "”需要 minimum 和 maximum");
+            fail(requiredArguments(call->callee, RequirementKey::MinimumMaximum));
           bind(infer(*call->args[0]), Type::Number, call->callee + " 的 minimum");
           bind(infer(*call->args[1]), Type::Number, call->callee + " 的 maximum");
           bind(ioResult(result), Type::Number, call->callee + " 的结果");
@@ -1242,7 +1267,7 @@ class Inference {
         }
         if (call->callee == "choose" || call->callee == "shuffle") {
           if (call->args.size() != 1)
-            fail("函数“" + call->callee + "”需要 1 个 List");
+            fail(requiredArguments(call->callee, RequirementKey::OneList));
           int input = infer(*call->args[0]);
           int element = listElement(input, call->callee + " 的输入");
           int payload = ioResult(result);
@@ -1252,7 +1277,8 @@ class Inference {
         }
         bool write = call->callee == "write_stdout";
         if (call->args.size() != (write ? 1u : 0u))
-          fail(call->callee + (write ? " 需要 1 个 Text 参数" : " 不接受参数"));
+          fail(write ? requiredArguments(call->callee, RequirementKey::OneTextParameter)
+                     : diagnostic(DiagnosticKey::NoArguments, {call->callee}));
         if (write) bind(infer(*call->args[0]), Type::Text, "write_stdout 的输入");
         int payload = ioResult(result);
         if (call->callee == "arguments")
@@ -1262,14 +1288,14 @@ class Inference {
       }
       if (isTimeBuiltin(call->callee)) {
         if (call->callee == "parse_time") {
-          if (call->args.size() != 1) fail("parse_time 需要 1 个 Text");
+          if (call->args.size() != 1) fail(requiredArguments("parse_time", RequirementKey::OneText));
           bind(infer(*call->args[0]), Type::Text, "parse_time 的输入");
           bind(result, Type::Instant, "parse_time 的结果");
           return result;
         }
         if (call->callee == "format_time" || call->callee == "unix_seconds") {
           if (call->args.size() != 1)
-            fail("函数“" + call->callee + "”需要 1 个 Instant");
+            fail(requiredArguments(call->callee, RequirementKey::OneInstant));
           bind(infer(*call->args[0]), Type::Instant,
                "函数“" + call->callee + "”的输入");
           bind(result, call->callee == "format_time" ? Type::Text : Type::Number,
@@ -1277,13 +1303,13 @@ class Inference {
           return result;
         }
         if (call->callee == "time_from_unix") {
-          if (call->args.size() != 1) fail("time_from_unix 需要 1 个 Number");
+          if (call->args.size() != 1) fail(requiredArguments("time_from_unix", RequirementKey::OneNumber));
           bind(infer(*call->args[0]), Type::Number, "time_from_unix 的输入");
           bind(result, Type::Instant, "time_from_unix 的结果");
           return result;
         }
         if (call->args.size() != 2)
-          fail("函数“" + call->callee + "”需要 2 个参数");
+          fail(requiredArguments(call->callee, RequirementKey::TwoArguments));
         bind(infer(*call->args[0]), Type::Instant,
              "函数“" + call->callee + "”的第一个参数");
         bind(infer(*call->args[1]),
@@ -1296,7 +1322,8 @@ class Inference {
       if (isRegexBuiltin(call->callee)) {
         size_t arity = call->callee == "regex" ? 1 : 2;
         if (call->args.size() != arity)
-          fail("函数“" + call->callee + "”需要 " + std::to_string(arity) + " 个参数");
+          fail(diagnostic(DiagnosticKey::ArgumentCount,
+                          {call->callee, std::to_string(arity)}));
         bind(infer(*call->args[0]), Type::Text, call->callee + " 的 Text");
         if (arity == 1) bind(result, Type::Regex, "regex 的结果");
         else {
@@ -1311,8 +1338,9 @@ class Inference {
       }
       if (call->callee == "table") {
         if (call->args.size() != 1)
-          fail("table 需要 1 个 Record 或 List<Record>，但这里给了 " +
-               std::to_string(call->args.size()) + " 个值");
+          fail(diagnostic(DiagnosticKey::GivenValues,
+                          {"table", requirementPhrase(RequirementKey::RecordOrRows),
+                           std::to_string(call->args.size())}));
         int input = infer(*call->args[0]);
         if (auto* literal = dynamic_cast<const RecordExpr*>(call->args[0].get())) {
           std::optional<std::size_t> knownLength;
@@ -1324,7 +1352,7 @@ class Inference {
             listElement(column, "Table 字面量的列");
             if (auto* list = dynamic_cast<const ListExpr*>(field.value.get())) {
               if (knownLength && *knownLength != list->elements.size())
-                fail("Table 字面量中静态已知的列长度不一致");
+                fail(diagnostic(DiagnosticKey::InvalidTableColumns));
               knownLength = list->elements.size();
             }
           }
@@ -1342,20 +1370,20 @@ class Inference {
         return result;
       }
       if (call->callee == "is_missing") {
-        if (call->args.size() != 1) fail("is_missing 需要 1 个值");
+        if (call->args.size() != 1) fail(requiredArguments("is_missing", RequirementKey::OneValue));
         infer(*call->args[0]);
         bind(result, Type::Boolean, "is_missing 的结果");
         return result;
       }
       if (call->callee == "require") {
-        if (call->args.size() != 1) fail("require 需要 1 个值");
+        if (call->args.size() != 1) fail(requiredArguments("require", RequirementKey::OneValue));
         int input = infer(*call->args[0]);
         outputConstraints_.push_back({input, result, Type::Result});
         resolveOutputs();
         return result;
       }
       if (call->callee == "ok" || call->callee == "err") {
-        if (call->args.size() != 1) fail(call->callee + " 需要 1 个值");
+        if (call->args.size() != 1) fail(requiredArguments(call->callee, RequirementKey::OneValue));
         int payload = infer(*call->args[0]);
         unify(resultPayload(result, call->callee == "err"), payload,
               call->callee + " 的载荷");
@@ -1364,8 +1392,9 @@ class Inference {
       }
       if (call->callee == "row_count") {
         if (call->args.size() != 1)
-          fail("row_count 需要 1 个 Table，但这里给了 " +
-               std::to_string(call->args.size()) + " 个值");
+          fail(diagnostic(DiagnosticKey::GivenValues,
+                          {"row_count", requirementPhrase(RequirementKey::OneTable),
+                           std::to_string(call->args.size())}));
         bind(infer(*call->args[0]), Type::Table, "row_count 的输入");
         bind(result, Type::Number, "row_count 的结果");
         return result;
@@ -1374,7 +1403,7 @@ class Inference {
           call->callee == "min" || call->callee == "max" ||
           call->callee == "count") {
         if (call->args.size() != 1 && call->args.size() != 2)
-          fail("函数“" + call->callee + "”需要一个 List，或者一个 Table 和列名");
+          fail(requiredArguments(call->callee, RequirementKey::ListOrTableAndColumn));
         if (call->args.size() == 1) {
           int element = listElement(infer(*call->args[0]),
                                     "函数“" + call->callee + "”的输入");
@@ -1391,8 +1420,9 @@ class Inference {
       }
       if (call->callee == "length") {
         if (call->args.size() != 1)
-          fail("length 需要 1 个 List 或 Text，但这里给了 " +
-               std::to_string(call->args.size()) + " 个值");
+          fail(diagnostic(DiagnosticKey::GivenValues,
+                          {"length", requirementPhrase(RequirementKey::OneListOrText),
+                           std::to_string(call->args.size())}));
         int input = infer(*call->args[0]);
         lengthConstraints_.push_back({input, result});
         bind(result, Type::Number, "length 的结果");
@@ -1401,7 +1431,7 @@ class Inference {
       if (call->callee == "trim" || call->callee == "lowercase" ||
           call->callee == "uppercase") {
         if (call->args.size() != 1)
-          fail("函数“" + call->callee + "”需要 1 个 Text");
+          fail(requiredArguments(call->callee, RequirementKey::OneText));
         bind(infer(*call->args[0]), Type::Text,
              "函数“" + call->callee + "”的输入");
         bind(result, Type::Text, "函数“" + call->callee + "”的结果");
@@ -1410,7 +1440,7 @@ class Inference {
       if (call->callee == "starts_with" || call->callee == "ends_with" ||
           call->callee == "text_contains") {
         if (call->args.size() != 2)
-          fail("函数“" + call->callee + "”需要 Text 和要匹配的 Text");
+          fail(requiredArguments(call->callee, RequirementKey::TextAndMatch));
         bind(infer(*call->args[0]), Type::Text,
              "函数“" + call->callee + "”的 Text");
         bind(infer(*call->args[1]), Type::Text,
@@ -1419,7 +1449,7 @@ class Inference {
         return result;
       }
       if (call->callee == "split") {
-        if (call->args.size() != 2) fail("split 需要 Text 和分隔符");
+        if (call->args.size() != 2) fail(requiredArguments("split", RequirementKey::TextAndDelimiter));
         bind(infer(*call->args[0]), Type::Text, "split 的 Text");
         bind(infer(*call->args[1]), Type::Text, "split 的分隔符");
         bind(listElement(result, "split 的结果"), Type::Text,
@@ -1427,7 +1457,7 @@ class Inference {
         return result;
       }
       if (call->callee == "join") {
-        if (call->args.size() != 2) fail("join 需要 Text List 和分隔符");
+        if (call->args.size() != 2) fail(requiredArguments("join", RequirementKey::TextListAndDelimiter));
         int parts = infer(*call->args[0]);
         bind(listElement(parts, "join 的输入"), Type::Text, "join 的元素");
         bind(infer(*call->args[1]), Type::Text, "join 的分隔符");
@@ -1442,7 +1472,7 @@ class Inference {
           call->callee == "acos" || call->callee == "atan" ||
           call->callee == "radians" || call->callee == "degrees") {
         if (call->args.size() != 1)
-          fail("函数“" + call->callee + "”需要 1 个 Number");
+          fail(requiredArguments(call->callee, RequirementKey::OneNumber));
         bind(infer(*call->args[0]), Type::Number,
              "函数“" + call->callee + "”的输入");
         bind(result, Type::Number, "函数“" + call->callee + "”的结果");
@@ -1451,7 +1481,7 @@ class Inference {
       if (call->callee == "pow" || call->callee == "hypot" ||
           call->callee == "atan2") {
         if (call->args.size() != 2)
-          fail("函数“" + call->callee + "”需要 2 个 Number");
+          fail(requiredArguments(call->callee, RequirementKey::TwoNumbers));
         bind(infer(*call->args[0]), Type::Number,
              "函数“" + call->callee + "”的第一个输入");
         bind(infer(*call->args[1]), Type::Number,
@@ -1461,7 +1491,7 @@ class Inference {
       }
       if (call->callee == "log") {
         if (call->args.size() != 1 && call->args.size() != 2)
-          fail("log 需要 Number 和可选的底数");
+          fail(requiredArguments("log", RequirementKey::NumberOptionalBase));
         bind(infer(*call->args[0]), Type::Number, "log 的输入");
         if (call->args.size() == 2)
           bind(infer(*call->args[1]), Type::Number, "log 的底数");
@@ -1470,7 +1500,7 @@ class Inference {
       }
       if (call->callee == "round") {
         if (call->args.size() != 1 && call->args.size() != 2)
-          fail("round 需要 Number 和可选的小数位数");
+          fail(requiredArguments("round", RequirementKey::NumberOptionalPlaces));
         bind(infer(*call->args[0]), Type::Number, "round 的输入");
         if (call->args.size() == 2)
           bind(infer(*call->args[1]), Type::Number, "round 的小数位数");
@@ -1479,26 +1509,26 @@ class Inference {
       }
       if (call->callee == "clamp") {
         if (call->args.size() != 3)
-          fail("clamp 需要 Number、最小值和最大值");
+          fail(requiredArguments("clamp", RequirementKey::NumberMinimumMaximum));
         for (const auto& argument : call->args)
           bind(infer(*argument), Type::Number, "clamp 的参数");
         bind(result, Type::Number, "clamp 的结果");
         return result;
       }
       if (call->callee == "to_text") {
-        if (call->args.size() != 1) fail("to_text 需要 1 个值");
+        if (call->args.size() != 1) fail(requiredArguments("to_text", RequirementKey::OneValue));
         dataOnlyVariables_.push_back(infer(*call->args[0]));
         bind(result, Type::Text, "to_text 的结果");
         return result;
       }
       if (call->callee == "parse_number") {
-        if (call->args.size() != 1) fail("parse_number 需要 1 个 Text");
+        if (call->args.size() != 1) fail(requiredArguments("parse_number", RequirementKey::OneText));
         bind(infer(*call->args[0]), Type::Text, "parse_number 的输入");
         bind(result, Type::Number, "parse_number 的结果");
         return result;
       }
       if (call->callee == "concat") {
-        if (call->args.size() != 2) fail("concat 需要两个 List");
+        if (call->args.size() != 2) fail(requiredArguments("concat", RequirementKey::TwoLists));
         int left = infer(*call->args[0]);
         int right = infer(*call->args[1]);
         unify(listElement(left, "concat 的左侧"),
@@ -1508,7 +1538,7 @@ class Inference {
       }
       if (call->callee == "flatten") {
         if (call->args.size() != 1)
-          fail("flatten 需要 1 个 List<List<T>>");
+          fail(requiredArguments("flatten", RequirementKey::NestedList));
         int input = infer(*call->args[0]);
         int inner = listElement(input, "flatten 的输入");
         int element = listElement(inner, "flatten 的输入元素");
@@ -1518,35 +1548,35 @@ class Inference {
       }
       if (call->callee == "reverse" || call->callee == "distinct") {
         if (call->args.size() != 1)
-          fail("函数“" + call->callee + "”需要 1 个 List");
+          fail(requiredArguments(call->callee, RequirementKey::OneList));
         int input = infer(*call->args[0]);
         listElement(input, call->callee + " 的输入");
         unify(result, input, call->callee + " 的结果");
         return result;
       }
       if (call->callee == "sort") {
-        if (call->args.size() != 1) fail("sort 需要 1 个 List");
+        if (call->args.size() != 1) fail(requiredArguments("sort", RequirementKey::OneList));
         int input = infer(*call->args[0]);
         sortableListElements_.push_back(listElement(input, "sort 的输入"));
         unify(result, input, "sort 的结果");
         return result;
       }
       if (call->callee == "fields") {
-        if (call->args.size() != 1) fail("fields 需要 1 个 Record");
+        if (call->args.size() != 1) fail(requiredArguments("fields", RequirementKey::OneRecord));
         bind(infer(*call->args[0]), Type::Record, "fields 的输入");
         bind(listElement(result, "fields 的结果"), Type::Text,
              "fields 的结果元素");
         return result;
       }
       if (call->callee == "has_field") {
-        if (call->args.size() != 2) fail("has_field 需要 Record 和字段名");
+        if (call->args.size() != 2) fail(requiredArguments("has_field", RequirementKey::RecordAndField));
         bind(infer(*call->args[0]), Type::Record, "has_field 的 Record");
         bind(infer(*call->args[1]), Type::Text, "has_field 的字段名");
         bind(result, Type::Boolean, "has_field 的结果");
         return result;
       }
       if (call->callee == "merge") {
-        if (call->args.size() != 2) fail("merge 需要两个 Record");
+        if (call->args.size() != 2) fail(requiredArguments("merge", RequirementKey::TwoRecords));
         bind(infer(*call->args[0]), Type::Record, "merge 的左侧");
         bind(infer(*call->args[1]), Type::Record, "merge 的右侧");
         bind(result, Type::Record, "merge 的结果");
@@ -1554,7 +1584,7 @@ class Inference {
       }
       if (call->callee == "remove_field") {
         if (call->args.size() != 2)
-          fail("remove_field 需要 Record 和字段名");
+          fail(requiredArguments("remove_field", RequirementKey::RecordAndField));
         bind(infer(*call->args[0]), Type::Record, "remove_field 的 Record");
         bind(infer(*call->args[1]), Type::Text, "remove_field 的字段名");
         bind(result, Type::Record, "remove_field 的结果");
@@ -1562,7 +1592,7 @@ class Inference {
       }
       if (call->callee == "first" || call->callee == "last") {
         if (call->args.size() != 1)
-          fail("函数“" + call->callee + "”需要 1 个列表");
+          fail(requiredArguments(call->callee, RequirementKey::OneList));
         int list = infer(*call->args[0]);
         unify(result, listElement(list, "函数“" + call->callee + "”的输入"),
               "函数“" + call->callee + "”的结果");
@@ -1570,7 +1600,7 @@ class Inference {
       }
       if (call->callee == "same") {
         if (call->args.size() != 2)
-          fail("same 需要两个要比较的值");
+          fail(requiredArguments("same", RequirementKey::TwoValues));
         dataOnlyVariables_.push_back(infer(*call->args[0]));
         dataOnlyVariables_.push_back(infer(*call->args[1]));
         bind(result, Type::Boolean, "same 的结果");
@@ -1578,7 +1608,7 @@ class Inference {
       }
       if (call->callee == "fill_missing") {
         if (call->args.size() != 2)
-          fail("fill_missing 需要一个列表和一个替代值");
+          fail(requiredArguments("fill_missing", RequirementKey::ListAndDefault));
         int list = infer(*call->args[0]);
         int element = listElement(list, "fill_missing 的列表");
         unify(element, infer(*call->args[1]), "fill_missing 的替代值");
@@ -1587,7 +1617,7 @@ class Inference {
       }
       if (call->callee == "select_columns") {
         if (call->args.size() != 2)
-          fail("select_columns 需要一个 Table 和列名列表");
+          fail(requiredArguments("select_columns", RequirementKey::TableAndColumns));
         bind(infer(*call->args[0]), Type::Table, "select_columns 的输入");
         int names = infer(*call->args[1]);
         bind(listElement(names, "select_columns 的列名"), Type::Text,
@@ -1597,14 +1627,14 @@ class Inference {
       }
       if (call->callee == "take" || call->callee == "drop") {
         if (call->args.size() != 2)
-          fail("函数“" + call->callee + "”需要一个 List/Table 和数量");
+          fail(requiredArguments(call->callee, RequirementKey::ListTableAndCount));
         int input = infer(*call->args[0]);
         bind(infer(*call->args[1]), Type::Number, "函数“" + call->callee + "”的行数");
         sliceConstraints_.push_back({input, result});
         return result;
       }
       if (call->callee == "sort_by") {
-        if (call->args.size() != 2) fail("sort_by 需要一个 Table 和列名");
+        if (call->args.size() != 2) fail(requiredArguments("sort_by", RequirementKey::TableAndColumn));
         bind(infer(*call->args[0]), Type::Table, "sort_by 的输入");
         bind(infer(*call->args[1]), Type::Text, "sort_by 的列名");
         bind(result, Type::Table, "sort_by 的结果");
@@ -1613,7 +1643,7 @@ class Inference {
       }
       auto found = functions_.find(call->callee);
       if (found == functions_.end())
-        fail("找不到函数“" + call->callee + "”，请检查它是否已经定义");
+        fail(diagnostic(DiagnosticKey::UnknownFunction, {call->callee}));
       const auto& definition = *definitions_.at(call->callee);
       auto slots = argumentSlots(*call, definition);
       for (std::size_t slot = 0; slot < slots.size(); ++slot)
@@ -1625,7 +1655,7 @@ class Inference {
       resolveOutputs();
       return result;
     }
-    fail("编译器暂时不能理解这个表达式");
+    fail(diagnostic(DiagnosticKey::InvalidExpression));
   }
 
   static Presence propagate(Presence lhs, Presence rhs) {
@@ -2033,10 +2063,10 @@ struct CodeGenerator::Impl {
     auto runtime = llvm::parseBitcodeFile(
         llvm::MemoryBufferRef(data, displayName), context);
     if (!runtime)
-      throw std::runtime_error("无法解析" + displayName + "运行时：" +
-                               llvm::toString(runtime.takeError()));
+      throw std::runtime_error(diagnostic(DiagnosticKey::ParseRuntime,
+                               {displayName, llvm::toString(runtime.takeError())}));
     if (llvm::Linker::linkModules(*module, std::move(*runtime)))
-      throw std::runtime_error("无法链接" + displayName + "运行时");
+      throw std::runtime_error(diagnostic(DiagnosticKey::LinkRuntime, {displayName}));
   }
 
   void loadRecordRuntime() {
@@ -2063,7 +2093,7 @@ struct CodeGenerator::Impl {
       case Type::Dynamic: return taggedValueType();
       case Type::Unknown: break;
     }
-    throw std::runtime_error("内部错误：类型尚未确定");
+    throw std::runtime_error(diagnostic(DiagnosticKey::UnknownType));
   }
 
   llvm::StructType* maybeNumberType() {
@@ -2307,7 +2337,7 @@ struct CodeGenerator::Impl {
       case Type::Dynamic: break;
       case Type::Unknown: break;
     }
-    throw std::runtime_error("内部错误：列表元素类型未知");
+    throw std::runtime_error(diagnostic(DiagnosticKey::UnknownListElement));
   }
 
   llvm::Value* adoptHeap(llvm::Value* pointer, Type type) {
@@ -4184,7 +4214,7 @@ struct CodeGenerator::Impl {
         return;
       }
       auto* final = dynamic_cast<const DoResultExpr*>(&step);
-      if (!final) throw std::runtime_error("内部错误：do 块包含未知步骤");
+      if (!final) throw std::runtime_error(diagnostic(DiagnosticKey::UnknownDoStep));
       auto value = emitElementBoundary(*final->value);
       if (resultDo) value = makeResult(value, true);
       value = convertPresence(value, outputPresence);
@@ -4576,7 +4606,7 @@ struct CodeGenerator::Impl {
     endArcFrame(&result);
     builder.CreateRetVoid();
     if (rootMissingTarget)
-      throw std::runtime_error("内部错误：IO 步骤缺少表达式边界");
+      throw std::runtime_error(diagnostic(DiagnosticKey::MissingIOBoundary));
 
     scopes = std::move(savedScopes);
     lazyTableRows = std::move(savedRows);
@@ -4904,7 +4934,7 @@ struct CodeGenerator::Impl {
                           type, returnedPresence};
       return convertPresence(adoptValue(returned), presence);
     }
-    throw std::runtime_error("内部错误：无法生成表达式");
+    throw std::runtime_error(diagnostic(DiagnosticKey::CannotGenerateExpression));
   }
 
   void declareFunction(const Function& function) {
@@ -4954,7 +4984,7 @@ struct CodeGenerator::Impl {
     currentMissingTarget = nullptr;
     rootMissingTarget = nullptr;
     if (llvm::verifyFunction(*generated, &llvm::errs()))
-      throw std::runtime_error("LLVM 无法验证函数“" + function.name + "”");
+      throw std::runtime_error(diagnostic(DiagnosticKey::VerifyFunction, {function.name}));
   }
 
   void displayPresent(const TypedValue& result, llvm::FunctionCallee printfFn) {
@@ -5059,7 +5089,7 @@ bool CodeGenerator::needsRegexRuntime() const {
 
 bool CodeGenerator::generate(const Program& program, std::string& error) {
   try {
-    if (!program.result) throw std::runtime_error("程序最后需要有一个要计算或显示的内容");
+    if (!program.result) throw std::runtime_error(diagnostic(DiagnosticKey::MissingProgramResult));
     impl_->inference = std::make_unique<Inference>(program);
     impl_->sourcePath = program.sourcePath;
     impl_->loadRecordRuntime();
@@ -5069,7 +5099,7 @@ bool CodeGenerator::generate(const Program& program, std::string& error) {
     for (const auto& function : program.functions) impl_->emitFunction(*function);
     impl_->emitProgramResult(program);
     if (llvm::verifyModule(*impl_->module, &llvm::errs()))
-      throw std::runtime_error("LLVM 无法验证生成的程序");
+      throw std::runtime_error(diagnostic(DiagnosticKey::VerifyProgram));
     llvm::LoopAnalysisManager loopAnalyses;
     llvm::FunctionAnalysisManager functionAnalyses;
     llvm::CGSCCAnalysisManager cgsccAnalyses;
@@ -5084,7 +5114,7 @@ bool CodeGenerator::generate(const Program& program, std::string& error) {
     auto pipeline = passes.buildPerModuleDefaultPipeline(llvm::OptimizationLevel::O2);
     pipeline.run(*impl_->module, moduleAnalyses);
     if (llvm::verifyModule(*impl_->module, &llvm::errs()))
-      throw std::runtime_error("LLVM 优化后的程序未通过验证");
+      throw std::runtime_error(diagnostic(DiagnosticKey::VerifyOptimizedProgram));
     return true;
   } catch (const std::exception& exception) {
     error = exception.what();

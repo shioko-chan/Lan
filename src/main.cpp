@@ -1,5 +1,6 @@
 #include "lan/AST.h"
 #include "lan/Codegen.h"
+#include "lan/Diagnostic.h"
 #include "lan/RuntimeAssets.h"
 #include "parser.hpp"
 
@@ -26,12 +27,22 @@ std::string lan_parse_error;
 namespace {
 
 void usage(const char* executable) {
+  if (lan::diagnosticLanguage() == lan::DiagnosticLanguage::English) {
+    std::cerr << "Usage:\n"
+              << "  " << executable << " [--emit-ir] <program.lan> [-o output.ll]\n"
+              << "  " << executable << " --build <program.lan>\n"
+              << "  " << executable << " --run <program.lan> [--random-seed integer]"
+                 " [--fixed-time RFC3339] [-- arguments...]\n"
+              << "  --diagnostic-language zh-CN|en\n";
+    return;
+  }
   std::cerr << "用法：\n"
             << "  " << executable << " [--emit-ir] <程序.lan> [-o 输出.ll]\n"
             << "  " << executable << " --build <程序.lan>\n"
             << "  " << executable
             << " --run <程序.lan> [--random-seed 整数]"
-               " [--fixed-time RFC3339] [-- 参数...]\n";
+               " [--fixed-time RFC3339] [-- 参数...]\n"
+            << "  --diagnostic-language zh-CN|en\n";
 }
 
 std::string shellQuote(const std::string& value) {
@@ -50,6 +61,11 @@ int commandExitCode(int status) {
 }  // namespace
 
 int main(int argc, char** argv) {
+  if (const char* language = std::getenv("LAN_DIAGNOSTIC_LANGUAGE")) {
+    lan::DiagnosticLanguage selected;
+    if (lan::parseDiagnosticLanguage(language, selected))
+      lan::diagnosticLanguage() = selected;
+  }
   Mode mode = Mode::EmitIR;
   bool explicitMode = false;
   std::string inputPath;
@@ -62,6 +78,15 @@ int main(int argc, char** argv) {
   bool hasArgumentSeparator = false;
   for (int i = 1; i < argc; ++i) {
     std::string argument = argv[i];
+    if (argument == "--diagnostic-language" && i + 1 < argc) {
+      lan::DiagnosticLanguage selected;
+      if (!lan::parseDiagnosticLanguage(argv[++i], selected)) {
+        std::cerr << lan::diagnosticPrefix() << lan::diagnostic(lan::DiagnosticKey::InvalidLanguage) << '\n';
+        return 2;
+      }
+      lan::diagnosticLanguage() = selected;
+      continue;
+    }
     if (argument == "--") {
       hasArgumentSeparator = true;
       for (++i; i < argc; ++i) programArguments.emplace_back(argv[i]);
@@ -100,43 +125,44 @@ int main(int argc, char** argv) {
     return 2;
   }
   if (hasArgumentSeparator && mode != Mode::Run) {
-    std::cerr << "Lan：程序参数只能用于 --run，并放在 -- 后面\n";
+    std::cerr << lan::diagnosticPrefix() << lan::diagnostic(lan::DiagnosticKey::ProgramArgumentsOnlyRun) << "\n";
     return 2;
   }
   if (hasRandomSeed && mode != Mode::Run) {
-    std::cerr << "Lan：--random-seed 只能用于 --run\n";
+    std::cerr << lan::diagnosticPrefix() << lan::diagnostic(lan::DiagnosticKey::RandomSeedOnlyRun) << "\n";
     return 2;
   }
   if (hasFixedTime && mode != Mode::Run) {
-    std::cerr << "Lan：--fixed-time 只能用于 --run\n";
+    std::cerr << lan::diagnosticPrefix() << lan::diagnostic(lan::DiagnosticKey::FixedTimeOnlyRun) << "\n";
     return 2;
   }
   if (hasRandomSeed) {
     uint64_t value = 0;
     if (randomSeed.empty()) {
-      std::cerr << "Lan：随机种子必须是 0 到 9007199254740991 之间的整数\n";
+      std::cerr << lan::diagnosticPrefix() << lan::diagnostic(lan::DiagnosticKey::InvalidRandomSeed) << "\n";
       return 2;
     }
     for (char digit : randomSeed) {
       unsigned next = digit >= '0' && digit <= '9' ? (unsigned)(digit - '0') : 10;
       if (next > 9 || value > (UINT64_C(9007199254740991) - next) / 10) {
-        std::cerr << "Lan：随机种子必须是 0 到 9007199254740991 之间的整数\n";
+        std::cerr << lan::diagnosticPrefix() << lan::diagnostic(lan::DiagnosticKey::InvalidRandomSeed) << "\n";
         return 2;
       }
       value = value * 10 + next;
     }
   }
   if (mode != Mode::EmitIR && !outputPath.empty()) {
-    std::cerr << "Lan：--build 和 --run 不能和 -o 同时使用\n";
+    std::cerr << lan::diagnosticPrefix() << lan::diagnostic(lan::DiagnosticKey::BuildOutputConflict) << "\n";
     return 2;
   }
 
   FILE* file = std::fopen(inputPath.c_str(), "r");
   if (!file) {
-    std::cerr << "Lan：无法打开文件“" << inputPath << "”\n";
+    std::cerr << lan::diagnosticPrefix() << lan::diagnostic(lan::DiagnosticKey::CannotOpenFile, {inputPath}) << "\n";
     return 1;
   }
   yyin = file;
+  lan_parse_error.clear();
   yylineno = 1;
   yyrestart(file);
   lan::Program* parsed = nullptr;
@@ -144,7 +170,7 @@ int main(int argc, char** argv) {
   std::fclose(file);
   std::unique_ptr<lan::Program> program(parsed);
   if (parseResult != 0 || !program) {
-    std::cerr << "Lan：" << lan_parse_error << "\n";
+    std::cerr << lan::diagnosticPrefix() << lan_parse_error << "\n";
     return 1;
   }
   program->sourcePath = inputPath;
@@ -152,14 +178,15 @@ int main(int argc, char** argv) {
   lan::CodeGenerator generator;
   std::string error;
   if (!generator.generate(*program, error)) {
-    std::cerr << "Lan：" << error << "\n";
+    std::cerr << lan::diagnosticPrefix() << error << "\n";
     return 1;
   }
 
   if (mode == Mode::EmitIR) {
     if (outputPath.empty()) std::cout << generator.getIR();
     else if (!generator.writeIR(outputPath, error)) {
-      std::cerr << "Lan：无法写入“" << outputPath << "”：" << error << "\n";
+      std::cerr << lan::diagnosticPrefix() << lan::diagnostic(lan::DiagnosticKey::CannotWriteFile,
+                                                  {outputPath, error}) << "\n";
       return 1;
     }
     return 0;
@@ -168,22 +195,23 @@ int main(int argc, char** argv) {
   std::filesystem::path source(inputPath);
   std::string programName = source.stem().string();
   if (programName.empty()) {
-    std::cerr << "Lan：无法从输入文件名确定程序名称\n";
+    std::cerr << lan::diagnosticPrefix() << lan::diagnostic(lan::DiagnosticKey::CannotDetermineProgramName) << "\n";
     return 1;
   }
   auto buildDirectory = std::filesystem::current_path() / ".lan" / programName;
   std::error_code directoryError;
   std::filesystem::create_directories(buildDirectory, directoryError);
   if (directoryError) {
-    std::cerr << "Lan：无法创建构建目录“" << buildDirectory.string()
-              << "”：" << directoryError.message() << "\n";
+    std::cerr << lan::diagnosticPrefix() << lan::diagnostic(lan::DiagnosticKey::CannotCreateBuildDirectory,
+        {buildDirectory.string(), directoryError.message()}) << "\n";
     return 1;
   }
   auto irPath = buildDirectory / (programName + ".ll");
   auto objectPath = buildDirectory / (programName + ".o");
   auto executablePath = buildDirectory / programName;
   if (!generator.writeIR(irPath.string(), error)) {
-    std::cerr << "Lan：无法写入 LLVM IR“" << irPath.string() << "”：" << error << "\n";
+    std::cerr << lan::diagnosticPrefix() << lan::diagnostic(lan::DiagnosticKey::CannotWriteIR,
+        {irPath.string(), error}) << "\n";
     return 1;
   }
 
@@ -191,7 +219,7 @@ int main(int argc, char** argv) {
       shellQuote(irPath.string()) + " -o " + shellQuote(objectPath.string());
   int status = commandExitCode(std::system(compileCommand.c_str()));
   if (status != 0) {
-    std::cerr << "Lan：生成目标文件失败\n";
+    std::cerr << lan::diagnosticPrefix() << lan::diagnostic(lan::DiagnosticKey::ObjectBuildFailed) << "\n";
     return status;
   }
   std::string nativeRuntime;
@@ -204,7 +232,7 @@ int main(int argc, char** argv) {
         reinterpret_cast<uintptr_t>(lan_regex_bytes));
     archive.close();
     if (!archive) {
-      std::cerr << "Lan：无法写入正则运行时静态库\n";
+      std::cerr << lan::diagnosticPrefix() << lan::diagnostic(lan::DiagnosticKey::CannotWriteRegexArchive) << "\n";
       return 1;
     }
     std::ofstream notices(buildDirectory / "REGEX_LICENSES.txt", std::ios::binary);
@@ -213,7 +241,7 @@ int main(int argc, char** argv) {
         reinterpret_cast<uintptr_t>(lan_regex_licenses));
     notices.close();
     if (!notices) {
-      std::cerr << "Lan：无法写入正则运行时许可证\n";
+      std::cerr << lan::diagnosticPrefix() << lan::diagnostic(lan::DiagnosticKey::CannotWriteRegexLicenses) << "\n";
       return 1;
     }
     nativeRuntime = " " + shellQuote(archivePath.string()) + " -pthread";
@@ -228,7 +256,7 @@ int main(int argc, char** argv) {
       shellQuote(objectPath.string()) + nativeRuntime + " -lm -o " + shellQuote(executablePath.string());
   status = commandExitCode(std::system(linkCommand.c_str()));
   if (status != 0) {
-    std::cerr << "Lan：生成可执行文件失败\n";
+    std::cerr << lan::diagnosticPrefix() << lan::diagnostic(lan::DiagnosticKey::ExecutableBuildFailed) << "\n";
     return status;
   }
 

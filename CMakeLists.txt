@@ -98,6 +98,13 @@ llvm_map_components_to_libnames(LLVM_LIBS Core Support Passes BitReader Linker)
 target_link_libraries(lanc PRIVATE ${LLVM_LIBS})
 
 enable_testing()
+add_executable(lan_diagnostic_catalog_test tests/diagnostic_catalog.cpp)
+target_include_directories(lan_diagnostic_catalog_test PRIVATE include)
+add_test(NAME diagnostic_catalog COMMAND lan_diagnostic_catalog_test)
+add_test(NAME compiler_i18n COMMAND ${CMAKE_COMMAND}
+  -DLANC=$<TARGET_FILE:lanc> -DROOT=${CMAKE_CURRENT_SOURCE_DIR}
+  -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/compiler-i18n
+  -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_compiler_i18n.cmake)
 add_test(NAME do_blocks COMMAND lanc --run ${CMAKE_CURRENT_SOURCE_DIR}/tests/do_blocks.lan)
 set_tests_properties(do_blocks PROPERTIES PASS_REGULAR_EXPRESSION "true")
 add_test(NAME do_compile_contracts COMMAND ${CMAKE_COMMAND}

@@ -1,5 +1,6 @@
 %{
 #include "lan/AST.h"
+#include "lan/Diagnostic.h"
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
@@ -46,17 +47,16 @@ static lan::Expr* makeBinding(lan::Expr* target, lan::Expr* expression,
     collectRecordPath(target, bindingName, reversed);
     target = nullptr;
     if (bindingName.empty()) {
-      lan_parse_error = "第 " + std::to_string(yylineno) +
-                        " 行：字段更新必须以局部名称为根，不能更新临时值";
+      lan_parse_error = lan::diagnostic(lan::DiagnosticKey::TemporaryUpdate,
+                                        {std::to_string(yylineno)});
       delete expression;
       delete body;
       return nullptr;
     }
     if (auto* rhs = dynamic_cast<lan::VariableExpr*>(expression);
         rhs && rhs->name == bindingName) {
-      lan_parse_error = "第 " + std::to_string(yylineno) +
-                        " 行：不能把“" + bindingName +
-                        "”自身写入它的字段";
+      lan_parse_error = lan::diagnostic(lan::DiagnosticKey::SelfUpdate,
+                                        {std::to_string(yylineno), bindingName});
       delete expression;
       delete body;
       return nullptr;
@@ -65,8 +65,8 @@ static lan::Expr* makeBinding(lan::Expr* target, lan::Expr* expression,
     value = new lan::NestedRecordUpdateExpr(
         new lan::VariableExpr(bindingName), std::move(reversed), expression);
   } else {
-    lan_parse_error = "第 " + std::to_string(yylineno) +
-                      " 行：等号左边必须是名称或字段";
+    lan_parse_error = lan::diagnostic(lan::DiagnosticKey::AssignmentTarget,
+                                      {std::to_string(yylineno)});
     delete target;
     delete expression;
     delete body;
@@ -101,8 +101,8 @@ static lan::Expr* makePipelineStage(lan::Expr* receiver, const char* name,
     return result;
   }
   if (arguments->size() != 1 || !arguments->front().name.empty()) {
-    lan_parse_error = "第 " + std::to_string(yylineno) + " 行：集合操作“" +
-                      name + "”需要一个元素表达式";
+    lan_parse_error = lan::diagnostic(lan::DiagnosticKey::PipelineArity,
+                                      {std::to_string(yylineno), name});
     delete receiver;
     delete arguments;
     return nullptr;
@@ -277,7 +277,7 @@ match_pattern
       if (std::strcmp($1, "ok") == 0) kind = lan::MatchPattern::Kind::Ok;
       else if (std::strcmp($1, "err") == 0) kind = lan::MatchPattern::Kind::Err;
       else if (std::strcmp($1, "value") != 0) {
-        lan_parse_error = "模式构造器只支持 value(name)、ok(name)、err(name)";
+        lan_parse_error = lan::diagnostic(lan::DiagnosticKey::PatternConstructor);
         free($1); free($3); YYERROR;
       }
       $$ = new lan::MatchPattern(kind, $3);
@@ -499,6 +499,9 @@ call_argument_list
 %%
 
 void yyerror(lan::Program**, const char* message) {
-  lan_parse_error = "第 " + std::to_string(yylineno) + " 行：无法理解这里的写法（" +
-                    message + "）";
+  if (!lan_parse_error.empty()) return;
+  // Preserve the historical Bison detail in Chinese. English uses a clean
+  // localized syntax message instead of mixing in Bison's raw text.
+  lan_parse_error = lan::diagnostic(lan::DiagnosticKey::SyntaxWithDetail,
+                                    {std::to_string(yylineno), message});
 }

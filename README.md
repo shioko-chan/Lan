@@ -91,17 +91,17 @@ Conditionals also have two equivalent forms:
 ```lan
 choose(value) =
   if value > 0
-    "正数"
+    "positive"
   else
-    "非正数"
+    "nonpositive"
 ```
 
 ```lan
 choose(value) = {
   if value > 0 {
-    "正数"
+    "positive"
   } else {
-    "非正数"
+    "nonpositive"
   }
 }
 ```
@@ -109,7 +109,7 @@ choose(value) = {
 `{name: value}` is still a Record: colons distinguish Record fields, while equals signs and semicolons distinguish bindings in a code block:
 
 ```lan
-make_person() = {name: "小明", age: 20}
+make_person() = {name: "Alex", age: 20}
 calculation() = {age = 20; age + 1}
 ```
 
@@ -118,10 +118,10 @@ calculation() = {age = 20; age + 1}
 Default parameters must follow all required parameters. Trailing default parameters can be omitted when calling a function:
 
 ```lan
-greeting(name, punctuation = "!") = "你好，" + name + punctuation
+greeting(name, punctuation = "!") = "Hello, " + name + punctuation
 
-greeting("小明")
-greeting("小红", "？")
+greeting("Alex")
+greeting("Morgan", "?")
 ```
 
 A default expression can reference parameters that precede it:
@@ -155,9 +155,9 @@ greeting(name, punctuation = "!", excited = false) =
     punctuation + punctuation
   else
     punctuation
-  "你好，" + name + ending
+  "Hello, " + name + ending
 
-greeting("小明", excited = true)
+greeting("Alex", excited = true)
 ```
 
 Positional arguments must precede named arguments. The same parameter cannot be supplied twice; unknown parameter names and missing required arguments
@@ -201,16 +201,16 @@ Lan infers the kinds of values automatically. Users do not need to write `i64`, 
 ```lan
 adult(age) = age >= 18
 
-greeting(name) = "你好，" + name
+greeting(name) = "Hello, " + name
 
 message(name, age) =
   hello = greeting(name)
   if adult(age)
-    hello + "，你已经成年"
+    hello + ", you are an adult"
   else
-    hello + "，你还未成年"
+    hello + ", you are under 18"
 
-message("小明", 20)
+message("Alex", 20)
 ```
 
 Currently supported:
@@ -218,9 +218,9 @@ Currently supported:
 - Numbers: `10`, `3.14`, represented as LLVM `double`
 - Boolean values: `true`, `false`
 - Unit: `()`, a single value that is present but has no additional content
-- Text: `"Hello"`, `"你好"`
-- Homogeneous lists: `[1, 2, 3]`, `["红", "绿", "蓝"]`
-- Record: `{name: "小明", age: 20}`
+- Text: `"Hello"`, `"café"`
+- Homogeneous lists: `[1, 2, 3]`, `["red", "green", "blue"]`
+- Record: `{name: "Alex", age: 20}`
 - Result: `ok(value)` / `err(error)`, with type `Result<T, E>`
 - Arithmetic: `+`, `-`, `*`, `/`, `%`
 - Text concatenation: `"Hello, " + name`
@@ -395,11 +395,15 @@ tokens, or secure random bytes. See [`docs/TIME_RANDOM_DESIGN.md`](docs/TIME_RAN
 ### Text, Number, and Conversion Functions
 
 `length` accepts both Text and List. Text length counts user-perceived Unicode grapheme clusters,
-not UTF-8 bytes; combining character sequences and emoji joined by zero-width joiners each count as one character:
+not UTF-8 bytes or Unicode code points. For example, `café` has 5 UTF-8 bytes, 4 code points, and 4 grapheme clusters;
+`é` (e followed by U+0301) has 3 bytes, 2 code points, and 1 grapheme cluster; `東京` has 6 bytes and 2 clusters;
+`👩‍💻` has 11 bytes, 3 code points, and 1 cluster:
 
 ```lan
-length("你好")             # 2
-length("👨‍👩‍👧‍👦")          # 1
+length("café")           # 4: é is one code point and one grapheme cluster
+length("é")              # 1: e plus a combining accent are two code points
+length("東京")             # 2: two Han characters
+length("👩‍💻")            # 1: three code points joined into one grapheme cluster
 trim("  Hello　")         # "Hello"
 lowercase("ÄBC Σ")        # "äbc σ"
 uppercase("äbc σ")        # "ÄBC Σ"
@@ -486,7 +490,7 @@ digits = regex("[0-9]+")
 Pattern arguments must be Regex; Text patterns are not converted implicitly. Invalid patterns are rejected at runtime.
 When no match is found, `regex_find` returns `missing` and `regex_find_all` returns an empty List.
 `regex_split` preserves leading and trailing empty fragments; empty matches advance by one Unicode code point. For example,
-`regex_split("你好", regex(""))` produces `["", "你", "好", ""]`.
+`regex_split("café", regex(""))` produces `["", "c", "a", "f", "é", ""]` (one step per code point).
 Extractions that cut through a UTF-8 character boundary (such as `regex_find("你", regex("\\C"))`) are rejected.
 
 Regex supports parameters, return values, List/Record storage, and ARC. It is displayed as `<Regex>`, without exposing internal addresses.
@@ -509,7 +513,7 @@ annotations such as `List<Number>`:
 
 ```lan
 numbers() = [1, 2, 3]
-names() = ["小明", "小兰"]
+names() = ["Alex", "Taylor"]
 ```
 
 Number, Text, and Instant Lists support stable sorting, with missing always placed last:
@@ -640,7 +644,7 @@ and `.name` and `.(key)` read its fixed and dynamic fields respectively:
 numbers |> map(. * 2)
 users |> map(.name)
 users |> filter(.age? >= 18)
-users |> find(.name == "Alice")
+users |> find(.name == "Alex")
 users |> any(.active)
 users |> all(.age? >= 0)
 ```
@@ -677,7 +681,7 @@ dynamically constructed values are still validated when `table` executes.
 
 ```lan
 people() = table({
-  name: ["小明", "小兰", "小红"],
+  name: ["Alex", "Taylor", "Morgan"],
   age: [20, 17, missing],
   score: [80, 90, missing]
 })
@@ -689,10 +693,7 @@ After successful validation, this form returns the original Record pointer witho
 `List<Record>`; `table` converts its rows into columns of equal length:
 
 ```lan
-table([
-  {name: "小明", age: 20},
-  {name: "小兰", age: 17}
-])
+table([{name: "Alex", age: 20}, {name: "Taylor", age: 17}])
 ```
 
 The compiler statically refines the result to Table; both LLVM and the runtime use a `Record<List<T>>` pointer. Ordinary
@@ -813,7 +814,7 @@ A Record is an immutable mapping from field names to values, not an object with 
 Lan value and are not part of the Record's static type, so different Records do not need to declare the same field set in advance.
 
 ```lan
-make_person() = {name: "小明", age: 20}
+make_person() = {name: "Alex", age: 20}
 
 make_person()
 ```
@@ -825,7 +826,7 @@ read(person) =
   field = "age"
   [person.name, person.(field)]
 
-read({name: "小明", age: 20})
+read({name: "Alex", age: 20})
 ```
 
 Record literals also allow dynamic field names supplied by Text expressions:
@@ -833,7 +834,7 @@ Record literals also allow dynamic field names supplied by Text expressions:
 ```lan
 make_person() =
   field = "age"
-  {name: "Alice", (field): 21}
+  {name: "Alex", (field): 21}
 
 make_person()
 ```
@@ -846,7 +847,7 @@ to provide a default. Using it in ordinary operations without unwrapping causes 
 fields of immutable Records and known columns of validated Tables; dynamic keys and unknown fields still require explicit handling.
 
 ```lan
-person.city ?? "未知"
+person.city ?? "unknown"
 person.height + 1       # compile-time error if height may not exist
 ```
 
@@ -856,7 +857,7 @@ Inside a function block, a concise update syntax can add or replace fields:
 birthday(person) =
   old = person
   person.age = person.age + 1
-  person.city = "悉尼"
+  person.city = "Sydney"
   [old, person]
 ```
 
@@ -873,7 +874,7 @@ move(person) =
     city: "Sydney"
   }
 
-move({name: "Alice", age: 20})
+move({name: "Alex", age: 20})
 ```
 
 Update blocks also support dynamic keys in the form `(field): value`. A nested update is written as
@@ -888,7 +889,7 @@ not insertion order.
 A field's existence and its value being missing are separate questions:
 
 ```lan
-person = {name: "Alice", age: missing}
+person = {name: "Alex", age: missing}
 
 fields(person)                 # ["age", "name"]
 has_field(person, "age")      # true
@@ -899,8 +900,8 @@ has_field(person, "score")    # false
 Record with a field removed, or a structurally identical Record if the field does not exist. Neither input Record is changed:
 
 ```lan
-merge({name: "Alice", age: 20}, {age: 21})       # {age: 21, name: "Alice"}
-remove_field({name: "Alice", age: 20}, "age")  # {name: "Alice"}
+merge({name: "Alex", age: 20}, {age: 21})       # {age: 21, name: "Alex"}
+remove_field({name: "Alex", age: 20}, "age")  # {name: "Alex"}
 ```
 
 The underlying structure is a persistent HAMT. An update copies only the path from the root to the target field; the old and new Records share the other branches,
@@ -920,11 +921,11 @@ type annotations or wrapper constructors are not required. `T` can be promoted a
 ```lan
 lookup(found) =
   if found
-    "数据"
+    "data"
   else
     missing
 
-lookup(false) ?? "没有找到"
+lookup(false) ?? "not found"
 ```
 
 `??` evaluates and uses the right-hand default only when the left operand is missing. Ordinary operations and functions requiring `T` reject an unhandled
@@ -955,7 +956,7 @@ and IO blocks. After a binding receives missing, subsequent bindings continue to
 absence within the same function:
 
 ```lan
-(lookup(false)? + "!") ?? "没有找到"  # "没有找到"
+(lookup(false)? + "!") ?? "not found"  # "not found"
 ```
 
 This differs from Rust-style `?`: the example continues to evaluate the right-hand side of `??`, rather than returning early from the caller
@@ -1034,7 +1035,7 @@ If a preceding pattern has already covered missing, the remainder name is refine
 
 ```lan
 describe(input) = match input {
-  missing => "没有数据";
+  missing => "no data";
   number => to_text(number)
 }
 ```
@@ -1079,14 +1080,14 @@ redefined by a user function. Ordinary values are not implicitly wrapped in Resu
 
 ```lan
 divide(a, b) =
-  if b == 0 { err("除数不能为零") } else { ok(a / b) }
+  if b == 0 { err("divisor cannot be zero") } else { ok(a / b) }
 
-message = match divide(10, 0) {
+message() = match divide(10, 0) {
   ok(number) => to_text(number);
-  err(error) => "计算失败：" + error
+  err(error) => "calculation failed: " + error
 }
 
-message
+message()
 ```
 
 The function returns `Result<Number, Text>`. `ok(())` represents success without additional data; an error payload can also be a
@@ -1122,7 +1123,7 @@ Result can be used as a function parameter, default value, return value, List el
 result captured by an action. Payloads cannot contain IO actions; use `IO<Result<T, E>>`:
 
 ```lan
-read_config() = io { err("尚未提供配置") }
+read_config() = io { err("configuration is unavailable") }
 
 io {
   result <- read_config();
@@ -1213,7 +1214,8 @@ Table 行号：1
 调用链：程序 -> report -> ratio
 ```
 
-This information comes from lightweight diagnostic contexts at function entry and in the current collection loop; it is not permanently attached to every value.
+This is the current untranslated runtime diagnostic format. Compiler diagnostic language selection does not change it.
+The information comes from lightweight diagnostic contexts at function entry and in the current collection loop; it is not permanently attached to every value.
 
 You can also explicitly check or require a value to be present:
 
@@ -1303,6 +1305,19 @@ cmake -S . -B build -DLLVM_DIR="$(llvm-config --cmakedir)"
 cmake --build build
 ctest --test-dir build --output-on-failure
 ```
+
+Compiler diagnostics default to Chinese to preserve existing command output. Select English for a compilation with
+`--diagnostic-language en`, or set `LAN_DIAGNOSTIC_LANGUAGE=en` for repeated invocations. The option accepts
+`zh-CN` (also `zh`) and `en`; an unrecognized environment value falls back to Chinese, while an invalid explicit
+option is rejected. The command-line option overrides the environment variable:
+
+```sh
+./build/lanc --diagnostic-language en examples/types.lan -o types.ll
+LAN_DIAGNOSTIC_LANGUAGE=zh-CN ./build/lanc --run examples/types.lan
+```
+
+This setting covers compiler messages from parsing and type checking. It does not translate the compiled program's
+runtime errors or Text values in a Lan program.
 
 Compute and display results directly:
 

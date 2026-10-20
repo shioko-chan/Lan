@@ -2,7 +2,10 @@
 %x INDENT_SCAN
 %{
 #include "lan/AST.h"
+#include "lan/Diagnostic.h"
 #include <vector>
+
+extern std::string lan_parse_error;
 #include "parser.hpp"
 #include <cstdlib>
 #include <cstring>
@@ -194,7 +197,7 @@ int yylex(void) {
   auto nextRawToken = []() {
     if (pendingDedents > 0) {
       --pendingDedents;
-      return DEDENT;
+      return static_cast<int>(DEDENT);
     }
     return yylex_impl();
   };
@@ -224,7 +227,11 @@ int yylex(void) {
         rawIndentDepth += next == INDENT ? 1 : -1;
         next = nextRawToken();
       }
-      if (next == BAD_INDENT) return BAD_INDENT;
+      if (next == BAD_INDENT) {
+        lan_parse_error = lan::diagnostic(lan::DiagnosticKey::InvalidIndentation,
+                                          {std::to_string(yylloc.first_line)});
+        return BAD_INDENT;
+      }
 
       YYSTYPE nextValue = yylval;
       YYLTYPE nextLocation = yylloc;
@@ -285,6 +292,9 @@ int yylex(void) {
   int token = buffered.token;
   yylval = buffered.value;
   yylloc = buffered.location;
+  if (token == BAD_INDENT)
+    lan_parse_error = lan::diagnostic(lan::DiagnosticKey::InvalidIndentation,
+                                      {std::to_string(yylloc.first_line)});
 
   // The definition lookahead can also span a constructor call inside a
   // parameter default: f(value = ok(1)) = ... . Definitions are top-level.

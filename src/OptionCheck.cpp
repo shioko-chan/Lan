@@ -1,7 +1,9 @@
 #include "lan/OptionCheck.h"
+#include "lan/Diagnostic.h"
 #include "lan/Match.h"
 
 #include <optional>
+#include <map>
 #include <stdexcept>
 #include <unordered_map>
 #include <unordered_set>
@@ -11,6 +13,49 @@ namespace {
 
 using Value = OptionType;
 using Scope = std::unordered_map<std::string, Value>;
+
+std::string optionUsage(const std::string& usage) {
+  if (diagnosticLanguage() == DiagnosticLanguage::Chinese) return usage;
+  static const std::map<std::string, std::string> names = {
+    {"程序入口执行的 IO action", "IO action executed at program entry"},
+    {"程序最终结果（可用末尾 ? 显式输出缺失）", "program result (use a trailing ? to explicitly output missing)"},
+    {"动态字段名", "dynamic field name"},
+    {"字段/下标读取的对象", "object of a field/index lookup"},
+    {"字段名/下标", "field name/index"},
+    {"Record 更新的对象", "object of a Record update"},
+    {"嵌套 Record 更新的根对象", "root of a nested Record update"},
+    {"一元运算", "unary operation"},
+    {"集合操作的输入", "collection operation input"},
+    {"Table 列更新的行结果", "row result of a Table column update"},
+    {"执行的 IO action", "executed IO action"},
+    {"Result do 的 <- 输入（先处理外层 Option）", "Result do <- input (handle the outer Option first)"},
+    {"require 的 Result 参数（先处理外层 Option）", "Result argument to require (handle the outer Option first)"},
+    {"if 条件", "if condition"},
+    {"flatten 的子列表", "flatten sublist"},
+    {"join 的列表元素", "join list element"},
+    {"select_columns 的列名元素", "select_columns column-name element"},
+    {"table 的行", "table row"},
+  };
+  if (auto found = names.find(usage); found != names.end()) return found->second;
+  const std::string suffix = " 的参数";
+  if (usage.size() > suffix.size() &&
+      usage.compare(usage.size() - suffix.size(), suffix.size(), suffix) == 0)
+    return "argument of " + usage.substr(0, usage.size() - suffix.size());
+  if (usage.rfind("“", 0) == 0) {
+    auto end = usage.find("”");
+    if (end != std::string::npos) {
+      auto operation = usage.substr(std::string("“").size(),
+                                    end - std::string("“").size());
+      auto side = usage.substr(end + std::string("”").size());
+      if (side == "左侧") return "left side of " + operation;
+      if (side == "右侧") return "right side of " + operation;
+    }
+  }
+  const std::string prefix = "table 的列“";
+  if (usage.rfind(prefix, 0) == 0 && usage.size() > prefix.size() + 3)
+    return "table column " + usage.substr(prefix.size(), usage.size() - prefix.size() - 3);
+  return usage;
+}
 
 Value child(const Value& value) {
   if (value.element) return *value.element;
@@ -146,12 +191,12 @@ class Checker {
 
   void require(const Value& value, const Expr& expr, const std::string& usage) {
     if (!value.optional) return;
-    std::string message = "Option 类型错误：" + usage +
-        "需要确定存在的 T，但得到 Option<T>（可能为 missing）；请使用 ?、??、require 或 is_missing 分支处理";
-    message += "\n位置：" + program_.sourcePath + ':' +
-        std::to_string(expr.line) + ':' + std::to_string(expr.column);
+    std::string message = diagnostic(DiagnosticKey::OptionalValue, {optionUsage(usage)});
+    message += diagnostic(DiagnosticKey::SourceLocation,
+                          {program_.sourcePath, std::to_string(expr.line),
+                           std::to_string(expr.column)});
     if (!calls_.empty()) {
-      message += "\n分析调用链：程序";
+      message += diagnostic(DiagnosticKey::AnalysisCallChain);
       for (const auto& call : calls_) message += " -> " + call;
     }
     throw std::runtime_error(message);
@@ -249,8 +294,9 @@ class Checker {
           narrowed.optional = narrowed.missingOnly = true;
         }
         if (!covered.add(arm.pattern))
-          throw std::runtime_error("match 模式重复或分支不可达\n位置：" + program_.sourcePath +
-              ':' + std::to_string(arm.body->line) + ':' + std::to_string(arm.body->column));
+          throw std::runtime_error(diagnostic(DiagnosticKey::DuplicatePattern) +
+              diagnostic(DiagnosticKey::SourceLocation, {program_.sourcePath,
+                  std::to_string(arm.body->line), std::to_string(arm.body->column)}));
         auto local = scope;
         if (auto* variable = dynamic_cast<const VariableExpr*>(match->subject.get()))
           local[variable->name] = narrowed;
@@ -263,8 +309,9 @@ class Checker {
         if (possible) combined = combined ? joined(*combined, value) : value;
       }
       if ((!subject.missingOnly && !covered.present) || (subject.optional && !covered.missing))
-        throw std::runtime_error("match 未穷尽：请覆盖所有存在值与可能的 missing，或添加 _ 分支\n位置：" +
-            program_.sourcePath + ':' + std::to_string(expr.line) + ':' + std::to_string(expr.column));
+        throw std::runtime_error(diagnostic(DiagnosticKey::NonexhaustiveMatch) +
+            diagnostic(DiagnosticKey::SourceLocation, {program_.sourcePath,
+                std::to_string(expr.line), std::to_string(expr.column)}));
       result = *combined;
     } else if (auto* conditional = dynamic_cast<const IfExpr*>(&expr)) {
       auto condition = eval(*conditional->condition, scope, escapes);
@@ -361,7 +408,7 @@ class Checker {
       auto rhs = eval(*binary->rhs, scope, escapes);
       if (binary->op == "??" && !vector) {
         if (rank(lhs) != rank(rhs))
-          throw std::runtime_error("Option 类型错误：?? 的整个值默认项必须与左侧 T 类型一致；List 元素默认值请在解包后使用 fill_missing");
+          throw std::runtime_error(diagnostic(DiagnosticKey::OptionalCoalesce));
         result = lhs.missingOnly ? rhs : !lhs.optional ? lhs : joined(present(lhs), rhs);
         result.optional = lhs.optional && rhs.optional;
       } else {
@@ -430,7 +477,7 @@ class Checker {
       auto action = boundary(*bind->action, scope);
       require(action, *bind->action, "执行的 IO action");
       if (bind->name.empty() && child(action).kind == Type::Result)
-        throw std::runtime_error("IO 步骤不能隐式丢弃 Result；请绑定结果并处理，或用 _ <- 明确忽略");
+        throw std::runtime_error(diagnostic(DiagnosticKey::DiscardedResult));
       auto local = scope;
       if (!bind->name.empty()) local[bind->name] = child(action);
       result = eval(*bind->body, local, escapes);
@@ -456,7 +503,7 @@ class Checker {
         if (auto* bind = dynamic_cast<const DoBindExpr*>(&node)) {
           auto input = boundary(*bind->input, local);
           if ((input.kind == Type::Result) != resultDo)
-            throw std::runtime_error("同一个 do 块不能混用 Option 与 Result 的 <- 解包");
+            throw std::runtime_error(diagnostic(DiagnosticKey::MixedDo));
           if (resultDo) {
             require(input, *bind->input, "Result do 的 <- 输入（先处理外层 Option）");
             local[bind->name] = child(input);
@@ -479,7 +526,7 @@ class Checker {
           state.value = boundary(*final->value, local);
           return state;
         }
-        throw std::runtime_error("内部错误：do 块包含未知步骤");
+        throw std::runtime_error(diagnostic(DiagnosticKey::UnknownDoStep));
       };
       auto state = visit(*block->body, scope);
       if (resultDo) {

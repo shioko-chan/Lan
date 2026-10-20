@@ -218,12 +218,12 @@ message("小明", 20)
 - 数字：`10`、`3.14`，底层使用 LLVM `double`
 - 是/否值：`true`、`false`
 - Unit：`()`，确定存在但没有额外内容的单一值
-- 文字：`"Hello"`、`"你好"`
+- 文字：`"你好"`、`"café"`
 - 单类型列表：`[1, 2, 3]`、`["红", "绿", "蓝"]`
 - Record：`{name: "小明", age: 20}`
 - Result：`ok(value)` / `err(error)`，类型为 `Result<T, E>`
 - 数字计算：`+`、`-`、`*`、`/`、`%`
-- 文字连接：`"Hello, " + name`
+- 文字连接：`"你好，" + name`
 - 比较：`==`、`!=`、`<`、`>`、`<=`、`>=`
 - 逻辑：`and`、`or`、`not`，也兼容 `&&`、`||`、`!`
 - 中文或英文名称
@@ -373,7 +373,7 @@ io {
   probability <- random();                 # [0, 1)
   temperature <- random_between(-10, 35);  # [-10, 35)
   die <- random_integer(1, 6);              # 两端都包含
-  item <- choose(["red", missing, "blue"]);
+  item <- choose(["红", missing, "蓝"]);
   order <- shuffle([1, 2, 3, 4]);
   {probability: probability, die: die, item: item, order: order}
 }
@@ -395,12 +395,16 @@ io {
 ### Text、Number 与转换函数
 
 `length` 同时接受 Text 和 List。Text 长度按用户看到的 Unicode grapheme cluster 计算，
-不是 UTF-8 字节数；组合字符和由零宽连接符组成的 emoji 各算一个字符：
+不是 UTF-8 字节数，也不是 Unicode 码点数。例如 `café` 有 5 个 UTF-8 字节、4 个码点、4 个字素簇；
+`é`（e 后接 U+0301）有 3 个字节、2 个码点、1 个字素簇；`東京` 有 6 个字节、2 个字素簇；
+`👩‍💻` 有 11 个字节、3 个码点、1 个字素簇：
 
 ```lan
-length("你好")             # 2
-length("👨‍👩‍👧‍👦")          # 1
-trim("  Hello　")         # "Hello"
+length("café")           # 4：é 是一个码点、一个字素簇
+length("é")              # 1：e 加组合重音是两个码点
+length("東京")             # 2：两个汉字
+length("👩‍💻")            # 1：三个码点组成一个字素簇
+trim("  你好　")          # "你好"
 lowercase("ÄBC Σ")        # "äbc σ"
 uppercase("äbc σ")        # "ÄBC Σ"
 starts_with("report.csv", "report")  # true
@@ -486,7 +490,7 @@ digits = regex("[0-9]+")
 模式参数必须是 Regex，不接受隐式的 Text 模式转换；无效模式在运行时拒绝。
 `regex_find` 未匹配时返回 `missing`，`regex_find_all` 返回空 List。
 `regex_split` 保留首尾空片段；空匹配按一个 Unicode code point 前进，例如
-`regex_split("你好", regex(""))` 得到 `["", "你", "好", ""]`。
+`regex_split("café", regex(""))` 得到 `["", "c", "a", "f", "é", ""]`（每次前进一个码点）。
 切断 UTF-8 字符边界的提取（例如 `regex_find("你", regex("\\C"))`）会被拒绝。
 
 Regex 支持参数、返回值、List/Record 存储和 ARC。显示为 `<Regex>`，不暴露内部地址；
@@ -534,14 +538,14 @@ records |> distinct()
 混合列表会在编译期被拒绝：
 
 ```lan
-[1, "two"]  # 编译错误
+[1, "二"]  # 编译错误
 ```
 
 列表可以嵌套，但内层列表的元素类型也必须一致：
 
 ```lan
 [[1, 2], [3]]       # List<List<Number>>
-[[1], ["two"]]     # 编译错误
+[[1], ["二"]]     # 编译错误
 ```
 
 在函数中可以直接返回和传递列表，条件两边也必须产生相同的列表类型：
@@ -640,7 +644,7 @@ people |> sort_by("score")          # sort_by(people, "score")
 numbers |> map(. * 2)
 users |> map(.name)
 users |> filter(.age? >= 18)
-users |> find(.name == "Alice")
+users |> find(.name == "小芳")
 users |> any(.active)
 users |> all(.age? >= 0)
 ```
@@ -689,10 +693,7 @@ people()
 `List<Record>`，`table` 会将各行转换成等长的列：
 
 ```lan
-table([
-  {name: "小明", age: 20},
-  {name: "小兰", age: 17}
-])
+table([{name: "小明", age: 20}, {name: "小兰", age: 17}])
 ```
 
 编译器把结果静态细化为 Table；LLVM 和运行时都使用 `Record<List<T>>` 指针。普通
@@ -791,7 +792,7 @@ people |> sort_by("score")                         # 稳定升序，missing 放�
 `count` 为 0，而 `average`、`min`、`max` 返回 missing，因此可以用 `??` 处理：
 
 ```lan
-average(people, "unknown")       # 列不存在，运行错误
+average(people, "未知")       # 列不存在，运行错误
 average(table({age: []}), "age") ?? 0
 ```
 
@@ -833,7 +834,7 @@ Record 字面量也允许由 Text 表达式提供动态字段名：
 ```lan
 make_person() =
   field = "age"
-  {name: "Alice", (field): 21}
+  {name: "小芳", (field): 21}
 
 make_person()
 ```
@@ -870,14 +871,14 @@ birthday(person) =
 move(person) =
   person with {
     age: 21,
-    city: "Sydney"
+    city: "悉尼"
   }
 
-move({name: "Alice", age: 20})
+move({name: "小芳", age: 20})
 ```
 
 更新块同样支持 `(field): value` 动态键。嵌套更新写成
-`person.address.city = "Sydney"`，它会从内向外构造新的 Record 路径。更新目标必须以
+`person.address.city = "悉尼"`，它会从内向外构造新的 Record 路径。更新目标必须以
 局部绑定名称为根；`get_person().age = 21` 会在编译期被拒绝。缺失或不是 Record 的
 中间字段会在运行时拒绝。直接的 `person.self = person` 也会被拒绝。
 
@@ -888,7 +889,7 @@ Record 在语义上无序。为了让结果可复现，显示 Record 时按字�
 字段存在和值为 missing 是两件不同的事：
 
 ```lan
-person = {name: "Alice", age: missing}
+person = {name: "小芳", age: missing}
 
 fields(person)                 # ["age", "name"]
 has_field(person, "age")      # true
@@ -899,8 +900,8 @@ has_field(person, "score")    # false
 Record，字段不存在时返回结构相同的 Record。输入 Record 都不会改变：
 
 ```lan
-merge({name: "Alice", age: 20}, {age: 21})       # {age: 21, name: "Alice"}
-remove_field({name: "Alice", age: 20}, "age")  # {name: "Alice"}
+merge({name: "小芳", age: 20}, {age: 21})       # {age: 21, name: "小芳"}
+remove_field({name: "小芳", age: 20}, "age")  # {name: "小芳"}
 ```
 
 底层使用持久化 HAMT。更新只复制从根到目标字段的路径，其余分支由新旧 Record 共享，
@@ -1043,15 +1044,15 @@ describe(input) = match input {
 
 ```lan
 category(number) = match number {
-  -1 => "negative one";
-  0 => "zero";
-  _ => "other"
+  -1 => "负一";
+  0 => "零";
+  _ => "其他"
 }
 
 enabled(flag) = match flag {
-  true => "yes";
-  false => "no";
-  missing => "unknown"
+  true => "是";
+  false => "否";
+  missing => "未知"
 }
 ```
 
@@ -1081,12 +1082,12 @@ enabled(flag) = match flag {
 divide(a, b) =
   if b == 0 { err("除数不能为零") } else { ok(a / b) }
 
-message = match divide(10, 0) {
+message() = match divide(10, 0) {
   ok(number) => to_text(number);
   err(error) => "计算失败：" + error
 }
 
-message
+message()
 ```
 
 函数返回 `Result<Number, Text>`。`ok(())` 表示成功但没有额外数据；错误载荷也可以是
@@ -1101,7 +1102,7 @@ Record、List 或其他数据值。同一 Result 的成功载荷统一为 T，�
 
 ```lan
 ok(missing)      # 成功，载荷是缺失值；不等于 missing 或 err(...)
-ok(err("bad"))  # 成功，载荷本身是另一个失败的 Result
+ok(err("失败"))  # 成功，载荷本身是另一个失败的 Result
 ```
 
 `require(result)` 是显式断言：成功返回载荷，失败输出错误载荷与源码诊断并终止程序。
@@ -1110,11 +1111,11 @@ ok(err("bad"))  # 成功，载荷本身是另一个失败的 Result
 ```lan
 require(ok(42))              # 42
 require(ok(missing)) ?? 0     # 0，成功载荷仍可能缺失
-require(err("bad"))          # 运行时拒绝
+require(err("失败"))          # 运行时拒绝
 ```
 
 对于外层可选的 Result，先用 match、`?` 或 `??` 处理外层缺失，再使用 require。
-`?`、`??`、`is_missing` 仍只观察 Option，不传播、填补或检测 err；例如 `err("bad")?`
+`?`、`??`、`is_missing` 仍只观察 Option，不传播、填补或检测 err；例如 `err("失败")?`
 仍是同一个 Result，而不是函数提前返回或 IO 块短路。已有除零等运行时拒绝不会被自动
 捕获为 err，现有 `parse_number` 等 Option 接口也不改变。
 
@@ -1211,7 +1212,7 @@ List 除法只检查实际参与运算且两侧都存在的元素；被较短长
 顺序与 `/` 完全相同；`if` 仍要求显式 Boolean 条件，例如
 `numbers |> map(if . % 2 != 0 {100} else {200})`。
 
-运行时拒绝会指出源码行列和函数调用链；错误发生在集合计算中时还会报告 List 元素
+下例是当前尚未国际化的运行时诊断格式，编译器诊断语言选项不会改变它。运行时拒绝会指出源码行列和函数调用链；错误发生在集合计算中时还会报告 List 元素
 索引或 Table 行号，并尽可能给出字段路径。例如：
 
 ```text
@@ -1312,6 +1313,17 @@ cmake -S . -B build -DLLVM_DIR="$(llvm-config --cmakedir)"
 cmake --build build
 ctest --test-dir build --output-on-failure
 ```
+
+编译器诊断默认使用中文，以保留已有命令输出。单次编译可加 `--diagnostic-language en`，
+多次调用可设置 `LAN_DIAGNOSTIC_LANGUAGE=en`。选项接受 `zh-CN`（也接受 `zh`）和 `en`；
+未知的环境变量值回退到中文，显式选项值无效时则报错。命令行选项优先于环境变量：
+
+```sh
+./build/lanc --diagnostic-language en examples/types.lan -o types.ll
+LAN_DIAGNOSTIC_LANGUAGE=zh-CN ./build/lanc --run examples/types.lan
+```
+
+此设置用于解析和类型检查等编译器诊断，不翻译生成程序的运行时错误，也不改变 Lan 程序里的 Text 值。
 
 直接计算并显示结果：
 
